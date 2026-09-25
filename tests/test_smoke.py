@@ -109,5 +109,109 @@ class TestApprovalMode(unittest.TestCase):
         self.assertEqual(ApprovalMode.parse(None), ApprovalMode.MANUAL)
 
 
+class TestParser115Url(unittest.TestCase):
+    def test_extract_share_and_code(self):
+        from reelay.providers.parser import parse_115_url
+        url, code, pwd = parse_115_url(
+            "链接 https://115.com/s/swabc123?password=x1y2 访问码：x1y2",
+            ["https://115.com/s/swabc123?password=x1y2"],
+        )
+        self.assertEqual(code, "swabc123")
+        self.assertEqual(pwd, "x1y2")
+
+    def test_no_115_returns_none(self):
+        from reelay.providers.parser import parse_115_url
+        url, code, pwd = parse_115_url("普通文本 http://example.com", ["http://example.com"])
+        self.assertIsNone(code)
+
+
+class TestDirRouter(unittest.TestCase):
+    def setUp(self):
+        from reelay.core import runtime
+        runtime.set_config({
+            "routing": [
+                {"when": "media_type == movie and resolution == 4K", "dir": "电影"},
+                {"when": "media_type == tv", "dir": "剧集"},
+                {"when": "genre contains 动画", "dir": "动漫"},
+                {"default": "默认"},
+            ]
+        })
+        from reelay.plugins.dir_router import DirRouter
+        self.router = DirRouter()
+
+    def _ctx(self, **kw):
+        ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="1", text="x"))
+        ctx.parsed = ParsedResource(is_media=True, title="T", **kw)
+        return ctx
+
+    def test_movie_4k(self):
+        c = self._ctx(media_type="movie", resolution="4K")
+        run(self.router.run(c))
+        self.assertEqual(c.save_dir_alias, "电影")
+
+    def test_tv(self):
+        c = self._ctx(media_type="tv")
+        run(self.router.run(c))
+        self.assertEqual(c.save_dir_alias, "剧集")
+
+    def test_genre_contains(self):
+        c = self._ctx(media_type="movie", resolution="1080p")
+        c.parsed.raw_fields["genre"] = "动画/奇幻"
+        run(self.router.run(c))
+        self.assertEqual(c.save_dir_alias, "动漫")
+
+    def test_default_fallback(self):
+        c = self._ctx(media_type="movie", resolution="1080p")
+        run(self.router.run(c))
+        self.assertEqual(c.save_dir_alias, "默认")
+
+
+class TestOrganizerPlan(unittest.TestCase):
+    def setUp(self):
+        from reelay.core import runtime
+        runtime.set_config({"organize": {"naming": {
+            "movie": "{title} ({year})/{title} ({year}) - {resolution}.{ext}",
+            "tv": "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}",
+        }}})
+        from reelay.plugins.organizer import Organizer
+        self.org = Organizer()
+
+    def test_tv_plan_naming(self):
+        p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
+                           season=1, episodes=[1, 2])
+        landed = [{"id": "a", "name": "01.mp4"}, {"id": "b", "name": "02.mkv"}]
+        plan = self.org._build_plan(p, landed)
+        self.assertEqual(plan[0]["target_dir"], "法医秦明 (2026)/Season 01")
+        self.assertEqual(plan[0]["target_name"], "法医秦明 - S01E01.mp4")
+        self.assertEqual(plan[1]["target_name"], "法医秦明 - S01E02.mkv")
+
+    def test_movie_plan_naming(self):
+        p = ParsedResource(is_media=True, media_type="movie", title="流浪地球2",
+                           year=2023, resolution="4K")
+        plan = self.org._build_plan(p, [{"id": "a", "name": "movie.mp4"}])
+        self.assertEqual(plan[0]["target_dir"], "流浪地球2 (2023)")
+        self.assertIn("流浪地球2 (2023) - 4K.mp4", plan[0]["target_name"])
+
+    def test_validate_missing_fields(self):
+        self.assertIsNotNone(self.org._validate(ParsedResource(is_media=True)))  # 缺标题
+        self.assertIsNotNone(self.org._validate(
+            ParsedResource(is_media=True, media_type="tv", title="X")))  # 剧集缺集数
+        self.assertIsNone(self.org._validate(
+            ParsedResource(is_media=True, media_type="movie", title="X")))  # 电影 OK
+
+
+class TestTmdbDegrade(unittest.TestCase):
+    def test_no_key_pass_through(self):
+        import os
+        os.environ.pop("REELAY_TMDB_API_KEY", None)
+        from reelay.plugins.tmdb_enrich import TmdbEnrich
+        h = TmdbEnrich()
+        ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="1", text="x"))
+        ctx.parsed = ParsedResource(is_media=True, title="某片")
+        self.assertTrue(run(h.run(ctx)))            # 不阻断
+        self.assertFalse(ctx.ns("tmdb")["matched"])  # 未匹配，沿用原标题
+        self.assertEqual(ctx.parsed.title, "某片")
+
+
 if __name__ == "__main__":
     unittest.main()

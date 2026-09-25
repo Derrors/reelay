@@ -2,7 +2,7 @@
 
 > **Reel**（影视胶片） + **Relay**（接力转发）——监听 Telegram 资源 Bot 的消息，用 AI 识别影视资源与 115 网盘链接，经可配置的审批后转存进网盘、并按媒体库规范整理入库。
 
-这是一个 **AI Native + 全流程可扩展** 的自托管系统的**内核骨架**。当前版本落地了架构评审确认的 MVP 范围，核心是一条"稳定内核 + 三类扩展点"的管线。
+这是一个 **AI Native + 全流程可扩展** 的自托管系统。当前版本按架构评审确认的范围落地了主流程各阶段的真实能力，核心是一条"稳定内核 + 三类扩展点"的管线。
 
 ## 设计原则
 
@@ -56,14 +56,29 @@ python3 -m reelay.main
 ```
 reelay/
 ├── core/           # 内核：契约、状态机、持久层、去重、管线、注册机
-├── providers/      # 内置能力槽实现（含 dry-run 占位实现）
+├── providers/      # 内置能力槽实现（真实实现 + 未配凭证时降级）
 ├── plugins/        # 用户插件（Hook/Event），目录自动发现
 ├── control/        # 控制 bot（可观测与人工干预）
 └── main.py         # 入口
 ```
 
+## 已实现能力
+
+按「完整技术方案」落地的功能（均可通过 dry-run 端到端验证，接入真实凭证即生效）：
+
+- **Stage 1 监听**：`TelegramUserbotSource` 用你的账号（Telethon）同时监听多个 bot；从消息 entity 抽超链接真实 URL。
+- **Stage 2 识别**：`LLMParser`（OpenAI 兼容，JSON schema 约束）判类+抽字段，未配 key 自动降级 `RegexParser`；115 链接解析交确定性代码；`DefaultDecision` 按过滤规则+审批模式判 save/ask/skip。
+- **元数据匹配**：`TmdbEnrich`（after_parse Hook）查 TMDB 回填规范标题/年份/tmdbid，未配 key 降级放行。
+- **Stage 3 转存整理**：
+  - `DirRouter`（before_save）按 `routing` 规则选目录别名；
+  - `P115Storage` 用 `P115ShareFileSystem` 列举分享内视频文件（过滤广告 txt）→ `receive` 转存 → **读回验证**（对比目标目录前后快照）；
+  - `Organizer`（after_save）按 `naming` 模板在 115 内 `mkdir/rename/move` 整理成「剧名(年份)/Season NN/SxxEyy」，字段不全或整理失败转 `need_manual`，重名跳过不覆盖。
+- **通知/转发**：`ConsoleNotify` 推确认卡片（callback 只带 task_id）与结果通知；开启 `forward` 则按模板转发到目标。
+- **控制 bot**：`/status`、`/failed`、`/pending`、`/retry <id>` 与审批按钮回调（仅服务 `REELAY_OWNER_ID`）。
+- **稳定性**：SQLite(WAL) 持久队列、三层去重（支持追更增量）、重启恢复、退避重试、审批超时清扫、Semaphore 限流。
+
 ## 状态
 
-内核骨架 + dry-run 冒烟可跑通。真实的 TG 监听 / 115 转存 / LLM 解析以「未安装依赖则降级」方式接入，见各 Provider。
+主流程各阶段功能已实现：`python3 -m reelay.main --dry-run` 端到端 PASS，19 个单元测试全过。真实的 TG 监听 / 115 转存整理 / LLM 解析 / TMDB / 控制 bot 均以「未装依赖或未配凭证则降级」方式接入——装上 `.[full]` 依赖、填好 `.env` 与 `config.yaml` 即从占位切换为真实执行。
 
 > 本项目仅作技术实现探讨。userbot 与网盘操作请遵守相关平台规则及当地法律法规；凭证妥善保管。

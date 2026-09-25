@@ -96,10 +96,25 @@ async def _run_live() -> int:
     load_env()
     cfg = load_config()
     reg = discover()
-    logging.getLogger("reelay").info("已注册：%s", reg.summary())
+    log = logging.getLogger("reelay")
+    log.info("已注册：%s", reg.summary())
 
     store = Store(os.getenv("REELAY_DB_PATH", "data/reelay.db"))
     pipeline = Pipeline(reg, store, cfg)
+    panel = ControlPanel(store, pipeline)
+
+    # 控制 bot（可观测与干预）；未配置则不启动，通知走控制台
+    from .control.bot import ControlBot
+    bot = ControlBot(panel)
+    await bot.start()
+
+    # 通知发送器 & 转发配置接线：控制 bot 启用则用它发，否则控制台打印
+    console = reg.providers.get("notify", {}).get("console")
+    if console and hasattr(console, "configure"):
+        console.configure(
+            sender=(bot.send if bot.enabled else None),
+            forward_cfg=cfg.get("forward", {}),
+        )
 
     targets = [s["bot"] for s in cfg.get("sources", []) if s.get("bot")]
     source = reg.get_provider("source", "telegram")
@@ -111,11 +126,23 @@ async def _run_live() -> int:
 
     worker = Worker(pipeline, store, concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")))
 
-    # 监听（生产者）与 worker（消费者）并发长驻
-    await asyncio.gather(
-        source.listen(emit),
-        worker.run(drain=False),
-    )
+    async def sweep_loop() -> None:
+        interval = int(os.getenv("REELAY_SWEEP_INTERVAL_SEC", "3600"))
+        while True:
+            try:
+                n = await pipeline.sweep_approval_timeouts()
+                if n:
+                    log.info("审批超时清扫：处理 %d 条", n)
+            except Exception as exc:
+                log.warning("sweep 异常：%s", exc)
+            await asyncio.sleep(interval)
+
+    tasks = [source.listen(emit), worker.run(drain=False), sweep_loop()]
+    if bot.enabled:
+        tasks.append(bot.run_forever())
+
+    # 监听（生产者）、worker（消费者）、控制 bot、超时清扫 并发长驻
+    await asyncio.gather(*tasks)
     return 0
 
 

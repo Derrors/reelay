@@ -20,6 +20,22 @@ organize:
     movie: "{title} ({year})/{title} ({year}) - {resolution}.{ext}"
     tv: "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}"
 
+# 目录路由：DirRouter 按规则决定进哪个库别名（自上而下匹配，命中即止）
+# 条件语法仅支持「字段 == 值」「字段 contains 值」以及用 and 连接（不使用 eval）
+routing:
+  - when: "media_type == movie and resolution == 4K"
+    dir: "电影"
+  - when: "media_type == tv"
+    dir: "剧集"
+  - when: "genre contains 动画"
+    dir: "动漫"
+  - default: "默认"
+
+# 审批超时兜底（manual 卡片久未处理）
+approval:
+  timeout_hours: 24
+  on_timeout: remind     # remind（重推提醒）| skip（超时忽略）
+
 # 监听多个 bot，各挂各的规则（先设全局默认，再按 bot 覆盖）
 defaults:
   approval_mode: manual      # manual | auto | default_pass

@@ -39,6 +39,9 @@ class Pipeline:
         self.store = store
         self.cfg = config
         self.save_dirs: dict[str, str] = config.get("save_dirs", {})
+        # 注入全局配置，供 Hook（DirRouter / Organizer 等）只读取用
+        from . import runtime
+        runtime.set_config(config)
 
     # ------------------------------------------------------------------ #
     # Hook / Event 基础设施
@@ -219,3 +222,35 @@ class Pipeline:
                 merged.update(s)
                 return merged
         return dict(self.cfg.get("defaults", {}))
+
+    # ------------------------------------------------------------------ #
+    # 审批超时清扫（评审 P0-01：manual 卡片久未处理的兜底）
+    # ------------------------------------------------------------------ #
+    async def sweep_approval_timeouts(self) -> int:
+        """把超时未处理的 pending_approval 按策略处理。
+
+        config.approval.timeout_hours（默认 24）+ on_timeout（remind|skip，默认 remind）。
+        remind：重推一次确认通知；skip：置 SKIPPED。返回处理条数。
+        """
+        import time
+        ap = self.cfg.get("approval", {}) or {}
+        hours = float(ap.get("timeout_hours", 24))
+        action = ap.get("on_timeout", "remind")
+        deadline = time.time() - hours * 3600
+        handled = 0
+        for r in self.store.list_by_state(TaskState.PENDING_APPROVAL, 200):
+            if r["updated_at"] > deadline:
+                continue
+            ctx = self.store.get_task(r["task_id"])
+            if not ctx:
+                continue
+            if action == "skip":
+                ctx.state = TaskState.SKIPPED
+                ctx.log(f"审批超时（>{hours}h），按策略忽略")
+                self.store.save_task(ctx)
+            else:
+                ctx.log(f"审批超时（>{hours}h），重推提醒")
+                self.store.set_state(ctx.task_id, TaskState.PENDING_APPROVAL)  # 刷新 updated_at
+                await self._notify_all(ctx, "pending_approval")
+            handled += 1
+        return handled
