@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reelay"
+version = "0.1.0"
+description = "监听 Telegram 资源 Bot，AI 识别影视资源与 115 链接，审批后转存并整理入库。可扩展内核骨架。"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+# 接入真实能力时安装：pip install -e ".[full]"
+full = [
+    "telethon>=1.36",
+    "p115client>=0.0.6",
+    "openai>=1.40",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+reelay = "reelay.main:main"
+
+[tool.setuptools.packages.find]
+include = ["reelay*"]

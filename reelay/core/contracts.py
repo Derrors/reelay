@@ -1,0 +1,236 @@
+"""内核契约层。
+
+这里定义整套系统的"骨架契约"——一旦冻结，所有新功能都往三类扩展点上填，
+内核不再改动：
+
+- ``TaskState``        任务状态机（评审补丁：覆盖审批 / 整理 / 待人工）
+- ``ApprovalMode``     三种审批模式
+- ``PipelineContext``  贯穿全程的上下文，各阶段/插件读写它
+- ``SourceProvider`` / ``ParserProvider`` / ``DecisionProvider``
+  ``StorageProvider`` / ``NotifyProvider``   —— A 类：能力槽（可替换）
+- ``Hook``             —— B 类：钩子（前后插入、可改数据、可拦截）
+- ``EventListener``    —— C 类：事件（旁路响应，失败不影响主流程）
+"""
+
+from __future__ import annotations
+
+import enum
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+
+# --------------------------------------------------------------------------- #
+# 状态机 & 枚举
+# --------------------------------------------------------------------------- #
+class TaskState(str, enum.Enum):
+    """任务状态机。任何时刻任务状态都落在库里 —— 可查(可观测) / 可恢复(重启) / 可干预(人工)。
+
+    流转（详见 README 状态机图）::
+
+        received → parsed → ┬ pending_approval ─(你确认)→ queued
+                            ├ queued (auto/default_pass 直接入队)
+                            └ rejected / skipped
+        queued → saving → ┬ done
+                          ├ need_manual   (字段不全 / 匹配不到元数据)
+                          └ failed        (可重试 / 告警)
+    """
+
+    RECEIVED = "received"                    # 已落库，尚未解析
+    PARSED = "parsed"                        # AI 解析完成
+    PENDING_APPROVAL = "pending_approval"    # 待人工确认（manual 模式；可跨重启）
+    QUEUED = "queued"                        # 待转存
+    REJECTED = "rejected"                    # 判为广告 / 非影视
+    SKIPPED = "skipped"                      # 你忽略 / 去重命中
+    SAVING = "saving"                        # 转存 + 整理进行中
+    NEED_MANUAL = "need_manual"              # 待人工整理（字段不全 / 元数据匹配失败）
+    DONE = "done"                            # 已转存并读回验证
+    FAILED = "failed"                        # 失败（可重试 / 告警）
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in (TaskState.DONE, TaskState.REJECTED, TaskState.SKIPPED)
+
+
+class ApprovalMode(str, enum.Enum):
+    MANUAL = "manual"              # 人工确认后才转存
+    AUTO = "auto"                  # 自动转存 + 通知
+    DEFAULT_PASS = "default_pass"  # 静默转存
+
+    @classmethod
+    def parse(cls, value: str | None) -> "ApprovalMode":
+        try:
+            return cls(str(value))
+        except ValueError:
+            return cls.MANUAL  # 拿不准时默认最保守
+
+
+class Decision(str, enum.Enum):
+    """决策层输出：这条要怎么走。"""
+    SAVE = "save"      # 直接转存
+    ASK = "ask"        # 需人工确认
+    SKIP = "skip"      # 忽略（含广告 / 去重命中）
+
+
+# --------------------------------------------------------------------------- #
+# 贯穿全程的上下文
+# --------------------------------------------------------------------------- #
+@dataclass
+class RawMessage:
+    """从任意消息源归一化后的原始消息。"""
+    source: str                       # 来源标识，如 "@some_bot"
+    msg_id: str                       # 该来源内的消息唯一 id（消息级去重键）
+    text: str                         # 正文
+    urls: list[str] = field(default_factory=list)  # 从 entity/正文抽到的超链接真实 URL
+    received_at: float = field(default_factory=time.time)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ParsedResource:
+    """AI 感知层输出的结构化结果。字段尽量与媒体库规范对齐。"""
+    is_media: bool = False            # 是不是影视资源
+    is_ad: bool = False               # 是不是广告 / 噪声
+    confidence: float = 0.0           # 置信度 [0,1]
+    media_type: str | None = None     # movie | tv | anime | ...
+    title: str | None = None
+    year: int | None = None
+    season: int | None = None
+    episodes: list[int] = field(default_factory=list)  # 本条覆盖的集数（追更判断用）
+    resolution: str | None = None
+    size: str | None = None
+    share_code: str | None = None     # 115 分享码（资源级去重键）
+    receive_code: str | None = None   # 访问码
+    reason: str | None = None         # AI 判定理由（便于回查）
+    raw_fields: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PipelineContext:
+    """一条消息从进入到存完，携带这一个对象流经所有阶段和插件。
+
+    约定：插件的私有数据写进 ``meta[<plugin_name>]``，做命名空间隔离，互不干扰。
+    """
+
+    raw: RawMessage
+    task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    state: TaskState = TaskState.RECEIVED
+
+    parsed: ParsedResource | None = None
+    decision: Decision | None = None
+
+    save_dir_alias: str | None = None   # 决策/路由选定的目录别名
+    save_dir_cid: str | None = None      # 解析成 115 目录 cid
+    result: dict[str, Any] | None = None  # 转存回执（含验证结果）
+
+    # 来源在配置里对应的规则（审批模式 / 过滤 / 目标目录…）
+    source_rule: dict[str, Any] = field(default_factory=dict)
+    # 插件私有命名空间
+    meta: dict[str, Any] = field(default_factory=dict)
+    # 供追溯：一路走过的关键事件
+    trail: list[str] = field(default_factory=list)
+
+    def log(self, msg: str) -> None:
+        self.trail.append(f"{time.strftime('%H:%M:%S')} {msg}")
+
+    def ns(self, plugin: str) -> dict[str, Any]:
+        """取某插件的私有命名空间字典。"""
+        return self.meta.setdefault(plugin, {})
+
+
+# --------------------------------------------------------------------------- #
+# A 类：能力槽 Provider（可替换）
+# --------------------------------------------------------------------------- #
+@runtime_checkable
+class SourceProvider(Protocol):
+    """消息源：监听并产出 RawMessage。"""
+    name: str
+
+    async def listen(self, emit) -> None:
+        """开始监听；每收到一条消息就 ``await emit(raw_message)``。长驻协程。"""
+        ...
+
+
+@runtime_checkable
+class ParserProvider(Protocol):
+    """解析器：把 RawMessage 理解成 ParsedResource（默认实现 = LLM）。"""
+    name: str
+
+    async def parse(self, ctx: PipelineContext) -> ParsedResource:
+        ...
+
+
+@runtime_checkable
+class DecisionProvider(Protocol):
+    """决策器：结合审批模式与偏好，判定 save / ask / skip。"""
+    name: str
+
+    async def decide(self, ctx: PipelineContext) -> Decision:
+        ...
+
+
+@runtime_checkable
+class StorageProvider(Protocol):
+    """网盘执行器：确定性代码，负责真正转存 + 读回验证。"""
+    name: str
+
+    async def save(self, ctx: PipelineContext) -> dict[str, Any]:
+        """把 ctx 里的分享资源转存到 ctx.save_dir_cid，返回回执（含验证结果）。"""
+        ...
+
+
+@runtime_checkable
+class NotifyProvider(Protocol):
+    """通知 / 转发渠道。"""
+    name: str
+
+    async def notify(self, ctx: PipelineContext, event: str) -> None:
+        ...
+
+
+# --------------------------------------------------------------------------- #
+# B 类：钩子 Hook（前后插入、可改数据、可拦截）
+# --------------------------------------------------------------------------- #
+@runtime_checkable
+class Hook(Protocol):
+    """在某个阶段前后插入的中间件。
+
+    - ``stage``：挂载点，如 ``after_parse`` / ``before_save`` / ``after_save``
+    - ``order``：同一挂载点内的执行顺序，小的先执行
+    - ``run``：返回 ``False`` 可中止后续（拦截）；抛异常会被隔离（不拖垮主流程）
+    """
+    stage: str
+    order: int
+
+    async def run(self, ctx: PipelineContext) -> bool:
+        ...
+
+
+# --------------------------------------------------------------------------- #
+# C 类：事件 EventListener（旁路，失败不影响主流程）
+# --------------------------------------------------------------------------- #
+@runtime_checkable
+class EventListener(Protocol):
+    """订阅某个事件，异步响应。慢或失败都不影响主链路。"""
+    event: str
+
+    async def handle(self, ctx: PipelineContext) -> None:
+        ...
+
+
+# 已知的挂载点 / 事件名，集中声明便于校验与查阅
+HOOK_STAGES = (
+    "before_parse",
+    "after_parse",
+    "before_save",
+    "after_save",
+)
+
+EVENTS = (
+    "on_message",       # 收到新消息
+    "on_identified",    # 识别出资源
+    "on_rejected",      # 判为广告 / 噪声
+    "on_saved",         # 转存完成
+    "on_failed",        # 失败
+)

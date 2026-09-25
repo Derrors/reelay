@@ -1,0 +1,14 @@
+# 依赖说明：骨架本身仅用标准库即可运行（dry-run 冒烟不需要任何三方库）。
+# 以下依赖在接入真实能力时按需安装，已在对应 Provider 里做了「未安装则降级」处理。
+
+# --- 监听（userbot）---
+telethon>=1.36            # 用你自己的 TG 账号监听多个 bot（MTProto）
+
+# --- 115 网盘 ---
+p115client>=0.0.6         # 转存 receive / 改名 rename / 移动 renamefile / 建目录
+
+# --- AI 解析（OpenAI 兼容接口）---
+openai>=1.40             # 走标准兼容 API，可接任意厂商/本地模型
+
+# --- 配置 ---
+PyYAML>=6.0

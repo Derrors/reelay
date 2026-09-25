@@ -1,0 +1,27 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# ---- Reelay runtime data ----
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.session
+data/*.session-journal
+*.session
+
+# ---- Secrets ----
+.env
+115-cookies.txt
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+.DS_Store

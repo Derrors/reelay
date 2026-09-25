@@ -1,0 +1,39 @@
+# ===== Reelay 业务配置示例 =====
+# 复制为 config.yaml 使用。这里放"每个 bot 怎么处理"的规则，改配置即生效，不改代码。
+
+# 115 目录别名 -> cid 映射（转存目标，可随时切换）
+save_dirs:
+  电影: "0"          # 填你 115 里对应目录的 cid（0 仅占位）
+  剧集: "0"
+  动漫: "0"
+  默认: "0"
+
+# 转发（识别成功后按模板转发到目标，可一键开关）
+forward:
+  enabled: false
+  target: "@your_archive_channel"
+  template: "🎬 {title} ({year}) {resolution}\n📦 {size}\n🔗 {link}"
+
+# 命名与目录整理规则（遵循 Jellyfin/Emby 通用 SxxEyy 规范）
+organize:
+  naming:
+    movie: "{title} ({year})/{title} ({year}) - {resolution}.{ext}"
+    tv: "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}"
+
+# 监听多个 bot，各挂各的规则（先设全局默认，再按 bot 覆盖）
+defaults:
+  approval_mode: manual      # manual | auto | default_pass
+  parser: llm                # llm | regex
+  save_to: 默认
+
+sources:
+  - bot: "@example_movie_bot"
+    approval_mode: manual
+    save_to: 电影
+    filters:
+      must_have: ["115.com", "115.cn"]
+      block_keywords: ["广告", "招商", "投稿", "频道"]
+
+  - bot: "@example_tv_bot"
+    approval_mode: auto
+    save_to: 剧集
