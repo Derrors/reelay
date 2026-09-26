@@ -145,13 +145,16 @@ class P115Storage:
         from p115client import P115FileSystem
         try:
             resp = self._client.fs_mkdir({"cname": name, "pid": int(parent)})
-            data = resp.get("data") if isinstance(resp, dict) else None
-            if data and data.get("category_id"):
-                return {"id": int(data["category_id"]),
-                        "name": data.get("category_name", name)}
+            # webapi /files/add 成功在顶层返回 file_id/cid（旧版在 data）。
+            # state=False（如重名）也不当成功，交回 SDK 路径按 iterdir 复用。
+            if isinstance(resp, dict) and resp.get("state", True) is not False:
+                fid = (resp.get("file_id") or resp.get("cid")
+                       or (resp.get("data") or {}).get("category_id"))
+                if fid:
+                    return {"id": int(fid), "name": name}
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("reelay.storage").warning(
-                "webapi 建目录失败，回退 app 接口：%s", exc)
+                "webapi 建目录异常，回退 app 接口：%s", exc)
         return P115FileSystem(self._client).mkdir(parent, name=name)
 
     def _receive_sync(self, ctx: PipelineContext) -> dict[str, Any]:

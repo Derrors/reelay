@@ -84,6 +84,7 @@ class Organizer:
             if self._client is None:
                 raise RuntimeError("整理客户端不可用，请检查依赖与凭证")
             await run_blocking(self._apply_sync, ctx, ctx.parsed, plan)
+            self._cleanup_staging(ctx)
             ctx.ns("organize")["applied"] = True
             ctx.ns("organize").pop("error", None)
             ctx.log("整理文件 ID、目录和名称全部读回核验通过")
@@ -94,6 +95,34 @@ class Organizer:
             if ctx.result is not None:
                 ctx.result["verified"] = False
         return True
+
+    def _cleanup_staging(self, ctx: PipelineContext) -> None:
+        """整理成功后删除空的 .reelay-<task> 暂存目录。
+
+        仅在该暂存目录确实为空时删除；非空（有文件没被移走）则保留，绝不误删。
+        dry-run 不清理。
+        """
+        if self._dry_run or self._client is None:
+            return
+        import logging
+        from p115client import P115FileSystem
+        manifest = ctx.ns("storage").get("manifest") or {}
+        stage = manifest.get("staging_cid")
+        if not isinstance(stage, int):
+            return
+        try:
+            fs = P115FileSystem(self._client)
+            if list(fs.iterdir(stage)):
+                logging.getLogger("reelay.organizer").info(
+                    "暂存目录非空，保留：%s", stage)
+                return
+            if hasattr(self._client, "fs_delete"):
+                self._client.fs_delete([stage])
+                ctx.log("已清理空暂存目录")
+        except Exception as exc:  # noqa: BLE001
+            # 清理失败不影响已完成的整理结果
+            logging.getLogger("reelay.organizer").warning(
+                "清理暂存目录失败（已忽略）：%s", exc)
 
     # ------------------------------------------------------------------ #
     def _validate(self, p) -> str | None:
