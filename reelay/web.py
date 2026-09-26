@@ -27,6 +27,7 @@ from .core.registry import discover
 from .core.service import ConflictError, ManagementService, NotFoundError
 from .core.store import Store
 from .core.worker import Worker
+from .web_extras import register_extras, auth_enabled
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -243,21 +244,31 @@ def create_app(
         except Exception as exc:
             raise _error(exc)
 
+    # 额外 API（鉴权/日志/115浏览/源测试/统计）必须先于 SPA catch-all 注册，
+    # 否则会被 /{path:path} 兜底吞掉。
+    register_extras(app, project_root=PROJECT_ROOT, store=store,
+                    service=service, registry=registry)
+
     frontend = Path(frontend_dir or PROJECT_ROOT / "web" / "dist" / "output").resolve()
     frontend_assets = PROJECT_ROOT / "web" / "dist" / "output_resource" / "assets"
     if frontend.exists():
         if frontend_assets.exists():
             app.mount("/assets", StaticFiles(directory=frontend_assets), name="assets")
 
+        index = (frontend / "index.html").resolve()
+
         @app.get("/{path:path}")
         async def spa(path: str):
+            # /api/* 未命中时返回 404 JSON，不能落到 SPA index.html
+            if path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="接口不存在")
             candidate = (frontend / path).resolve()
             if not candidate.is_relative_to(frontend):
                 raise HTTPException(status_code=404, detail="文件不存在")
             if path and candidate.is_file():
                 return FileResponse(candidate)
-            index = (frontend / "index.html").resolve()
-            if not index.is_relative_to(frontend) or not index.is_file():
+            # index 必须是 frontend 内的普通文件（拒绝越界软链）
+            if not index.is_relative_to(frontend) or not index.is_file() or index.is_symlink():
                 raise HTTPException(status_code=404, detail="文件不存在")
             return FileResponse(index)
 

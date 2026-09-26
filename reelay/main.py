@@ -26,10 +26,17 @@ from .control.panel import ControlPanel
 
 
 def _setup_log() -> None:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    log_file = os.getenv("REELAY_LOG_FILE")
+    if log_file:
+        path = __import__("pathlib").Path(log_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(path, encoding="utf-8"))
     logging.basicConfig(
         level=os.getenv("REELAY_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
+        handlers=handlers,
     )
 
 
