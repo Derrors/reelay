@@ -1,0 +1,49 @@
+services:
+  worker:
+    image: reelay:local
+    build: .
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REELAY_DB_PATH: /app/data/reelay.db
+      REELAY_CONFIG_PATH: /app/config/config.yaml
+      REELAY_TG_SESSION: /app/data/userbot.session
+      REELAY_CONTROL_BOT_SESSION: /app/data/controlbot.session
+    volumes:
+      - reelay-data:/app/data
+      - ./deploy/config:/app/config
+    healthcheck:
+      test: ["CMD", "python", "-m", "reelay.core.health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 120s
+
+  web:
+    image: reelay:local
+    build: .
+    init: true
+    command: ["python", "-m", "reelay.web"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REELAY_DB_PATH: /app/data/reelay.db
+      REELAY_CONFIG_PATH: /app/config/config.yaml
+      REELAY_WEB_HOST: 0.0.0.0
+      REELAY_WEB_PORT: "28080"
+    volumes:
+      - reelay-data:/app/data
+      - ./deploy/config:/app/config
+    ports:
+      - "127.0.0.1:28080:28080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:28080/api/health', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 120s
+
+volumes:
+  reelay-data:

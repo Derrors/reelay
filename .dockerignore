@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+config.yaml
+data
+115-cookies.txt
+*.session*
+__pycache__
+**/__pycache__
+*.egg-info
+web/node_modules
+web/dist
+web/.env*
+deploy/config
