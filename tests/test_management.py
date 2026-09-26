@@ -24,6 +24,7 @@ class TestManagementService(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.store = Store(":memory:")
         self.pipeline = Pipeline(discover(), self.store, load_config("missing.yaml"))
+        self.pipeline.save_dirs = {**self.pipeline.save_dirs, "电影4K": "42"}
         self.config_path = Path(self.tempdir.name) / "config.yaml"
         self.service = ManagementService(
             self.store, self.pipeline, config_path=str(self.config_path)
@@ -74,6 +75,34 @@ class TestManagementService(unittest.TestCase):
         restored = self.store.get_task(ctx.task_id)
         self.assertEqual(restored.state, TaskState.QUEUED)
         self.assertEqual(restored.save_dir_alias, "电影4K")
+
+    def test_unknown_directory_does_not_silently_use_default(self):
+        ctx = self._task(TaskState.PENDING_APPROVAL)
+        with self.assertRaises(ValueError):
+            run(self.service.approve(ctx.task_id, save_dir_alias="不存在的目录"))
+        self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.PENDING_APPROVAL)
+
+    def test_active_tasks_cannot_be_overwritten_by_management(self):
+        for state in (TaskState.RECEIVED, TaskState.PARSED, TaskState.QUEUED,
+                      TaskState.SAVING, TaskState.STORED, TaskState.ORGANIZING):
+            ctx = self._task(state)
+            with self.subTest(state=state):
+                with self.assertRaises(ConflictError):
+                    self.service.patch_parsed(ctx.task_id, {"title": "编辑"})
+                with self.assertRaises(ConflictError):
+                    run(self.service.reparse(ctx.task_id))
+
+    def test_dashboard_counts_transfer_and_organizing_as_active(self):
+        self._task(TaskState.STORED)
+        self._task(TaskState.ORGANIZING)
+        self.assertEqual(self.service.dashboard()["active"], 2)
+
+    def test_manual_retry_resets_exhausted_retry_budget(self):
+        ctx = self._task(TaskState.FAILED, retry_from=TaskState.RECEIVED)
+        for _ in range(4):
+            self.store.bump_retry(ctx.task_id)
+        run(self.service.retry(ctx.task_id))
+        self.assertEqual(self.store.get_task_record(ctx.task_id)["retries"], 0)
 
     def test_patch_parsed_and_task_detail(self):
         ctx = self._task(TaskState.NEED_MANUAL)

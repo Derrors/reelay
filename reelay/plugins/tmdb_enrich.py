@@ -27,11 +27,13 @@ TMDB_BASE = os.getenv("REELAY_TMDB_BASE_URL", "https://api.themoviedb.org/3")
 
 @register(kind="hook", stage="after_parse", order=50)
 class TmdbEnrich:
+    name = "tmdb_enrich"
     stage = "after_parse"
     order = 50
 
     def __init__(self) -> None:
-        self._key = os.getenv("REELAY_TMDB_API_KEY")
+        self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
+        self._key = None if self._dry_run else os.getenv("REELAY_TMDB_API_KEY")
 
     async def run(self, ctx: PipelineContext) -> bool:
         p = ctx.parsed
@@ -40,7 +42,7 @@ class TmdbEnrich:
 
         if not self._key:
             ctx.ns("tmdb")["matched"] = False
-            ctx.ns("tmdb")["note"] = "未配 TMDB key，沿用 AI 标题"
+            ctx.ns("tmdb")["note"] = "模拟模式，沿用原标题" if self._dry_run else "未配 TMDB key，沿用 AI 标题"
             return True
 
         kind = "tv" if (p.media_type == "tv" or p.episodes) else "movie"

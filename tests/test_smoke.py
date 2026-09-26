@@ -57,14 +57,14 @@ class TestStore(unittest.TestCase):
         self.assertTrue(s.set_state(ctx.task_id, TaskState.QUEUED))
         self.assertEqual(s.get_task(ctx.task_id).state, TaskState.QUEUED)
 
-    def test_recover_saving_as_queued(self):
+    def test_legacy_saving_without_manifest_requires_manual(self):
         s = self.store
         ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="resume", text="x"))
         ctx.state = TaskState.SAVING
         s.save_task(ctx)
         recovered = s.recover_interrupted()
-        self.assertEqual(recovered[0].state, TaskState.QUEUED)
-        self.assertEqual(s.get_task(ctx.task_id).state, TaskState.QUEUED)
+        self.assertEqual(recovered[0].state, TaskState.NEED_MANUAL)
+        self.assertEqual(s.get_task(ctx.task_id).state, TaskState.NEED_MANUAL)
 
     def test_task_snapshot_roundtrip_and_recover(self):
         s = self.store
@@ -117,6 +117,15 @@ class TestDecision(unittest.TestCase):
         d = self.reg.get_provider("decision", "default")
         c = self._ctx(text="115.com/s/x 招商", filters={"block_keywords": ["招商"]})
         self.assertEqual(run(d.decide(c)), Decision.SKIP)
+
+    def test_must_have_matches_hidden_url(self):
+        c = self._ctx(text="点击获取影片", filters={"must_have": ["115.com", "115.cn"]})
+        self.assertEqual(run(self.reg.get_provider("decision", "default").decide(c)), Decision.SAVE)
+
+    def test_unrelated_url_cannot_bypass_must_have(self):
+        c = self._ctx(text="影片推荐", filters={"must_have": ["特定关键词"]})
+        c.raw.urls = ["https://example.com/video"]
+        self.assertEqual(run(self.reg.get_provider("decision", "default").decide(c)), Decision.SKIP)
 
 
 class TestApprovalMode(unittest.TestCase):
@@ -266,6 +275,14 @@ class TestStorageEpisodeSelection(unittest.TestCase):
         parsed = ParsedResource(media_type="tv", episodes=[9])
         with self.assertRaises(RuntimeError):
             _select_video_items([{"id": "1", "name": "video.mkv"}], parsed)
+
+
+class TestTelegramUserbotGuard(unittest.TestCase):
+    def test_source_contains_bot_account_guard(self):
+        from pathlib import Path
+        source = Path("reelay/providers/source.py").read_text(encoding="utf-8")
+        self.assertIn('getattr(account, "bot", False)', source)
+        self.assertIn("不能使用控制 Bot 会话", source)
 
 
 class TestTmdbDegrade(unittest.TestCase):

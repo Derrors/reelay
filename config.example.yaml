@@ -1,5 +1,16 @@
 # ===== Reelay 业务配置示例 =====
-# 复制为 config.yaml 使用。这里放"每个 bot 怎么处理"的规则，改配置即生效，不改代码。
+# 复制为 config.yaml 使用。有效业务配置会被重载；新任务使用新策略，已接收任务保留快照。
+
+# 可替换 Provider；配置保存/启动会校验名称
+providers:
+  source: telegram
+  notify: [console]
+
+# Hook/Event 按注册名称启停；转存检查点仍绑定原 Provider 和文件 ID
+plugins:
+  tmdb_enrich: true
+  dir_router: true
+  organizer: true
 
 # 115 目录别名 -> cid 映射（转存目标，可随时切换）
 save_dirs:
@@ -23,12 +34,12 @@ organize:
 # 目录路由：DirRouter 按规则决定进哪个库别名（自上而下匹配，命中即止）
 # 条件语法仅支持「字段 == 值」「字段 contains 值」以及用 and 连接（不使用 eval）
 routing:
-  - when: "media_type == movie and resolution == 4K"
-    dir: "电影"
-  - when: "media_type == tv"
-    dir: "剧集"
   - when: "genre contains 动画"
     dir: "动漫"
+  - when: "media_type == movie and resolution == 4K"
+    dir: "电影"
+  - when: "type == tv"
+    dir: "剧集"
   - default: "默认"
 
 # 审批超时兜底（manual 卡片久未处理）
@@ -39,7 +50,12 @@ approval:
 # 监听多个 bot，各挂各的规则（先设全局默认，再按 bot 覆盖）
 defaults:
   approval_mode: manual      # manual | auto | default_pass
-  parser: llm                # llm | regex
+  parser: llm                # llm | regex；LLM 异常/非法输出降级后必须人工确认
+  llm_response_format: json_schema # 不支持 schema 的兼容接口可显式用 json_object，仍严格本地校验
+  decision: default          # default | llm（自然语言偏好）
+  storage: p115
+  confidence_threshold: 0.5
+  preferences: ""            # decision=llm 时，例如：只收 4K 电影，动画放入动漫目录
   save_to: 默认
 
 sources:
@@ -53,3 +69,5 @@ sources:
   - bot: "@example_tv_bot"
     approval_mode: auto
     save_to: 剧集
+    forward:
+      enabled: false         # 来源级覆盖，全局 target/template 继续继承

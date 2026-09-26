@@ -72,13 +72,28 @@ class TelegramUserbotSource:
 
     def __init__(self) -> None:
         self._client = None
+        self._authorized = False
         self._targets: list[str] = []
         self._api_id = os.getenv("REELAY_TG_API_ID")
         self._api_hash = os.getenv("REELAY_TG_API_HASH")
         self._session = os.getenv("REELAY_TG_SESSION", "data/userbot.session")
 
     def configure(self, targets: list[str]) -> None:
-        self._targets = targets
+        self._targets = [target.strip().lower() for target in targets]
+
+    def matches(self, event: Any) -> bool:
+        identities = {_peer_name(event).lower(), str(getattr(event, "sender_id", "")),
+                      str(getattr(event, "chat_id", ""))}
+        return bool(set(self._targets) & identities)
+
+    def health(self) -> dict:
+        connected = bool(self._client and self._client.is_connected())
+        return {"status": "connected" if connected and self._authorized else ("connecting" if connected else "disconnected")}
+
+    async def close(self) -> None:
+        self._authorized = False
+        if self._client:
+            await self._client.disconnect()
 
     async def listen(self, emit: EmitFn) -> None:
         if not (self._api_id and self._api_hash):
@@ -86,10 +101,19 @@ class TelegramUserbotSource:
 
         from telethon import TelegramClient, events  # 延迟导入
 
-        self._client = TelegramClient(self._session, int(self._api_id), self._api_hash)
+        self._client = TelegramClient(self._session, int(self._api_id), self._api_hash, catch_up=True)
+        ready = asyncio.Event()
 
-        @self._client.on(events.NewMessage(from_users=self._targets or None))
+        # 过滤在回调中读取当前目标列表，热更新无需重建会话；空列表不监听任何来源。
+        @self._client.on(events.NewMessage())
         async def _handler(event):  # noqa: ANN001
+            await ready.wait()
+            if not self._authorized:
+                return
+            if _peer_name(event) == "unknown" and hasattr(event, "get_chat"):
+                await event.get_chat()  # 少数短更新没有实体缓存时，补取来源标识。
+            if not self.matches(event):
+                return
             msg = event.message
             urls = _extract_urls(msg)
             await emit(RawMessage(
@@ -99,8 +123,19 @@ class TelegramUserbotSource:
                 urls=urls,
             ))
 
-        await self._client.start()
-        await self._client.run_until_disconnected()
+        try:
+            await self._client.start()
+            account = await self._client.get_me()
+            if not account or getattr(account, "bot", False):
+                raise RuntimeError(
+                    "REELAY_TG_SESSION 必须登录个人 Telegram 账号，不能使用控制 Bot 会话"
+                )
+            self._authorized = True
+            ready.set()
+            await self._client.run_until_disconnected()
+        finally:
+            ready.set()
+            await self.close()
 
 
 def _extract_urls(msg: Any) -> list[str]:

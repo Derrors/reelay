@@ -94,58 +94,92 @@ async def _run_dry() -> int:
     return 0 if ok else 1
 
 
+async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) -> None:
+    """监听来源、目标清单都跟随有效配置；切换来源先关闭旧会话。"""
+    while True:
+        name = pipeline.cfg["providers"]["source"]
+        source = pipeline.reg.get_provider("source", name)
+        if hasattr(source, "configure"):
+            source.configure([item["bot"] for item in pipeline.cfg["sources"]])
+        listener = asyncio.create_task(source.listen(emit))
+        status, error = "stopped", None
+        try:
+            while pipeline.cfg["providers"]["source"] == name:
+                if listener.done():
+                    await listener
+                    raise RuntimeError("消息源意外停止")
+                if hasattr(source, "configure"):
+                    source.configure([item["bot"] for item in pipeline.cfg["sources"]])
+                health = source.health() if hasattr(source, "health") else {"status": "unobserved"}
+                pipeline.store.heartbeat("source", provider=name, config_revision=pipeline.revision, **health)
+                await asyncio.sleep(poll_interval)
+        except Exception as exc:
+            status, error = "failed", type(exc).__name__
+            raise
+        finally:
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
+            try:
+                if hasattr(source, "close"):
+                    await source.close()
+            except Exception as exc:
+                status, error = "failed", type(exc).__name__
+                raise
+            finally:
+                pipeline.store.heartbeat("source", provider=name, status=status, error=error)
+
+
 async def _run_live() -> int:
     load_env()
     cfg = load_config()
     reg = discover()
+    reg.validate_config(cfg)
     log = logging.getLogger("reelay")
     log.info("已注册：%s", reg.summary())
-
     store = Store(os.getenv("REELAY_DB_PATH", "data/reelay.db"))
     pipeline = Pipeline(reg, store, cfg)
-    service = ManagementService(store, pipeline)
-
-    # 控制 bot（可观测与干预）；未配置则不启动，通知走控制台
+    service = ManagementService(store, pipeline, config_path=os.getenv("REELAY_CONFIG_PATH", "config.yaml"))
     from .control.bot import ControlBot
     bot = ControlBot(service)
-    await bot.start()
+    tasks = []
+    try:
+        await bot.start()
+        console = reg.providers.get("notify", {}).get("console")
+        if console and hasattr(console, "configure"):
+            console.configure(sender=bot.send if bot.enabled else None)
 
-    # 通知发送器 & 转发配置接线：控制 bot 启用则用它发，否则控制台打印
-    console = reg.providers.get("notify", {}).get("console")
-    if console and hasattr(console, "configure"):
-        console.configure(
-            sender=(bot.send if bot.enabled else None),
-            forward_cfg=cfg.get("forward", {}),
-        )
+        async def emit(raw: RawMessage) -> None:
+            await pipeline.accept(PipelineContext(raw=raw))
 
-    targets = [s["bot"] for s in cfg.get("sources", []) if s.get("bot")]
-    source = reg.get_provider("source", "telegram")
-    if hasattr(source, "configure"):
-        source.configure(targets)
+        worker = Worker(pipeline, store, concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")))
 
-    async def emit(raw: RawMessage) -> None:
-        await pipeline.accept(PipelineContext(raw=raw))
+        async def sweep_loop() -> None:
+            interval = max(1, int(os.getenv("REELAY_SWEEP_INTERVAL_SEC", "3600")))
+            while True:
+                await pipeline.sweep_approval_timeouts()
+                store.heartbeat("control_bot", **bot.health())
+                # 每秒记录连接观察，审批扫描仍按配置间隔进行。
+                for _ in range(interval):
+                    await asyncio.sleep(1)
+                    store.heartbeat("control_bot", **bot.health())
 
-    worker = Worker(pipeline, store, concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")))
-
-    async def sweep_loop() -> None:
-        interval = int(os.getenv("REELAY_SWEEP_INTERVAL_SEC", "3600"))
-        while True:
-            try:
-                n = await pipeline.sweep_approval_timeouts()
-                if n:
-                    log.info("审批超时清扫：处理 %d 条", n)
-            except Exception as exc:
-                log.warning("sweep 异常：%s", exc)
-            await asyncio.sleep(interval)
-
-    tasks = [source.listen(emit), worker.run(drain=False), sweep_loop()]
-    if bot.enabled:
-        tasks.append(bot.run_forever())
-
-    # 监听（生产者）、worker（消费者）、控制 bot、超时清扫 并发长驻
-    await asyncio.gather(*tasks)
-    return 0
+        tasks = [asyncio.create_task(coro) for coro in (
+            _source_loop(pipeline, emit), worker.run(), sweep_loop(),
+        )]
+        if bot.enabled:
+            tasks.append(asyncio.create_task(bot.run_forever()))
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            await task
+        raise RuntimeError("常驻服务意外停止")
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await bot.close()
+        finally:
+            store.close()
 
 
 def main() -> None:
@@ -153,7 +187,21 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="reelay")
     ap.add_argument("--dry-run", action="store_true", help="无依赖端到端冒烟")
     args = ap.parse_args()
-    code = asyncio.run(_run_dry() if args.dry_run else _run_live())
+    async def run_with_signals():
+        import signal
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        try:
+            return await (_run_dry() if args.dry_run else _run_live())
+        except asyncio.CancelledError:
+            return 0
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
+    try:
+        code = asyncio.run(run_with_signals())
+    except KeyboardInterrupt:
+        code = 0
     raise SystemExit(code)
 
 

@@ -5,7 +5,7 @@
 telethon>=1.36            # 用你自己的 TG 账号监听多个 bot（MTProto）
 
 # --- 115 网盘 ---
-p115client>=0.0.6         # 转存 receive / 改名 rename / 移动 renamefile / 建目录
+p115client==0.0.9.6.5.1   # 已核对 SDK：receive / rename / move / mkdir
 
 # --- AI 解析（OpenAI 兼容接口）---
 openai>=1.40             # 走标准兼容 API，可接任意厂商/本地模型

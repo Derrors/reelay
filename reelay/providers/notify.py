@@ -36,7 +36,7 @@ class ConsoleNotify:
         title = (p.title if p else None) or "(未识别标题)"
 
         if event == "identified":
-            fc = self._forward_cfg
+            fc = ctx.source_rule.get("forward", self._forward_cfg)
             if fc.get("enabled") and p:
                 rendered = _render(fc.get("template", ""), ctx)
                 if self._sender:
@@ -54,12 +54,26 @@ class ConsoleNotify:
                 log.info("[待确认] %s | 按钮=%s", text.replace("\n", " / "), buttons)
 
         elif event == "saved":
+            if ctx.source_rule.get("approval_mode") == "default_pass":
+                return
             files = (ctx.result or {}).get("saved_files")
             text = f"✅ 已转存：{title}\n目录：{ctx.save_dir_alias or '默认'}\n文件：{files or '已落地'}"
             if self._sender:
                 await self._sender(text=text)
             else:
                 log.info("[已转存] %s → %s（文件 %s）", title, ctx.save_dir_alias, files)
+
+        elif event in ("transfer_uncertain", "organize_failed", "failed"):
+            reason = {
+                "transfer_uncertain": "转存结果待核验，请在管理台核验转存",
+                "organize_failed": "转存已完成，整理失败，请在管理台修正后重新整理",
+                "failed": "任务执行失败，请在管理台检查任务轨迹与重试状态",
+            }[event]
+            text = f"⚠️ {title}\n{reason}"
+            if self._sender:
+                await self._sender(text=text)
+            else:
+                log.warning("[%s] %s", event, text.replace("\n", " / "))
 
 
 def _render(tpl: str, ctx: PipelineContext) -> str:

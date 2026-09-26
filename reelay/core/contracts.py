@@ -32,9 +32,10 @@ class TaskState(str, enum.Enum):
         received → parsed → ┬ pending_approval ─(你确认)→ queued
                             ├ queued (auto/default_pass 直接入队)
                             └ rejected / skipped
-        queued → saving → ┬ done
-                          ├ need_manual   (字段不全 / 匹配不到元数据)
-                          └ failed        (可重试 / 告警)
+        queued → saving → stored → organizing → done
+                   └ need_manual    └ need_manual
+                 (结果未知)          (整理失败)
+        准备或解析失败 → failed（按记录的阶段重试）
     """
 
     RECEIVED = "received"                    # 已落库，尚未解析
@@ -43,8 +44,10 @@ class TaskState(str, enum.Enum):
     QUEUED = "queued"                        # 待转存
     REJECTED = "rejected"                    # 判为广告 / 非影视
     SKIPPED = "skipped"                      # 你忽略 / 去重命中
-    SAVING = "saving"                        # 转存 + 整理进行中
-    NEED_MANUAL = "need_manual"              # 待人工整理（字段不全 / 元数据匹配失败）
+    SAVING = "saving"                        # 转存准备、发送与核验
+    STORED = "stored"                        # 转存回执已落库，尚未完成整理
+    ORGANIZING = "organizing"                # 整理计划已落库，执行或恢复整理
+    NEED_MANUAL = "need_manual"              # 转存结果待核验或整理需人工处理
     DONE = "done"                            # 已转存并读回验证
     FAILED = "failed"                        # 失败（可重试 / 告警）
 
@@ -73,6 +76,10 @@ class Decision(str, enum.Enum):
     SKIP = "skip"      # 忽略（含广告 / 去重命中）
 
 
+class TransferUncertain(RuntimeError):
+    """网盘写请求的结果不能确认；只允许核验，不能自动再次发送。"""
+
+
 # --------------------------------------------------------------------------- #
 # 贯穿全程的上下文
 # --------------------------------------------------------------------------- #
@@ -98,6 +105,7 @@ class ParsedResource:
     year: int | None = None
     season: int | None = None
     episodes: list[int] = field(default_factory=list)  # 本条覆盖的集数（追更判断用）
+    genres: list[str] = field(default_factory=list)
     resolution: str | None = None
     size: str | None = None
     share_code: str | None = None     # 115 分享码（资源级去重键）
@@ -175,8 +183,16 @@ class StorageProvider(Protocol):
     """网盘执行器：确定性代码，负责真正转存 + 读回验证。"""
     name: str
 
+    async def prepare(self, ctx: PipelineContext) -> dict[str, Any]:
+        """建立本任务独占的暂存目录并返回文件清单；不执行转存。"""
+        ...
+
     async def save(self, ctx: PipelineContext) -> dict[str, Any]:
-        """把 ctx 里的分享资源转存到 ctx.save_dir_cid，返回回执（含验证结果）。"""
+        """按照已持久化的 storage.manifest 执行一次转存并核验完整清单。"""
+        ...
+
+    async def reconcile(self, ctx: PipelineContext) -> dict[str, Any]:
+        """只读核验中断或结果未知的转存，绝不能再次发送转存请求。"""
         ...
 
 

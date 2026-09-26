@@ -43,7 +43,7 @@ class ControlBot:
 
         api_id = int(os.getenv("REELAY_TG_API_ID", "0"))
         api_hash = os.getenv("REELAY_TG_API_HASH", "")
-        self._client = TelegramClient("data/controlbot.session", api_id, api_hash)
+        self._client = TelegramClient(os.getenv("REELAY_CONTROL_BOT_SESSION", "data/controlbot.session"), api_id, api_hash)
 
         self._register_handlers(events)
         await self._client.start(bot_token=self._token)
@@ -131,3 +131,10 @@ class ControlBot:
         """保持控制 bot 长驻（在 gather 里与监听/worker 并发）。"""
         if self._client:
             await self._client.run_until_disconnected()
+
+    def health(self) -> dict:
+        return {"status": "connected" if self._client and self._client.is_connected() else "disconnected"}
+
+    async def close(self) -> None:
+        if self._client:
+            await self._client.disconnect()

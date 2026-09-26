@@ -16,7 +16,7 @@ log = logging.getLogger("reelay.registry")
 
 
 class Registry:
-    """进程内单例式注册表。"""
+    """每个应用实例独立的注册表，避免共享客户端与模拟模式。"""
 
     def __init__(self) -> None:
         # Provider 按「种类 -> {name: instance}」存，运行时按配置选用哪个
@@ -52,11 +52,38 @@ class Registry:
                 f"{list(self.providers.get(kind, {}))}"
             ) from exc
 
-    def hooks_for(self, stage: str) -> list[Any]:
-        return self.hooks.get(stage, [])
+    def hooks_for(self, stage: str, config: dict | None = None) -> list[Any]:
+        return self._enabled(self.hooks.get(stage, []), config)
 
-    def listeners_for(self, event: str) -> list[Any]:
-        return self.listeners.get(event, [])
+    def listeners_for(self, event: str, config: dict | None = None) -> list[Any]:
+        return self._enabled(self.listeners.get(event, []), config)
+
+    @staticmethod
+    def extension_name(instance: Any) -> str:
+        return getattr(instance, "name", instance.__class__.__name__)
+
+    def _enabled(self, instances: list, config: dict | None) -> list:
+        toggles = (config or {}).get("plugins", {})
+        return [obj for obj in instances if toggles.get(self.extension_name(obj), True)]
+
+    def validate_config(self, cfg: dict) -> None:
+        try:
+            self.get_provider("source", cfg["providers"]["source"])
+            for name in cfg["providers"]["notify"]:
+                self.get_provider("notify", name)
+            for rule in [cfg["defaults"], *cfg["sources"]]:
+                for kind in ("parser", "decision", "storage"):
+                    self.get_provider(kind, rule.get(kind, cfg["defaults"][kind]))
+        except KeyError as exc:
+            raise ValueError(str(exc)) from exc
+        extensions = {self.extension_name(obj) for groups in (self.hooks, self.listeners)
+                      for items in groups.values() for obj in items}
+        if set(cfg["plugins"]) - extensions:
+            raise ValueError("plugins 包含未注册的扩展名称")
+        if "organizer" in extensions and cfg["plugins"].get("organizer", True):
+            if any(rule.get("storage", cfg["defaults"]["storage"]) != "p115"
+                   for rule in [cfg["defaults"], *cfg["sources"]]):
+                raise ValueError("organizer 仅支持 p115；其他存储需关闭它并注册对应的整理扩展")
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -66,11 +93,8 @@ class Registry:
         }
 
 
-# 全局注册表 + 装饰器 ----------------------------------------------------- #
-REGISTRY = Registry()
-
-# 待实例化的声明（先记类，import 完成后统一实例化）
-_PENDING: list[tuple[str, dict[str, Any], type]] = []
+# 装饰器只记录类；客户端在 discover 时按当时的运行环境实例化。
+_DECLARATIONS: list[tuple[str, dict[str, Any], type]] = []
 
 
 def register(kind: str, **kw: Any) -> Callable[[type], type]:
@@ -83,26 +107,25 @@ def register(kind: str, **kw: Any) -> Callable[[type], type]:
     """
 
     def deco(cls: type) -> type:
-        _PENDING.append((kind, kw, cls))
+        _DECLARATIONS.append((kind, kw, cls))
         return cls
 
     return deco
 
 
-def _instantiate_pending() -> None:
-    for kind, kw, cls in _PENDING:
+def _instantiate(registry: Registry) -> None:
+    for kind, kw, cls in _DECLARATIONS:
         obj = cls()
         # 允许装饰器参数覆盖/补齐类属性
         for k, v in kw.items():
             if k not in ("ptype",):
                 setattr(obj, k, v)
         if kind == "provider":
-            REGISTRY.add_provider(kw["ptype"], obj)
+            registry.add_provider(kw["ptype"], obj)
         elif kind == "hook":
-            REGISTRY.add_hook(obj)
+            registry.add_hook(obj)
         elif kind == "event":
-            REGISTRY.add_listener(obj)
-    _PENDING.clear()
+            registry.add_listener(obj)
 
 
 def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins")) -> Registry:
@@ -116,5 +139,6 @@ def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins"))
             if mod.name.startswith("_"):
                 continue
             importlib.import_module(f"{pkg_name}.{mod.name}")
-    _instantiate_pending()
-    return REGISTRY
+    registry = Registry()
+    _instantiate(registry)
+    return registry

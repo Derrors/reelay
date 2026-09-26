@@ -25,7 +25,9 @@ def _field_value(parsed, field: str):
         return None
     if field == "genre":
         # genre 可能在 raw_fields 里；容错取
-        return parsed.raw_fields.get("genre") or parsed.raw_fields.get("genres") or ""
+        return parsed.genres or parsed.raw_fields.get("genre") or parsed.raw_fields.get("genres") or ""
+    if field == "type":
+        field = "media_type"
     return getattr(parsed, field, None)
 
 
@@ -55,6 +57,7 @@ def _match_condition(cond: str, parsed) -> bool:
 
 @register(kind="hook", stage="before_save", order=10)
 class DirRouter:
+    name = "dir_router"
     stage = "before_save"
     order = 10
 
