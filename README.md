@@ -51,6 +51,23 @@ cp config.example.yaml config.yaml
 python3 -m reelay.main
 ```
 
+### Web 管理控制台
+
+```bash
+# 后端管理 API（默认仅监听 127.0.0.1:28080，不启动任务 Worker）
+pip install -e ".[web]"
+python3 -m reelay.web
+
+# 前端开发服务（另开终端）
+cd web
+npm install
+npm run dev -- --port 28641
+```
+
+打开 `http://localhost:28641`。Web 与 Telegram 控制 Bot 共用同一应用服务层和 SQLite 任务状态；控制台提供运行总览、任务审批/重试/重新解析、识别字段纠错、配置维护和整理计划预览。配置保存后，运行中的监听服务需重启以重新加载来源列表、转发发送器及 Provider 配置。
+
+> Web 默认不启动第二个 Worker，避免与 `python3 -m reelay.main` 同时运行时重复消费。仅本机访问不含内置登录；如需暴露到局域网或公网，请先增加访问控制。
+
 ## 目录结构
 
 ```
@@ -76,9 +93,10 @@ reelay/
 - **通知/转发**：`ConsoleNotify` 推确认卡片（callback 只带 task_id）与结果通知；开启 `forward` 则按模板转发到目标。
 - **控制 bot**：`/status`、`/failed`、`/pending`、`/retry <id>` 与审批按钮回调（仅服务 `REELAY_OWNER_ID`）。
 - **稳定性**：SQLite(WAL) 持久队列、三层去重（支持追更增量）、重启恢复、退避重试、审批超时清扫、Semaphore 限流。
+- **Web 管理台**：React 控制台 + FastAPI API，支持状态总览、任务筛选与详情、人工审批/忽略、失败重试、重新解析、识别字段修正、仅重新整理、配置管理和整理计划预览。
 
 ## 状态
 
-主流程各阶段功能已实现：`python3 -m reelay.main --dry-run` 端到端 PASS，19 个单元测试全过。真实的 TG 监听 / 115 转存整理 / LLM 解析 / TMDB / 控制 bot 均以「未装依赖或未配凭证则降级」方式接入——装上 `.[full]` 依赖、填好 `.env` 与 `config.yaml` 即从占位切换为真实执行。
+主流程、可靠性修复和 Web 管理台已完成本地验证：`python3 -m reelay.main --dry-run` 端到端 PASS；36 项后端/API 单元测试通过；前端类型检查与 ESLint 通过，并已完成浏览器首页渲染检查。真实的 TG 监听 / 115 转存整理 / LLM 解析 / TMDB / 控制 bot 均以「未装依赖或未配凭证则降级」方式接入——装上 `.[all]` 依赖、填好 `.env` 与 `config.yaml` 后可进入真实联调。真实账号级 E2E 仍需有效凭证。
 
 > 本项目仅作技术实现探讨。userbot 与网盘操作请遵守相关平台规则及当地法律法规；凭证妥善保管。
