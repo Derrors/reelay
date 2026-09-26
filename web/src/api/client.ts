@@ -1,6 +1,7 @@
 import type {
   IConfigResponse,
   IDashboard,
+  IDelivery,
   IOrganizePreviewItem,
   IParsedResource,
   ITaskDetail,
@@ -42,6 +43,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   dashboard: () => request<IDashboard>('dashboard'),
+  deliveries: () => request<{ items: IDelivery[] }>('deliveries?status=failed&limit=500'),
+  retryDelivery: (id: number) => request<{ ok: boolean }>(`deliveries/${id}/retry`, { method: 'POST' }),
   tasks: (filters: { state?: TaskState | ''; source?: string; query?: string } = {}) => {
     const params = new URLSearchParams();
     if (filters.state) params.set('state', filters.state);
@@ -51,7 +54,7 @@ export const api = {
     return request<{ items: ITaskSummary[] }>(`tasks${suffix}`);
   },
   task: (taskId: string) => request<ITaskDetail>(`tasks/${taskId}`),
-  action: (taskId: string, action: 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize', body?: unknown) =>
+  action: (taskId: string, action: 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile', body?: unknown) =>
     request<{ ok: boolean }>(`tasks/${taskId}/${action}`, {
       method: 'POST',
       body: JSON.stringify(body ?? {}),

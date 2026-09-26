@@ -7,6 +7,8 @@ export type TaskState =
   | 'rejected'
   | 'skipped'
   | 'saving'
+  | 'stored'
+  | 'organizing'
   | 'need_manual'
   | 'done'
   | 'failed';
@@ -14,6 +16,28 @@ export type TaskState =
 export interface IConnection {
   configured: boolean;
   label: string;
+  status: string;
+  observed_at?: number;
+}
+
+export interface IRuntimeHealth {
+  status: string;
+  updated_at: number;
+  stale: boolean;
+  config_revision?: string;
+  config_error?: string | null;
+  inflight?: number;
+}
+
+export interface IDelivery {
+  id: number;
+  task_id: string;
+  kind: 'event' | 'notify';
+  event: string;
+  target: string;
+  status: string;
+  attempts: number;
+  error: string | null;
 }
 
 export interface IDashboard {
@@ -23,8 +47,11 @@ export interface IDashboard {
   failed: number;
   done: number;
   simulation: boolean;
-  mode: 'simulation' | 'live' | 'not_configured';
+  mode: 'simulation' | 'live' | 'not_configured' | 'not_running';
   connections: Record<string, IConnection>;
+  runtime: Record<string, IRuntimeHealth>;
+  deliveries: Record<string, number>;
+  config_revision: string;
 }
 
 export interface IParsedResource {
@@ -36,6 +63,7 @@ export interface IParsedResource {
   year?: number | null;
   season?: number | null;
   episodes?: number[];
+  genres?: string[];
   resolution?: string | null;
   size?: string | null;
   share_code?: string | null;
@@ -85,6 +113,7 @@ export interface IConfigResponse {
   config: Record<string, unknown>;
   text: string;
   connections: Record<string, IConnection>;
+  config_error: string | null;
 }
 
 export interface IOrganizePreviewItem {

@@ -76,7 +76,7 @@ export default function TasksPage() {
     }
   };
 
-  const runAction = async (action: 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize') => {
+  const runAction = async (action: 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile') => {
     if (!selected) return;
     setBusy(true);
     try {
@@ -87,7 +87,7 @@ export default function TasksPage() {
           ? { save_dir_alias: targetDir || null }
           : undefined,
       );
-      toast.success({ approve: '已批准任务', reject: '已忽略任务', retry: '已重新排队', reparse: '已回到解析队列', reorganize: '已回到整理队列' }[action]);
+      toast.success({ approve: '已批准任务', reject: '已忽略任务', retry: '已重新排队', reparse: '已回到解析队列', reorganize: '已回到整理队列', reconcile: '已排队核验转存' }[action]);
       setSelected(null);
       await load();
     } catch (err) {
@@ -105,7 +105,7 @@ export default function TasksPage() {
         title: draft.title,
         media_type: draft.media_type,
         year: draft.year ? Number(draft.year) : null,
-        season: draft.season ? Number(draft.season) : null,
+        season: draft.season == null ? null : Number(draft.season),
         episodes: parseEpisodes(episodesText),
         resolution: draft.resolution,
         reason: draft.reason,
@@ -124,13 +124,18 @@ export default function TasksPage() {
 
   const availableActions = useMemo(() => {
     const current = selected?.state;
+    const storage = selected?.context.meta.storage;
+    const hasLanded = Array.isArray(storage?.landed) && storage.landed.length > 0;
+    const idle = !!current && !['received', 'parsed', 'queued', 'saving', 'stored', 'organizing', 'done'].includes(current);
+    const transferUnknown = storage?.phase === 'legacy_uncertain' || (!!storage?.manifest && storage.phase !== 'stored');
     return {
       approve: current === 'pending_approval',
       reject: current === 'pending_approval',
       retry: current === 'failed',
-      reparse: !!current && !['saving', 'done'].includes(current),
-      reorganize: current === 'need_manual',
-      editable: !!current && !['saving', 'done'].includes(current),
+      reparse: idle && !transferUnknown && !storage?.manifest && !hasLanded,
+      reorganize: current === 'need_manual' && hasLanded,
+      reconcile: current === 'need_manual' && storage?.phase === 'receiving' && !!storage.manifest,
+      editable: idle && !transferUnknown,
     };
   }, [selected]);
 
@@ -203,7 +208,7 @@ export default function TasksPage() {
                     <label className="text-xs text-muted-foreground">片名<Input disabled={!availableActions.editable} value={String(draft.title ?? '')} onChange={(event) => setDraft({ ...draft, title: event.target.value })} className="mt-1" /></label>
                     <label className="text-xs text-muted-foreground">类型<NativeSelect disabled={!availableActions.editable} value={String(draft.media_type ?? '')} onChange={(event) => setDraft({ ...draft, media_type: event.target.value })} className="mt-1 w-full"><NativeSelectOption value="">未识别</NativeSelectOption><NativeSelectOption value="movie">电影</NativeSelectOption><NativeSelectOption value="tv">剧集</NativeSelectOption></NativeSelect></label>
                     <label className="text-xs text-muted-foreground">年份<Input disabled={!availableActions.editable} type="number" value={String(draft.year ?? '')} onChange={(event) => setDraft({ ...draft, year: Number(event.target.value) || null })} className="mt-1" /></label>
-                    <label className="text-xs text-muted-foreground">季<Input disabled={!availableActions.editable} type="number" value={String(draft.season ?? '')} onChange={(event) => setDraft({ ...draft, season: Number(event.target.value) || null })} className="mt-1" /></label>
+                    <label className="text-xs text-muted-foreground">季<Input disabled={!availableActions.editable} type="number" value={String(draft.season ?? '')} onChange={(event) => setDraft({ ...draft, season: event.target.value === '' ? null : Number(event.target.value) })} className="mt-1" /></label>
                     <label className="col-span-2 text-xs text-muted-foreground">集号（逗号分隔）<Input disabled={!availableActions.editable} value={episodesText} onChange={(event) => setEpisodesText(event.target.value)} className="mt-1" /></label>
                     <label className="text-xs text-muted-foreground">分辨率<Input disabled={!availableActions.editable} value={String(draft.resolution ?? '')} onChange={(event) => setDraft({ ...draft, resolution: event.target.value })} className="mt-1" /></label>
                     <label className="text-xs text-muted-foreground">保存目录<Input disabled={!availableActions.editable} value={targetDir} onChange={(event) => setTargetDir(event.target.value)} className="mt-1" /></label>
@@ -225,6 +230,7 @@ export default function TasksPage() {
                   {availableActions.reparse ? <Button variant="outline" disabled={busy} onClick={() => void runAction('reparse')}><RotateCcw className="size-4" />重新解析</Button> : null}
                   {availableActions.retry ? <Button variant="outline" disabled={busy} onClick={() => void runAction('retry')}><RefreshCw className="size-4" />重试</Button> : null}
                   {availableActions.reorganize ? <Button variant="outline" disabled={busy} onClick={() => void runAction('reorganize')}>重新整理</Button> : null}
+                  {availableActions.reconcile ? <Button variant="outline" disabled={busy} onClick={() => void runAction('reconcile')}>核验转存</Button> : null}
                 </div>
                 <div className="flex gap-2">
                   {availableActions.reject ? <Button variant="destructive" disabled={busy} onClick={() => void runAction('reject')}><X className="size-4" />忽略</Button> : null}

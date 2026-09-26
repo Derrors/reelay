@@ -11,9 +11,10 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import type { IConfigResponse } from '@/lib/types';
+import { connectionLabels } from '@/lib/status';
 
 type ConfigObject = Record<string, unknown>;
-type SourceConfig = { bot: string; approval_mode: string; save_to: string; parser?: string };
+type SourceConfig = { bot: string; approval_mode?: string; save_to?: string; parser?: string };
 
 function asObject(value: unknown): ConfigObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as ConfigObject : {};
@@ -53,7 +54,7 @@ export default function ConfigPage() {
     setSaving(true);
     try {
       await api.saveConfig(config);
-      toast.success('配置已保存；运行服务重启后生效');
+      toast.success('配置已保存；后台将重载，新任务使用新策略');
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存配置失败');
@@ -68,7 +69,8 @@ export default function ConfigPage() {
       const result = await api.saveConfigText(rawText);
       setConfig(result.config);
       setRawText(result.text);
-      toast.success('高级配置已保存；运行服务重启后生效');
+      toast.success('高级配置已保存；后台将重载，新任务使用新策略');
+      await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存配置失败');
     } finally {
@@ -96,15 +98,20 @@ export default function ConfigPage() {
     <div className="mx-auto w-full max-w-7xl p-5 sm:p-8">
       <PageHeader eyebrow="规则配置" title="来源、审批、转发与目录" description="常用字段使用表单维护；高级编辑保留完整 YAML/JSON，因此未知插件字段不会被表单无声删除。敏感凭证只从环境变量读取，不在页面回显。" />
 
+      {data?.config_error ? <p className="mt-5 border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{data.config_error}。请在高级配置中修正并保存。</p> : null}
+
       <Tabs defaultValue="common" className="mt-6 gap-5">
         <TabsList><TabsTrigger value="common">常用设置</TabsTrigger><TabsTrigger value="advanced">高级配置</TabsTrigger><TabsTrigger value="connections">连接状态</TabsTrigger></TabsList>
 
         <TabsContent value="common" className="space-y-5">
           <div className="grid gap-5 xl:grid-cols-2">
             <Card className="rounded-md shadow-none"><CardHeader><CardTitle className="text-base">默认策略</CardTitle><CardDescription>单个来源未覆盖时使用。</CardDescription></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2">
-              <label className="text-xs text-muted-foreground">审批模式<NativeSelect value={String(defaults.approval_mode ?? 'manual')} onChange={(event) => updateSection('defaults', 'approval_mode', event.target.value)} className="mt-1 w-full"><NativeSelectOption value="manual">人工确认</NativeSelectOption><NativeSelectOption value="auto">自动审批</NativeSelectOption><NativeSelectOption value="default_pass">默认通过</NativeSelectOption></NativeSelect></label>
+              <label className="text-xs text-muted-foreground">审批模式<NativeSelect value={String(defaults.approval_mode ?? 'manual')} onChange={(event) => updateSection('defaults', 'approval_mode', event.target.value)} className="mt-1 w-full"><NativeSelectOption value="manual">人工确认</NativeSelectOption><NativeSelectOption value="auto">自动审批并通知</NativeSelectOption><NativeSelectOption value="default_pass">静默通过</NativeSelectOption></NativeSelect></label>
               <label className="text-xs text-muted-foreground">默认目录<Input value={String(defaults.save_to ?? '默认')} onChange={(event) => updateSection('defaults', 'save_to', event.target.value)} className="mt-1" /></label>
               <label className="text-xs text-muted-foreground">解析器<Input value={String(defaults.parser ?? 'llm')} onChange={(event) => updateSection('defaults', 'parser', event.target.value)} className="mt-1" /></label>
+              <label className="text-xs text-muted-foreground">收藏决策<NativeSelect value={String(defaults.decision ?? 'default')} onChange={(event) => updateSection('defaults', 'decision', event.target.value)} className="mt-1 w-full"><NativeSelectOption value="default">规则与审批模式</NativeSelectOption><NativeSelectOption value="llm">自然语言偏好</NativeSelectOption></NativeSelect></label>
+              <label className="text-xs text-muted-foreground sm:col-span-2">收藏偏好<Textarea value={String(defaults.preferences ?? '')} onChange={(event) => updateSection('defaults', 'preferences', event.target.value)} placeholder="例如：只收 4K 电影，动画存入动漫目录" className="mt-1 min-h-20" /></label>
+              <p className="text-xs text-muted-foreground sm:col-span-2">自然语言偏好需选择对应决策方式。AI 异常或低置信度会转人工，人工审批模式仍需确认。</p>
             </CardContent></Card>
 
             <Card className="rounded-md shadow-none"><CardHeader><CardTitle className="text-base">识别后转发</CardTitle><CardDescription>识别为影视资源后按模板转发；执行阶段由通知 Provider 决定。</CardDescription></CardHeader><CardContent className="space-y-4">
@@ -114,13 +121,13 @@ export default function ConfigPage() {
             </CardContent></Card>
           </div>
 
-          <Card className="rounded-md shadow-none"><CardHeader className="flex-row items-start justify-between"><div><CardTitle className="text-base">监听来源</CardTitle><CardDescription>不同 Bot 可覆盖审批模式、目标目录和解析器。</CardDescription></div><Button size="sm" variant="outline" onClick={() => setConfig((current) => ({ ...current, sources: [...(Array.isArray(current.sources) ? current.sources : []), { bot: '', approval_mode: 'manual', save_to: '默认', parser: 'llm' }] }))}><Plus className="size-4" />添加来源</Button></CardHeader><CardContent className="space-y-3">
+          <Card className="rounded-md shadow-none"><CardHeader className="flex-row items-start justify-between"><div><CardTitle className="text-base">监听来源</CardTitle><CardDescription>不同 Bot 可覆盖审批模式、目标目录和解析器。</CardDescription></div><Button size="sm" variant="outline" onClick={() => setConfig((current) => ({ ...current, sources: [...(Array.isArray(current.sources) ? current.sources : []), { bot: '' }] }))}><Plus className="size-4" />添加来源</Button></CardHeader><CardContent className="space-y-3">
             {sources.length === 0 ? <div className="border border-dashed p-6 text-center text-sm text-muted-foreground">尚未配置监听来源</div> : sources.map((source, index) => (
               <div key={`${source.bot}-${index}`} className="grid gap-3 border-b pb-4 last:border-b-0 sm:grid-cols-[1.4fr_1fr_1fr_1fr_auto]">
                 <Input aria-label="Bot 用户名" placeholder="@resource_bot" value={source.bot ?? ''} onChange={(event) => updateSource(index, { bot: event.target.value })} />
-                <NativeSelect aria-label="审批模式" value={source.approval_mode ?? 'manual'} onChange={(event) => updateSource(index, { approval_mode: event.target.value })} className="w-full"><NativeSelectOption value="manual">人工确认</NativeSelectOption><NativeSelectOption value="auto">自动审批</NativeSelectOption><NativeSelectOption value="default_pass">默认通过</NativeSelectOption></NativeSelect>
-                <Input aria-label="目标目录" placeholder="目录别名" value={source.save_to ?? ''} onChange={(event) => updateSource(index, { save_to: event.target.value })} />
-                <Input aria-label="解析器" placeholder="llm" value={source.parser ?? ''} onChange={(event) => updateSource(index, { parser: event.target.value })} />
+                <NativeSelect aria-label="审批模式" value={source.approval_mode ?? String(defaults.approval_mode ?? 'manual')} onChange={(event) => updateSource(index, { approval_mode: event.target.value })} className="w-full"><NativeSelectOption value="manual">人工确认</NativeSelectOption><NativeSelectOption value="auto">自动审批并通知</NativeSelectOption><NativeSelectOption value="default_pass">静默通过</NativeSelectOption></NativeSelect>
+                <Input aria-label="目标目录" placeholder="目录别名" value={source.save_to ?? String(defaults.save_to ?? '默认')} onChange={(event) => updateSource(index, { save_to: event.target.value })} />
+                <Input aria-label="解析器" placeholder="llm" value={source.parser ?? String(defaults.parser ?? 'llm')} onChange={(event) => updateSource(index, { parser: event.target.value })} />
                 <Button aria-label="删除来源" size="icon" variant="ghost" onClick={() => setConfig((current) => ({ ...current, sources: (Array.isArray(current.sources) ? current.sources : []).filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 className="size-4" /></Button>
               </div>
             ))}
@@ -139,7 +146,7 @@ export default function ConfigPage() {
 
         <TabsContent value="connections">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {data ? Object.entries(data.connections).map(([key, connection]) => <Card key={key} className="rounded-md shadow-none"><CardContent className="flex items-center justify-between p-5"><div><div className="text-sm font-medium">{connection.label}</div><div className="mt-1 text-xs text-muted-foreground">凭证不会在页面回显</div></div><span className={`flex items-center gap-1.5 text-xs ${connection.configured ? 'text-success' : 'text-muted-foreground'}`}>{connection.configured ? <CheckCircle2 className="size-4" /> : <CircleDashed className="size-4" />}{connection.configured ? '已配置' : '未配置'}</span></CardContent></Card>) : <div className="text-sm text-muted-foreground">正在读取连接配置…</div>}
+            {data ? Object.entries(data.connections).map(([key, connection]) => <Card key={key} className="rounded-md shadow-none"><CardContent className="flex items-center justify-between p-5"><div><div className="text-sm font-medium">{connection.label}</div><div className="mt-1 text-xs text-muted-foreground">凭证不会在页面回显</div></div><span className={`flex items-center gap-1.5 text-xs ${connection.status === 'connected' ? 'text-success' : 'text-muted-foreground'}`}>{connection.status === 'connected' ? <CheckCircle2 className="size-4" /> : <CircleDashed className="size-4" />}{connectionLabels[connection.status] ?? '待验证'}</span></CardContent></Card>) : <div className="text-sm text-muted-foreground">正在读取连接配置…</div>}
           </div>
         </TabsContent>
       </Tabs>

@@ -67,11 +67,13 @@ def create_app(
     db_path: str | None = None,
     config_path: str | None = None,
     start_worker: bool = False,
+    frontend_dir: str | Path | None = None,
 ) -> FastAPI:
     load_env(str(PROJECT_ROOT / ".env"))
-    config_file = config_path or str(PROJECT_ROOT / "config.yaml")
+    config_file = config_path or os.getenv("REELAY_CONFIG_PATH", str(PROJECT_ROOT / "config.yaml"))
     cfg = load_config(config_file)
     registry = discover()
+    registry.validate_config(cfg)
     store = Store(db_path or os.getenv("REELAY_DB_PATH", str(PROJECT_ROOT / "data/reelay.db")))
     pipeline = Pipeline(registry, store, cfg)
     service = ManagementService(store, pipeline, config_path=config_file)
@@ -97,6 +99,10 @@ def create_app(
             worker.stop()
             if worker_task:
                 worker_task.cancel()
+                from contextlib import suppress
+                import asyncio
+                with suppress(asyncio.CancelledError):
+                    await worker_task
             store.close()
 
     app = FastAPI(title="Reelay Management API", version="0.2.0", lifespan=lifespan)
@@ -109,7 +115,8 @@ def create_app(
 
     @app.get("/api/health")
     async def health():
-        return {"ok": True, "service": "reelay"}
+        return {"ok": True, "service": "reelay", "runtime": store.health_status(),
+                "deliveries": store.delivery_counts()}
 
     @app.get("/api/dashboard")
     async def dashboard():
@@ -126,6 +133,19 @@ def create_app(
             return {"items": service.list_tasks(state=state, source=source, query=query, limit=limit)}
         except Exception as exc:
             raise _error(exc)
+
+    @app.get("/api/deliveries")
+    async def deliveries(status: str = "failed", limit: int = Query(default=100, ge=1, le=500)):
+        try:
+            return {"items": store.list_deliveries(status=status, limit=limit)}
+        except ValueError as exc:
+            raise _error(exc)
+
+    @app.post("/api/deliveries/{delivery_id}/retry")
+    async def retry_delivery(delivery_id: int):
+        if not store.retry_delivery(delivery_id):
+            raise HTTPException(status_code=409, detail="只有投递失败项可以重试")
+        return {"ok": True}
 
     @app.get("/api/tasks/{task_id}")
     async def task_detail(task_id: str):
@@ -177,6 +197,14 @@ def create_app(
         except Exception as exc:
             raise _error(exc)
 
+    @app.post("/api/tasks/{task_id}/reconcile")
+    async def reconcile(task_id: str):
+        try:
+            await service.reconcile_transfer(task_id)
+            return {"ok": True}
+        except Exception as exc:
+            raise _error(exc)
+
     @app.patch("/api/tasks/{task_id}/parsed")
     async def patch_parsed(task_id: str, payload: ParsePatchPayload):
         try:
@@ -197,6 +225,7 @@ def create_app(
             "config": service.get_config(),
             "text": service.get_config_text(),
             "connections": service.connection_status(),
+            "config_error": pipeline.config_error,
         }
 
     @app.put("/api/config")
@@ -214,7 +243,7 @@ def create_app(
         except Exception as exc:
             raise _error(exc)
 
-    frontend = PROJECT_ROOT / "web" / "dist" / "output"
+    frontend = Path(frontend_dir or PROJECT_ROOT / "web" / "dist" / "output").resolve()
     frontend_assets = PROJECT_ROOT / "web" / "dist" / "output_resource" / "assets"
     if frontend.exists():
         if frontend_assets.exists():
@@ -222,10 +251,15 @@ def create_app(
 
         @app.get("/{path:path}")
         async def spa(path: str):
-            candidate = frontend / path
+            candidate = (frontend / path).resolve()
+            if not candidate.is_relative_to(frontend):
+                raise HTTPException(status_code=404, detail="文件不存在")
             if path and candidate.is_file():
                 return FileResponse(candidate)
-            return FileResponse(frontend / "index.html")
+            index = (frontend / "index.html").resolve()
+            if not index.is_relative_to(frontend) or not index.is_file():
+                raise HTTPException(status_code=404, detail="文件不存在")
+            return FileResponse(index)
 
     return app
 

@@ -7,17 +7,43 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import type { IDashboard } from '@/lib/types';
+import { connectionLabels } from '@/lib/status';
 
 export default function DashboardPage() {
   const [dashboard, setDashboard] = useState<IDashboard | null>(null);
   const [error, setError] = useState('');
+  const [retryingDeliveries, setRetryingDeliveries] = useState(false);
+
+  const retryDeliveries = async () => {
+    setRetryingDeliveries(true);
+    try {
+      const { items } = await api.deliveries();
+      let accepted = 0;
+      for (const item of items) {
+        try {
+          await api.retryDelivery(item.id);
+          accepted += 1;
+        } catch {
+          // 已被其他管理端重试的项目不会重复入队。
+        }
+      }
+      toast.info(`${accepted} 条投递已重新入队${accepted < items.length ? '，其余项目未入队，请刷新检查' : ''}`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '投递重试失败');
+    } finally {
+      setRetryingDeliveries(false);
+    }
+  };
 
   const load = async () => {
     setError('');
     try {
       setDashboard(await api.dashboard());
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : '读取运行状态失败');
+      return false;
     }
   };
 
@@ -52,8 +78,8 @@ export default function DashboardPage() {
       <PageHeader
         eyebrow="运行总览"
         title="任务流水线正在发生什么"
-        description="这里展示 SQLite 中的权威任务状态和连接配置。已配置不等于已连通；连接测试会在后续接入真实凭证后呈现真实结果。"
-        action={<Button variant="outline" onClick={() => { void load(); toast.success('状态已刷新'); }}><RefreshCw className="size-4" />刷新</Button>}
+        description="查看任务进展、监听连接、后台处理和消息投递状态。连接状态来自运行时观察，未验证的凭证会单独标记。"
+        action={<Button variant="outline" onClick={() => { void load().then((ok) => { if (ok) toast.success('状态已刷新'); }); }}><RefreshCw className="size-4" />刷新</Button>}
       />
 
       {error ? (
@@ -81,6 +107,29 @@ export default function DashboardPage() {
               </Card>
             ))}
           </div>
+
+          <Card className="mt-6 rounded-md shadow-none">
+            <CardHeader><CardTitle className="text-base">后台运行与投递</CardTitle></CardHeader>
+            <CardContent className="grid gap-4 text-sm sm:grid-cols-3">
+              <div>
+                <p className="text-muted-foreground">后台处理</p>
+                <p className="mt-1">{dashboard.runtime.worker?.stale ? '心跳已过期' : dashboard.runtime.worker?.status === 'running' ? '运行中' : '未运行'}</p>
+                {dashboard.runtime.worker?.updated_at ? <p className="mt-1 text-xs text-muted-foreground">上次心跳 {new Date(dashboard.runtime.worker.updated_at * 1000).toLocaleString()}</p> : null}
+              </div>
+              <div>
+                <p className="text-muted-foreground">配置版本</p>
+                <p className="mt-1 font-mono text-xs">{dashboard.config_revision}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{dashboard.runtime.worker?.config_revision === dashboard.config_revision ? '后台已采用此版本' : '等待后台采用此版本'}</p>
+                {dashboard.runtime.worker?.config_error ? <p className="mt-1 text-xs text-destructive">{dashboard.runtime.worker.config_error}</p> : null}
+              </div>
+              <div>
+                <p className="text-muted-foreground">通知与事件投递</p>
+                <p className="mt-1">待投递 {dashboard.deliveries.pending ?? 0} · 投递中 {dashboard.deliveries.delivering ?? 0}</p>
+                <p className={`mt-1 text-xs ${(dashboard.deliveries.failed ?? 0) > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>失败 {dashboard.deliveries.failed ?? 0} · 已处理 {dashboard.deliveries.done ?? 0} · 已忽略 {dashboard.deliveries.skipped ?? 0}</p>
+                {(dashboard.deliveries.failed ?? 0) > 0 ? <Button className="mt-2" size="sm" variant="outline" disabled={retryingDeliveries} onClick={() => { void retryDeliveries(); }}>重试失败投递</Button> : null}
+              </div>
+            </CardContent>
+          </Card>
 
           <div className="mt-6 grid gap-6 xl:grid-cols-[1.2fr_1fr]">
             <Card className="rounded-md shadow-none">
@@ -110,17 +159,17 @@ export default function DashboardPage() {
             <Card className="rounded-md shadow-none">
               <CardHeader>
                 <CardTitle className="flex items-center justify-between text-base">
-                  连接配置
-                  <span className="text-xs font-normal text-muted-foreground">{{ simulation: '模拟模式', live: '真实模式', not_configured: '待配置' }[dashboard.mode]}</span>
+                  连接状态
+                  <span className="text-xs font-normal text-muted-foreground">{{ simulation: '模拟模式', live: '运行中', not_configured: '待配置', not_running: '待启动' }[dashboard.mode]}</span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 {Object.entries(dashboard.connections).map(([key, conn]) => (
                   <div key={key} className="flex items-center justify-between border-b pb-3 last:border-b-0 last:pb-0">
                     <span className="text-sm">{conn.label}</span>
-                    <span className={`flex items-center gap-1.5 text-xs ${conn.configured ? 'text-success' : 'text-muted-foreground'}`}>
-                      {conn.configured ? <CheckCircle2 className="size-4" /> : <CircleDashed className="size-4" />}
-                      {conn.configured ? '已配置' : '未配置'}
+                    <span className={`flex items-center gap-1.5 text-xs ${conn.status === 'connected' ? 'text-success' : 'text-muted-foreground'}`}>
+                      {conn.status === 'connected' ? <CheckCircle2 className="size-4" /> : <CircleDashed className="size-4" />}
+                      {connectionLabels[conn.status] ?? '待验证'}
                     </span>
                   </div>
                 ))}
