@@ -114,6 +114,12 @@ def create_app(
         allow_headers=["Content-Type"],
     )
 
+    # 额外 API（鉴权/日志/115浏览/源测试/统计/高级检索）必须在所有业务路由
+    # （含 /api/tasks/{task_id} 这类带路径参数的）之前注册，否则
+    # /api/tasks/advanced 会被当成 task_id="advanced" 命中详情接口。
+    register_extras(app, project_root=PROJECT_ROOT, store=store,
+                    service=service, registry=registry)
+
     @app.get("/api/health")
     async def health():
         return {"ok": True, "service": "reelay", "runtime": store.health_status(),
@@ -243,11 +249,6 @@ def create_app(
             return {"config": config, "text": service.get_config_text()}
         except Exception as exc:
             raise _error(exc)
-
-    # 额外 API（鉴权/日志/115浏览/源测试/统计）必须先于 SPA catch-all 注册，
-    # 否则会被 /{path:path} 兜底吞掉。
-    register_extras(app, project_root=PROJECT_ROOT, store=store,
-                    service=service, registry=registry)
 
     frontend = Path(frontend_dir or PROJECT_ROOT / "web" / "dist" / "output").resolve()
     frontend_assets = PROJECT_ROOT / "web" / "dist" / "output_resource" / "assets"

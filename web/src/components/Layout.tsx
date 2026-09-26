@@ -1,4 +1,4 @@
-import { Film, FolderCog, FolderTree, LayoutDashboard, ListChecks, ScrollText, Settings2, TestTube2, TrendingUp, LogOut } from 'lucide-react';
+import { Film, FolderCog, FolderTree, LayoutDashboard, LibraryBig, ListChecks, ScrollText, Settings2, TestTube2, TrendingUp, LogOut } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Toaster } from '@/components/ui/sonner';
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { path: '/organize', label: '整理预览', icon: FolderCog },
   { path: '/sources', label: '源与解析测试', icon: TestTube2 },
   { path: '/storage', label: '115 目录', icon: FolderTree },
+  { path: '/library', label: '媒体库', icon: LibraryBig },
   { path: '/stats', label: '统计', icon: TrendingUp },
   { path: '/logs', label: '运行日志', icon: ScrollText },
 ];
