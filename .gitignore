@@ -20,8 +20,14 @@ data/*.session-journal
 # ---- Secrets ----
 .env
 115-cookies.txt
+deploy/config/
 
 # ---- IDE / OS ----
 .idea/
 .vscode/
 .DS_Store
+
+# ---- 凭证备份 / 本地配置 / 运行产物 ----
+.env.bak.*
+config.yaml
+data/
