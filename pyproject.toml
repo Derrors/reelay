@@ -19,9 +19,25 @@ full = [
     "openai>=1.40",
     "PyYAML>=6.0",
 ]
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx2>=0.1",
+    "PyYAML>=6.0",
+]
+all = [
+    "telethon>=1.36",
+    "p115client>=0.0.6",
+    "openai>=1.40",
+    "PyYAML>=6.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx2>=0.1",
+]
 
 [project.scripts]
 reelay = "reelay.main:main"
+reelay-web = "reelay.web:main"
 
 [tool.setuptools.packages.find]
 include = ["reelay*"]

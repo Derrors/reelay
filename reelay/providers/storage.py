@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any
 
 from ..core.contracts import PipelineContext
@@ -36,19 +37,56 @@ def _is_video(name: str) -> bool:
     return any(lower.endswith(ext) for ext in VIDEO_EXT)
 
 
+def _episode_of(name: str) -> int | None:
+    """从常见剧集文件名中提取集号，用于追更增量转存。"""
+    value = name or ""
+    match = re.search(r"(?i)S\d{1,2}[ ._\-]*E(\d{1,4})", value)
+    if not match:
+        match = re.search(r"(?i)(?:EP?|第)[ ._\-]*(\d{1,4})[ ._\-]*(?:集)?", value)
+    if match:
+        return int(match.group(1))
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", value).strip()
+    return int(stem) if stem.isdigit() else None
+
+
+def _select_video_items(video_items: list[dict], parsed) -> list[dict]:
+    """剧集按已识别集号筛选；电影保持全部视频。"""
+    if parsed.media_type != "tv" or not parsed.episodes:
+        return video_items
+    wanted = set(parsed.episodes)
+    matched = [
+        item for item in video_items
+        if _episode_of(item.get("name", "")) in wanted
+    ]
+    matched_episodes = {
+        _episode_of(item.get("name", "")) for item in matched
+    }
+    missing = wanted - matched_episodes
+    if missing:
+        ambiguous = [
+            item.get("name", "") for item in video_items
+            if _episode_of(item.get("name", "")) is None
+        ]
+        detail = f"；无法识别：{', '.join(ambiguous[:3])}" if ambiguous else ""
+        raise RuntimeError(f"分享内未找到待转存集数 {sorted(missing)}{detail}")
+    return matched
+
+
 @register(kind="provider", ptype="storage")
 class P115Storage:
     name = "p115"
 
     def __init__(self) -> None:
         self._client = None
+        self._init_error: Exception | None = None
+        self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
         cookies = os.getenv("REELAY_115_COOKIES")
         if cookies:
             try:
                 from p115client import P115Client  # 延迟导入
                 self._client = P115Client(cookies)
-            except Exception:
-                self._client = None
+            except Exception as exc:
+                self._init_error = exc
 
     # 是否已接入真实 115（供 pipeline/organizer 判断走真实还是占位）
     @property
@@ -61,6 +99,10 @@ class P115Storage:
         to_cid = int(ctx.save_dir_cid or 0)
 
         if self._client is None:
+            if not self._dry_run:
+                if self._init_error:
+                    raise RuntimeError(f"115 客户端初始化失败：{self._init_error}")
+                raise RuntimeError("未配置 REELAY_115_COOKIES，拒绝在正式模式模拟转存")
             ctx.log(f"[dry-run] 模拟转存 share={p.share_code} → cid={to_cid}")
             landed = [{"id": f"dry-{i}", "name": f"E{ep:02d}.mp4", "ep": ep}
                       for i, ep in enumerate(p.episodes or [1])]
@@ -96,6 +138,11 @@ class P115Storage:
         video_items = self._collect_share_videos(share_fs)
         if not video_items:
             raise RuntimeError("分享内未找到视频文件")
+
+        # 追更场景：Pipeline 已把 episodes 收窄为缺失集，Storage 必须只接收这些文件。
+        # 无法从文件名识别集号时宁可失败转人工，也不能把整包重复转存。
+        video_items = _select_video_items(video_items, parsed)
+
         file_ids = [it["id"] for it in video_items]
 
         # 2) 转存前快照（读回验证基线）

@@ -20,6 +20,7 @@ from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
 from .core.registry import discover
 from .core.store import Store
+from .core.service import ManagementService
 from .core.worker import Worker
 from .control.panel import ControlPanel
 
@@ -34,6 +35,7 @@ def _setup_log() -> None:
 
 async def _run_dry() -> int:
     """无依赖端到端冒烟。"""
+    os.environ["REELAY_DRY_RUN"] = "1"
     cfg = load_config()
     # dry-run 用规则解析器（无需 LLM key），并给两个样例源配好规则
     cfg["defaults"]["parser"] = "regex"
@@ -52,7 +54,7 @@ async def _run_dry() -> int:
     pipeline = Pipeline(reg, store, cfg)
     panel = ControlPanel(store, pipeline)
 
-    # 生产者：模拟源 → process_new
+    # dry-run 直接推进到审批/队列，便于在一次冒烟中验证完整路径
     source = reg.get_provider("source", "dryrun")
 
     async def emit(raw: RawMessage) -> None:
@@ -101,11 +103,11 @@ async def _run_live() -> int:
 
     store = Store(os.getenv("REELAY_DB_PATH", "data/reelay.db"))
     pipeline = Pipeline(reg, store, cfg)
-    panel = ControlPanel(store, pipeline)
+    service = ManagementService(store, pipeline)
 
     # 控制 bot（可观测与干预）；未配置则不启动，通知走控制台
     from .control.bot import ControlBot
-    bot = ControlBot(panel)
+    bot = ControlBot(service)
     await bot.start()
 
     # 通知发送器 & 转发配置接线：控制 bot 启用则用它发，否则控制台打印
@@ -122,7 +124,7 @@ async def _run_live() -> int:
         source.configure(targets)
 
     async def emit(raw: RawMessage) -> None:
-        await pipeline.process_new(PipelineContext(raw=raw))
+        await pipeline.accept(PipelineContext(raw=raw))
 
     worker = Worker(pipeline, store, concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")))
 

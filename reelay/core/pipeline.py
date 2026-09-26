@@ -68,31 +68,58 @@ class Pipeline:
                 log.warning("listener 异常 %s %s: %s（已忽略）", event, lis.__class__.__name__, exc)
 
     # ------------------------------------------------------------------ #
-    # 阶段 2：识别（AI 感知层） + 决策
+    # 阶段 1：快速接收（监听回调只去重+落库，不等待 AI）
+    # ------------------------------------------------------------------ #
+    async def accept(self, ctx: PipelineContext) -> PipelineContext | None:
+        """快速接收新消息并落为 RECEIVED；返回 None 表示消息级重复。"""
+        message_key = f"{ctx.raw.source}:{ctx.raw.msg_id}"
+        if self.store.seen(DEDUP_MESSAGE, message_key):
+            return None
+        self.store.mark(DEDUP_MESSAGE, message_key, ctx.task_id)
+        ctx.source_rule = self._rule_for(ctx.raw.source)
+        ctx.state = TaskState.RECEIVED
+        ctx.log("消息已接收并落库")
+        self.store.save_task(ctx)
+        await self._emit("on_message", ctx)
+        return ctx
+
+    # ------------------------------------------------------------------ #
+    # 阶段 2：识别（由 Worker 消费 RECEIVED）
     # ------------------------------------------------------------------ #
     async def process_new(self, ctx: PipelineContext) -> None:
-        """从「收到消息」到「决定是否入队」。由监听回调触发。"""
-        # 层1 消息级去重
-        if self.store.seen(DEDUP_MESSAGE, ctx.raw.msg_id):
+        """兼容入口：接收后立即解析；dry-run 与单元测试使用。"""
+        accepted = await self.accept(ctx)
+        if accepted:
+            await self.process_received(accepted)
+
+    async def process_received(self, ctx: PipelineContext) -> None:
+        """从 RECEIVED 推进到 rejected / pending_approval / queued。"""
+        if ctx.state != TaskState.RECEIVED:
+            return
+        if not await self._run_hooks("before_parse", ctx):
             ctx.state = TaskState.SKIPPED
-            ctx.log("消息级去重命中，跳过")
             self.store.save_task(ctx)
             return
-        self.store.mark(DEDUP_MESSAGE, ctx.raw.msg_id, ctx.task_id)
 
-        ctx.source_rule = self._rule_for(ctx.raw.source)
-        self.store.save_task(ctx)  # RECEIVED
-        await self._emit("on_message", ctx)
-
-        await self._run_hooks("before_parse", ctx)
-
-        # —— AI 解析 ——
-        parser_name = ctx.source_rule.get("parser", self.cfg.get("defaults", {}).get("parser", "llm"))
+        parser_name = ctx.source_rule.get(
+            "parser", self.cfg.get("defaults", {}).get("parser", "llm")
+        )
         parser = self.reg.get_provider("parser", parser_name)
-        ctx.parsed = await parser.parse(ctx)
+        try:
+            ctx.parsed = await parser.parse(ctx)
+        except Exception as exc:
+            ctx.state = TaskState.FAILED
+            ctx.ns("task")["retry_from"] = TaskState.RECEIVED.value
+            ctx.log(f"解析失败：{exc}")
+            self.store.save_task(ctx, error=str(exc))
+            await self._emit("on_failed", ctx)
+            return
+
         ctx.state = TaskState.PARSED
-        ctx.log(f"解析完成 is_media={ctx.parsed.is_media} is_ad={ctx.parsed.is_ad} "
-                f"conf={ctx.parsed.confidence:.2f}")
+        ctx.log(
+            f"解析完成 is_media={ctx.parsed.is_media} is_ad={ctx.parsed.is_ad} "
+            f"conf={ctx.parsed.confidence:.2f}"
+        )
         self.store.save_task(ctx)
 
         if not await self._run_hooks("after_parse", ctx):
@@ -100,18 +127,20 @@ class Pipeline:
             self.store.save_task(ctx)
             return
 
-        # —— 决策 ——
         decider = self.reg.get_provider("decision", "default")
         ctx.decision = await decider.decide(ctx)
         ctx.log(f"决策 = {ctx.decision.value}")
 
         if ctx.decision == Decision.SKIP:
-            ctx.state = TaskState.REJECTED if (ctx.parsed and ctx.parsed.is_ad) else TaskState.SKIPPED
+            ctx.state = (
+                TaskState.REJECTED
+                if (ctx.parsed and ctx.parsed.is_ad)
+                else TaskState.SKIPPED
+            )
             self.store.save_task(ctx)
             await self._emit("on_rejected", ctx)
             return
 
-        # 层2 资源级去重（已转存过的分享，若无新增集则跳过）
         share = ctx.parsed.share_code if ctx.parsed else None
         if share and self.store.seen(DEDUP_SHARE, share):
             missing = self.store.missing_episodes(ctx.parsed)
@@ -120,16 +149,16 @@ class Pipeline:
                 ctx.log("资源级去重命中且无新增集，跳过")
                 self.store.save_task(ctx)
                 return
-            ctx.log(f"资源已转存过，但有新增集 {missing}（追更增量）")
+            ctx.parsed.episodes = missing
+            ctx.log(f"资源已转存过，仅处理新增集 {missing}")
 
         await self._emit("on_identified", ctx)
+        await self._notify_all(ctx, "identified")
 
-        # 按审批模式决定：入队 or 待确认
         if ctx.decision == Decision.ASK:
             ctx.state = TaskState.PENDING_APPROVAL
             ctx.log("转人工确认（审批态已落库，可跨重启）")
             self.store.save_task(ctx)
-            # 通知渠道推确认卡片（callback_data 只带 task_id）
             await self._notify_all(ctx, "pending_approval")
         else:
             ctx.state = TaskState.QUEUED
@@ -162,6 +191,19 @@ class Pipeline:
     async def execute_save(self, ctx: PipelineContext) -> None:
         ctx.state = TaskState.SAVING
         self.store.save_task(ctx)
+
+        action = ctx.ns("task").pop("action", None)
+        if action == "organize_only":
+            ctx.result = dict(ctx.result or {})
+            ctx.result["verified"] = True
+            await self._run_hooks("after_save", ctx)
+            verified = bool((ctx.result or {}).get("verified", True))
+            ctx.state = TaskState.DONE if verified else TaskState.NEED_MANUAL
+            ctx.log("重新整理完成" if verified else "重新整理仍需人工处理")
+            self.store.save_task(ctx)
+            await self._notify_all(ctx, "saved")
+            await self._emit("on_saved", ctx)
+            return
 
         # before_save：DirRouter 选目录、查配额等
         await self._run_hooks("before_save", ctx)

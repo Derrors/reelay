@@ -45,6 +45,12 @@ def load_config(path: str = "config.yaml") -> dict[str, Any]:
     try:
         import yaml  # 延迟导入
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except ImportError:
+        import json
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return dict(_DEFAULT_CONFIG)
     except Exception:
         return dict(_DEFAULT_CONFIG)
     # 浅合并默认，避免缺键

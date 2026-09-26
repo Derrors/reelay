@@ -1,10 +1,10 @@
 """通知 / 转发 Provider（NotifyProvider）。
 
-- ``pending_approval`` 事件：推确认卡片；**callback_data 只带 task_id**（评审 P0-01：
-  不塞 URL，避免超 64 字节 & 重启失联）。
-- ``saved`` 事件：转存完成通知；若配置开启 forward，则按模板转发到目标。
+- ``identified`` 事件：识别成功后，若配置开启 forward，立即按模板转发到目标；
+- ``pending_approval`` 事件：推确认卡片；callback_data 只带 task_id；
+- ``saved`` 事件：发送转存完成通知，不重复执行资源转发。
 
-dry-run 下打印到控制台；真实模式下经控制 bot / userbot 发送（此处留接口）。
+未配置真实发送器时写日志，便于 dry-run 与测试观察。
 """
 
 from __future__ import annotations
@@ -35,7 +35,16 @@ class ConsoleNotify:
         p = ctx.parsed
         title = (p.title if p else None) or "(未识别标题)"
 
-        if event == "pending_approval":
+        if event == "identified":
+            fc = self._forward_cfg
+            if fc.get("enabled") and p:
+                rendered = _render(fc.get("template", ""), ctx)
+                if self._sender:
+                    await self._sender(chat=fc.get("target"), text=rendered)
+                else:
+                    log.info("[识别后转发→%s] %s", fc.get("target"), rendered.replace("\n", " / "))
+
+        elif event == "pending_approval":
             text = f"🎬 {title}  {p.size or ''}\n来源 {ctx.raw.source}\n是否转存到「{ctx.save_dir_alias or ctx.source_rule.get('save_to','默认')}」？"
             # 关键：按钮 callback_data 只带 task_id
             buttons = [("✅ 转存", f"ok:{ctx.task_id}"), ("🚫 忽略", f"no:{ctx.task_id}")]
@@ -46,15 +55,11 @@ class ConsoleNotify:
 
         elif event == "saved":
             files = (ctx.result or {}).get("saved_files")
-            log.info("[已转存] %s → %s（文件 %s）", title, ctx.save_dir_alias, files)
-            # 转发（可开关）
-            fc = self._forward_cfg
-            if fc.get("enabled") and p:
-                rendered = _render(fc.get("template", ""), ctx)
-                if self._sender:
-                    await self._sender(chat=fc.get("target"), text=rendered)
-                else:
-                    log.info("[转发→%s] %s", fc.get("target"), rendered.replace("\n", " / "))
+            text = f"✅ 已转存：{title}\n目录：{ctx.save_dir_alias or '默认'}\n文件：{files or '已落地'}"
+            if self._sender:
+                await self._sender(text=text)
+            else:
+                log.info("[已转存] %s → %s（文件 %s）", title, ctx.save_dir_alias, files)
 
 
 def _render(tpl: str, ctx: PipelineContext) -> str:

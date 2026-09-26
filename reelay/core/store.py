@@ -115,13 +115,28 @@ class Store:
             )
             self._conn.commit()
 
-    def set_state(self, task_id: str, state: TaskState, *, error: str | None = None) -> None:
+    def set_state(self, task_id: str, state: TaskState, *, error: str | None = None) -> bool:
+        """原子更新状态列与快照，避免 Worker 从 snapshot 读到旧状态。"""
         with self._lock:
+            row = self._conn.execute(
+                "SELECT snapshot FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if not row:
+                return False
+            snapshot = json.loads(row["snapshot"])
+            snapshot["state"] = state.value
             self._conn.execute(
-                "UPDATE tasks SET state=?, error=?, updated_at=? WHERE task_id=?",
-                (state.value, error, time.time(), task_id),
+                "UPDATE tasks SET state=?, snapshot=?, error=?, updated_at=? WHERE task_id=?",
+                (
+                    state.value,
+                    json.dumps(snapshot, ensure_ascii=False),
+                    error,
+                    time.time(),
+                    task_id,
+                ),
             )
             self._conn.commit()
+            return True
 
     def bump_retry(self, task_id: str) -> int:
         with self._lock:
@@ -150,6 +165,63 @@ class Store:
             (state.value, limit),
         ).fetchall()
 
+    def list_tasks(
+        self,
+        *,
+        state: TaskState | None = None,
+        source: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """管理端任务列表；返回轻量摘要，不泄露完整分享链接与凭证。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if state:
+            clauses.append("state=?")
+            params.append(state.value)
+        if source:
+            clauses.append("source=?")
+            params.append(source)
+        if query:
+            clauses.append("(title LIKE ? OR source LIKE ? OR task_id LIKE ? OR error LIKE ?)")
+            like = f"%{query}%"
+            params.extend((like, like, like, like))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(limit, 500)))
+        rows = self._conn.execute(
+            "SELECT task_id, state, source, msg_id, title, error, retries, "
+            f"created_at, updated_at FROM tasks{where} ORDER BY updated_at DESC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_task_record(self, task_id: str) -> dict[str, Any] | None:
+        """管理端任务详情：数据库列 + 经过脱敏的上下文快照。"""
+        row = self._conn.execute(
+            "SELECT * FROM tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        snapshot = json.loads(data.pop("snapshot"))
+        parsed = snapshot.get("parsed") or {}
+        if parsed.get("receive_code"):
+            parsed["receive_code"] = "****"
+        snapshot["parsed"] = parsed
+        data["context"] = snapshot
+        return data
+
+    def update_task_context(self, ctx: PipelineContext, *, error: str | None = None) -> None:
+        """管理端修改解析结果/目标目录后持久化完整上下文。"""
+        self.save_task(ctx, error=error)
+
+    def delete_task(self, task_id: str) -> bool:
+        """仅用于删除误入的任务记录；不删除 115 文件。"""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def counts_by_state(self) -> dict[str, int]:
         rows = self._conn.execute(
             "SELECT state, COUNT(*) c FROM tasks GROUP BY state"
@@ -157,12 +229,18 @@ class Store:
         return {r["state"]: r["c"] for r in rows}
 
     def recover_interrupted(self) -> list[PipelineContext]:
-        """重启后把中断在 saving/queued 的任务捡回来重跑。"""
+        """重启时把 saving/queued 原子恢复成 queued，并返回可执行快照。"""
         rows = self._conn.execute(
-            "SELECT snapshot FROM tasks WHERE state IN (?, ?)",
+            "SELECT task_id FROM tasks WHERE state IN (?, ?)",
             (TaskState.SAVING.value, TaskState.QUEUED.value),
         ).fetchall()
-        return [_load_ctx(json.loads(r["snapshot"])) for r in rows]
+        recovered = []
+        for row in rows:
+            self.set_state(row["task_id"], TaskState.QUEUED)
+            ctx = self.get_task(row["task_id"])
+            if ctx:
+                recovered.append(ctx)
+        return recovered
 
     # ------------------------------------------------------------------ #
     # 三层去重

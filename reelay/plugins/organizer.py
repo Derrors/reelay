@@ -37,6 +37,21 @@ def _ext_of(filename: str, default: str = "mp4") -> str:
     return m.group(1) if m else default
 
 
+def _episode_of(filename: str) -> tuple[int | None, int | None]:
+    """从文件名确定性提取季集号；拿不准就返回 None，不按 API 返回顺序猜。"""
+    name = filename or ""
+    match = re.search(r"(?i)S(\d{1,2})[ ._\-]*E(\d{1,4})", name)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    match = re.search(r"(?i)(?:EP?|第)[ ._\-]*(\d{1,4})[ ._\-]*(?:集)?", name)
+    if match:
+        return None, int(match.group(1))
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", name).strip()
+    if stem.isdigit():
+        return None, int(stem)
+    return None, None
+
+
 @register(kind="hook", stage="after_save", order=20)
 class Organizer:
     stage = "after_save"
@@ -67,8 +82,15 @@ class Organizer:
                 ctx.result["verified"] = False   # 促使 pipeline 置 need_manual
             return True
 
-        # --- 生成整理计划 ---
-        plan = self._build_plan(p, landed)
+        # --- 生成整理计划；文件名无法可靠映射时转人工，不让通用 Hook 隔离吞掉语义 ---
+        try:
+            plan = self._build_plan(p, landed)
+        except Exception as exc:
+            ctx.ns("organize")["error"] = str(exc)
+            ctx.log(f"无法生成可靠整理计划（{exc}），文件保留原样并标记 need_manual")
+            if ctx.result is not None:
+                ctx.result["verified"] = False
+            return True
         ctx.ns("organize")["plan"] = plan
         ctx.log(f"整理计划：{len(plan)} 个文件 → 「{plan[0]['target_dir']}」" if plan else "整理计划为空")
 
@@ -107,14 +129,17 @@ class Organizer:
         is_tv = p.media_type == "tv" or bool(p.episodes)
 
         plan = []
-        # 只整理视频文件；按落地顺序对应集数（简化：landed[i] ↔ episodes[i]）
         videos = [x for x in landed if not x.get("is_dir")]
-        eps = p.episodes or []
-        for i, f in enumerate(videos):
+        allowed_episodes = set(p.episodes or [])
+        for f in videos:
             ext = _ext_of(f.get("name", ""))
             if is_tv:
-                season = p.season or 1
-                ep = eps[i] if i < len(eps) else (i + 1)
+                detected_season, ep = _episode_of(f.get("name", ""))
+                if ep is None:
+                    raise ValueError(f"无法从文件名识别集号：{f.get('name', '')}")
+                if allowed_episodes and ep not in allowed_episodes:
+                    raise ValueError(f"文件集号 E{ep:02d} 不在已识别集数中：{f.get('name', '')}")
+                season = detected_season or p.season or 1
                 tpl = naming.get("tv", "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}")
                 rel = tpl.format(title=title, year=year, season=season, ep=ep, resolution=_safe(p.resolution), ext=ext)
             else:
@@ -127,7 +152,7 @@ class Organizer:
                 "target_dir": "/".join(parts[:-1]),
                 "target_name": parts[-1],
             })
-        return plan
+        return sorted(plan, key=lambda item: item["target_name"])
 
     def _apply_sync(self, ctx: PipelineContext, p, plan: list[dict]) -> None:
         from p115client import P115FileSystem

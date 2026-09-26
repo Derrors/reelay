@@ -49,6 +49,23 @@ class TestStore(unittest.TestCase):
         p_new = ParsedResource(title="剧A", season=1, episodes=list(range(1, 11)))
         self.assertEqual(s.missing_episodes(p_new), [9, 10])
 
+    def test_state_update_keeps_snapshot_consistent(self):
+        s = self.store
+        ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="retry", text="x"))
+        ctx.state = TaskState.FAILED
+        s.save_task(ctx, error="boom")
+        self.assertTrue(s.set_state(ctx.task_id, TaskState.QUEUED))
+        self.assertEqual(s.get_task(ctx.task_id).state, TaskState.QUEUED)
+
+    def test_recover_saving_as_queued(self):
+        s = self.store
+        ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="resume", text="x"))
+        ctx.state = TaskState.SAVING
+        s.save_task(ctx)
+        recovered = s.recover_interrupted()
+        self.assertEqual(recovered[0].state, TaskState.QUEUED)
+        self.assertEqual(s.get_task(ctx.task_id).state, TaskState.QUEUED)
+
     def test_task_snapshot_roundtrip_and_recover(self):
         s = self.store
         ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="1", text="hi"))
@@ -185,6 +202,32 @@ class TestOrganizerPlan(unittest.TestCase):
         self.assertEqual(plan[0]["target_name"], "法医秦明 - S01E01.mp4")
         self.assertEqual(plan[1]["target_name"], "法医秦明 - S01E02.mkv")
 
+    def test_tv_plan_uses_filename_episode_not_api_order(self):
+        p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
+                           season=1, episodes=[1, 2])
+        landed = [{"id": "b", "name": "S01E02.mkv"}, {"id": "a", "name": "S01E01.mp4"}]
+        plan = self.org._build_plan(p, landed)
+        mapping = {item["src_name"]: item["target_name"] for item in plan}
+        self.assertEqual(mapping["S01E02.mkv"], "法医秦明 - S01E02.mkv")
+        self.assertEqual(mapping["S01E01.mp4"], "法医秦明 - S01E01.mp4")
+
+    def test_tv_plan_rejects_ambiguous_episode(self):
+        p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
+                           season=1, episodes=[1])
+        with self.assertRaises(ValueError):
+            self.org._build_plan(p, [{"id": "a", "name": "unknown.mp4"}])
+
+    def test_tv_run_marks_manual_when_filename_ambiguous(self):
+        p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
+                           season=1, episodes=[1])
+        ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="ambiguous", text="x"))
+        ctx.parsed = p
+        ctx.result = {"verified": True}
+        ctx.ns("storage")["landed"] = [{"id": "a", "name": "unknown.mp4"}]
+        self.assertTrue(run(self.org.run(ctx)))
+        self.assertFalse(ctx.result["verified"])
+        self.assertIn("error", ctx.ns("organize"))
+
     def test_movie_plan_naming(self):
         p = ParsedResource(is_media=True, media_type="movie", title="流浪地球2",
                            year=2023, resolution="4K")
@@ -198,6 +241,31 @@ class TestOrganizerPlan(unittest.TestCase):
             ParsedResource(is_media=True, media_type="tv", title="X")))  # 剧集缺集数
         self.assertIsNone(self.org._validate(
             ParsedResource(is_media=True, media_type="movie", title="X")))  # 电影 OK
+
+
+class TestStorageEpisodeSelection(unittest.TestCase):
+    def test_selects_only_missing_episodes(self):
+        from reelay.providers.storage import _select_video_items
+        parsed = ParsedResource(media_type="tv", episodes=[9, 10])
+        items = [
+            {"id": "1", "name": "Show.S01E08.mkv"},
+            {"id": "2", "name": "Show.S01E09.mkv"},
+            {"id": "3", "name": "Show.S01E10.mkv"},
+        ]
+        selected = _select_video_items(items, parsed)
+        self.assertEqual([item["id"] for item in selected], ["2", "3"])
+
+    def test_incremental_share_requires_all_missing_episodes(self):
+        from reelay.providers.storage import _select_video_items
+        parsed = ParsedResource(media_type="tv", episodes=[9, 10])
+        with self.assertRaises(RuntimeError):
+            _select_video_items([{"id": "2", "name": "Show.S01E09.mkv"}], parsed)
+
+    def test_ambiguous_incremental_share_fails_closed(self):
+        from reelay.providers.storage import _select_video_items
+        parsed = ParsedResource(media_type="tv", episodes=[9])
+        with self.assertRaises(RuntimeError):
+            _select_video_items([{"id": "1", "name": "video.mkv"}], parsed)
 
 
 class TestTmdbDegrade(unittest.TestCase):

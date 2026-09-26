@@ -16,14 +16,15 @@ from __future__ import annotations
 import logging
 import os
 
-from .panel import ControlPanel
+from ..core.contracts import TaskState
+from ..core.service import ConflictError, ManagementService, NotFoundError
 
 log = logging.getLogger("reelay.control.bot")
 
 
 class ControlBot:
-    def __init__(self, panel: ControlPanel):
-        self.panel = panel
+    def __init__(self, service: ManagementService):
+        self.service = service
         self._token = os.getenv("REELAY_CONTROL_BOT_TOKEN")
         self._owner = os.getenv("REELAY_OWNER_ID")
         self._client = None
@@ -55,7 +56,7 @@ class ControlBot:
         async def _status(e):
             if not self._is_owner(e):
                 return
-            counts = self.panel.status()["counts"]
+            counts = self.service.dashboard()["counts"]
             body = "\n".join(f"  {k}: {v}" for k, v in sorted(counts.items())) or "  (空)"
             await e.reply(f"📊 状态计数：\n{body}")
 
@@ -63,7 +64,7 @@ class ControlBot:
         async def _failed(e):
             if not self._is_owner(e):
                 return
-            rows = self.panel.failed()
+            rows = self.service.list_tasks(state=TaskState.FAILED.value, limit=20)
             if not rows:
                 await e.reply("✅ 无失败任务")
                 return
@@ -75,7 +76,9 @@ class ControlBot:
         async def _pending(e):
             if not self._is_owner(e):
                 return
-            rows = self.panel.pending()
+            rows = []
+            for state in (TaskState.PENDING_APPROVAL, TaskState.NEED_MANUAL):
+                rows.extend(self.service.list_tasks(state=state.value, limit=20))
             if not rows:
                 await e.reply("✅ 无待处理任务")
                 return
@@ -87,8 +90,11 @@ class ControlBot:
             if not self._is_owner(e):
                 return
             tid = e.pattern_match.group(1)
-            ok = self.panel.retry(tid)
-            await e.reply("♻️ 已重新入队" if ok else "未找到可重试的任务")
+            try:
+                await self.service.retry(tid)
+                await e.reply("♻️ 已重新入队")
+            except (ConflictError, NotFoundError):
+                await e.reply("未找到可重试的失败任务")
 
         @c.on(events.CallbackQuery())
         async def _cb(e):
@@ -96,11 +102,17 @@ class ControlBot:
                 return
             data = (e.data or b"").decode()
             if data.startswith("ok:"):
-                ok = await self.panel.approve(data[3:])
-                await e.edit("✅ 已确认，加入转存队列" if ok else "任务状态已变化")
+                try:
+                    await self.service.approve(data[3:])
+                    await e.edit("✅ 已确认，加入转存队列")
+                except (ConflictError, NotFoundError):
+                    await e.edit("任务状态已变化")
             elif data.startswith("no:"):
-                ok = await self.panel.reject(data[3:])
-                await e.edit("🚫 已忽略" if ok else "任务状态已变化")
+                try:
+                    await self.service.reject(data[3:])
+                    await e.edit("🚫 已忽略")
+                except (ConflictError, NotFoundError):
+                    await e.edit("任务状态已变化")
 
     def _is_owner(self, event) -> bool:
         return str(getattr(event, "sender_id", "")) == str(self._owner)
