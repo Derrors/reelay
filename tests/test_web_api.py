@@ -175,5 +175,159 @@ class TestManagementApi(unittest.TestCase):
         self.assertIsNotNone(self.app.state.pipeline.config_error)
 
 
+@unittest.skipIf(TestClient is None, "未安装 web 可选依赖")
+class TestAuth115Api(unittest.TestCase):
+    """115 混合鉴权 Web API：状态、cookie 录入校验、开放平台扫码流程。"""
+
+    def setUp(self):
+        from reelay.core import auth115
+        from reelay.web import create_app
+
+        self.auth115 = auth115
+        self.env = patch.dict(os.environ, {}, clear=True)
+        self.env.start()
+        self.env_loader = patch('reelay.web.load_env')
+        self.env_loader.start()
+
+        self.tempdir = tempfile.TemporaryDirectory()
+        root = Path(self.tempdir.name)
+        (root / "frontend").mkdir()
+        (root / "frontend" / "index.html").write_text("<html>x</html>", encoding="utf-8")
+        self.cred_path = root / "creds.json"
+        self.cred_store = auth115.CredentialStore(self.cred_path)
+        self.singleton_patch = patch.object(auth115, "get_store",
+                                            lambda: self.cred_store)
+        self.singleton_patch.start()
+
+        (root / "config.yaml").write_text(json.dumps({
+            "save_dirs": {"默认": "0"},
+            "defaults": {"approval_mode": "manual", "parser": "regex", "save_to": "默认"},
+            "sources": [], "routing": [],
+        }), encoding="utf-8")
+        self.app = create_app(
+            db_path=str(root / "reelay.db"),
+            config_path=str(root / "config.yaml"),
+            start_worker=False,
+            frontend_dir=root / "frontend",
+        )
+        self.client = TestClient(self.app)
+        self.client.__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+        self.singleton_patch.stop()
+        self.tempdir.cleanup()
+        self.env_loader.stop()
+        self.env.stop()
+        os.environ.pop("REELAY_115_COOKIES", None)
+
+    def test_status_empty(self):
+        data = self.client.get("/api/auth115/status").json()
+        self.assertFalse(data["cookie"]["configured"])
+        self.assertFalse(data["oauth"]["configured"])
+        self.assertEqual(data["writes_via"], "none")
+
+    def test_cookie_rejects_garbage(self):
+        resp = self.client.put("/api/auth115/cookie", json={"cookies": "not-a-cookie"})
+        self.assertEqual(resp.status_code, 422)
+
+    def test_cookie_qr_start_status_and_image(self):
+        png_bytes = b"\x89PNG\r\n\x1a\nfake-cookie"
+
+        class FakeP115Cookie:
+            @staticmethod
+            def login_qrcode_token():
+                return {"state": 1, "data": {"uid": "cu9", "time": 1, "sign": "s",
+                                             "qrcode": "https://115.com/scan/dg-cu9"}}
+
+            @staticmethod
+            def login_qrcode_scan_status(payload):
+                return {"state": 1, "data": {"status": 1}}
+
+            @staticmethod
+            def login_qrcode_scan_result(uid, app):
+                return {"state": 1, "data": {"cookie": {
+                    "UID": "1_A1_2", "CID": "c", "SEID": "s", "KID": "k",
+                }}}
+
+            @staticmethod
+            def login_qrcode(payload, app="web"):
+                return png_bytes
+
+        fake = type("M", (), {"P115Client": FakeP115Cookie})()
+        with patch.dict("sys.modules", {"p115client": fake}):
+            start = self.client.post("/api/auth115/cookie/qr")
+            self.assertEqual(start.status_code, 200, start.text)
+            uid = start.json()["uid"]
+            image = self.client.get(f"/api/auth115/cookie/qr/image?uid={uid}")
+            self.assertEqual(image.status_code, 200)
+            self.assertEqual(image.headers["content-type"], "image/svg+xml")
+            self.assertIn(b"<svg", image.content)
+            waiting = self.client.get(f"/api/auth115/cookie/qr?uid={uid}")
+            self.assertEqual(waiting.json()["status"], 1)
+            FakeP115Cookie.login_qrcode_scan_status = staticmethod(
+                lambda payload: {"state": 1, "data": {"status": 2}})
+            with patch.object(self.cred_store, "ping_cookie", return_value="active"):
+                done = self.client.get(f"/api/auth115/cookie/qr?uid={uid}")
+            self.assertTrue(done.json()["authenticated"])
+            self.assertTrue(self.cred_store.has_cookie)
+
+    def test_qr_start_then_scan_confirmed_saves_tokens(self):
+        store = self.cred_store
+
+        class FakeP115Open:
+            @staticmethod
+            def login_qrcode_token_open(app_id):
+                return {"code": 0, "data": {"uid": "u9", "time": 1, "sign": "s",
+                                            "qrcode": "https://115.com/scan/dg-u9"}}
+
+            @staticmethod
+            def login_qrcode_scan_status(payload):
+                return {"data": {"status": 2}}
+
+            @staticmethod
+            def login_qrcode_access_token_open(uid):
+                return {"data": {"access_token": "wa", "refresh_token": "wr"}}
+
+        fake = type("M", (), {"P115OpenClient": FakeP115Open})()
+        with patch.dict("sys.modules", {"p115client": fake}):
+            r1 = self.client.post("/api/auth115/oauth/qr")
+            self.assertEqual(r1.status_code, 200, r1.text)
+            uid = r1.json()["uid"]
+            r2 = self.client.get(f"/api/auth115/oauth/qr?uid={uid}")
+            self.assertEqual(r2.status_code, 200)
+            self.assertTrue(r2.json()["authenticated"])
+        self.assertTrue(store.has_oauth)
+        self.assertTrue(self.client.get("/api/auth115/status").json()
+                        ["oauth"]["configured"])
+        self.assertEqual(self.client.delete("/api/auth115/oauth").status_code, 200)
+        self.assertFalse(store.has_oauth)
+
+    def test_qr_image_returns_png_for_pending_session(self):
+        png_bytes = b"\x89PNG\r\n\x1a\nfake"
+
+        class FakeP115Open:
+            @staticmethod
+            def login_qrcode_token_open(app_id):
+                return {"code": 0, "data": {"uid": "u8", "time": 1, "sign": "s",
+                                            "qrcode": "https://115.com/scan/dg-u8"}}
+
+            @staticmethod
+            def login_qrcode(payload, app="web"):
+                return png_bytes
+
+        fake = type("M", (), {"P115OpenClient": FakeP115Open})()
+        with patch.dict("sys.modules", {"p115client": fake}):
+            r1 = self.client.post("/api/auth115/oauth/qr")
+            uid = r1.json()["uid"]
+            r2 = self.client.get(f"/api/auth115/oauth/qr/image?uid={uid}")
+            self.assertEqual(r2.status_code, 200)
+            self.assertEqual(r2.headers["content-type"], "image/png")
+            self.assertEqual(r2.content, png_bytes)
+        # 未知 uid 返回 404
+        r3 = self.client.get("/api/auth115/oauth/qr/image?uid=nope")
+        self.assertEqual(r3.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

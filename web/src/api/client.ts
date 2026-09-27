@@ -31,8 +31,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let message = `请求失败（${response.status}）`;
     try {
-      const body = (await response.json()) as { detail?: string };
-      if (body.detail) message = body.detail;
+      const body = (await response.json()) as { detail?: unknown };
+      if (typeof body.detail === 'string') message = body.detail;
+      else if (Array.isArray(body.detail)) message = body.detail.map((item: { loc?: string[]; msg?: string }) => `${item.loc?.join('.') ?? ''}：${item.msg ?? '输入无效'}`).join('；');
     } catch {
       // 非 JSON 错误响应，保留通用文案
     }
@@ -63,6 +64,21 @@ export const api = {
     request<ITaskDetail>(`tasks/${taskId}/parsed`, {
       method: 'PATCH',
       body: JSON.stringify({ values }),
+    }),
+  organizerTemplatePreview: (kind: 'movie' | 'tv', template: string) =>
+    request<{ path: string }>('extensions/organizer/preview', {
+      method: 'POST', body: JSON.stringify({ kind, template }),
+    }),
+  dirRouterPreview: (categories: Record<string, unknown>, media_type: string, genre_ids: number[], origin_country: string[]) =>
+    request<{ path: string | null }>('extensions/dir-router/preview', {
+      method: 'POST', body: JSON.stringify({ categories, media_type, genre_ids, origin_country }),
+    }),
+  validateConfig: (config: Record<string, unknown>) => request<{ ok: boolean }>('config/validate', {
+    method: 'POST', body: JSON.stringify({ config }),
+  }),
+  saveSections: (sections: Record<string, unknown>, revision: string) =>
+    request<{ config: Record<string, unknown>; revision: string }>('config/sections', {
+      method: 'PATCH', body: JSON.stringify({ sections, revision }),
     }),
   config: () => request<IConfigResponse>('config'),
   saveConfig: (config: Record<string, unknown>) =>

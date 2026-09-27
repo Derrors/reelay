@@ -98,6 +98,206 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
             return True
         raise HTTPException(status_code=401, detail="未登录")
 
+    @app.get('/api/extensions', dependencies=[Depends(require_auth)])
+    async def extensions_catalog():
+        return registry.catalog(service.get_config())
+
+    @app.post('/api/config/validate', dependencies=[Depends(require_auth)])
+    async def validate_config_payload(request: Request):
+        from .core.config import normalize_config
+        try:
+            payload = await request.json()
+            cfg = normalize_config(payload.get('config'))
+            registry.validate_config(cfg)
+            return {'ok': True}
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post('/api/extensions/organizer/preview', dependencies=[Depends(require_auth)])
+    async def organizer_template_preview(request: Request):
+        from .core.naming_template import validate_template, render_path
+        payload = await request.json()
+        template = payload.get('template') if isinstance(payload, dict) else None
+        kind = payload.get('kind', 'movie') if isinstance(payload, dict) else 'movie'
+        try:
+            validate_template(template, f'{kind}命名模板')
+            values = {"title": "示例标题", "year": 2026, "resolution": "4K", "ext": "mkv",
+                      "season": 1, "episode": 2, "ep": 2, "media_type": kind,
+                      "genre_ids": [16], "origin_country": ["CN"], "tmdb_id": 123,
+                      "original_name": "sample.S01E02.mkv"}
+            return {'path': render_path(template, values, label=f'{kind}命名模板')}
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post('/api/extensions/dir-router/preview', dependencies=[Depends(require_auth)])
+    async def dir_router_preview(request: Request):
+        from .core.category_strategy import classify, validate_strategy
+        payload = await request.json()
+        try:
+            strategy = payload.get('categories')
+            validate_strategy(strategy)
+            path = classify(strategy, payload.get('media_type', ''), payload.get('genre_ids', []),
+                            payload.get('origin_country', []))
+            return {'path': path}
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.patch('/api/config/sections', dependencies=[Depends(require_auth)])
+    async def save_config_sections(request: Request):
+        from .core.config import config_revision
+        from copy import deepcopy
+        payload = await request.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get('sections'), dict):
+            raise HTTPException(status_code=422, detail='sections 必须是配置块对象')
+        async with section_lock:
+            cfg = service.get_config()
+            if service.pipeline.config_error:
+                raise HTTPException(status_code=409, detail='配置文件当前无效，先修复原始文件；不会覆盖损坏配置。')
+            if payload.get('revision') != config_revision(cfg):
+                raise HTTPException(status_code=409, detail='配置已被其他页面或进程修改，请重新加载后再保存。')
+            allowed = {'save_dirs', 'defaults', 'sources', 'forward', 'organize', 'dir_router', 'routing', 'approval', 'providers', 'plugins'}
+            catalog = registry.catalog(cfg)
+            objects = [x for rows in catalog['providers'].values() for x in rows] + catalog['hooks'] + catalog['events']
+            allowed.update(f['path'].split('.')[0] for x in objects for f in x['fields'])
+            if set(payload['sections']) - allowed:
+                raise HTTPException(status_code=422, detail='包含未声明的配置模块')
+            updated = deepcopy(cfg)
+            updated.update(payload['sections'])
+            try:
+                saved = await service.save_config(updated)
+            except (ValueError, KeyError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            return {'config': saved, 'revision': config_revision(saved)}
+
+    import asyncio
+    section_lock = asyncio.Lock()
+
+    # ------------------------------------------------------------------ #
+    # 2) 115 混合鉴权：状态 / cookie 录入 / 开放平台扫码授权 / 探活
+    # ------------------------------------------------------------------ #
+    from .core.auth115 import get_store
+
+    class CookiePayload(BaseModel):
+        cookies: str
+
+    @app.get("/api/auth115/status", dependencies=[Depends(require_auth)])
+    async def auth115_status():
+        return get_store().status()
+
+    @app.post("/api/auth115/ping", dependencies=[Depends(require_auth)])
+    async def auth115_ping():
+        store = get_store()
+        # 在线程中执行，避免阻塞事件循环
+        import asyncio
+        cookie_state, oauth_state = await asyncio.gather(
+            asyncio.to_thread(store.ping_cookie, True),
+            asyncio.to_thread(store.ping_oauth, True),
+        )
+        return {"cookie": cookie_state, "oauth": oauth_state, "status": store.status()}
+
+    @app.put("/api/auth115/cookie", dependencies=[Depends(require_auth)])
+    async def auth115_set_cookie(payload: CookiePayload):
+        cookies = (payload.cookies or "").strip()
+        if not cookies:
+            raise HTTPException(status_code=422, detail="cookie 不能为空")
+        if "UID" not in cookies.upper() or "CID" not in cookies.upper():
+            raise HTTPException(status_code=422,
+                                detail="不像有效的 115 cookie（需包含 UID/CID）")
+        store = get_store()
+        store.set_cookies(cookies)
+        state = await __import__("asyncio").to_thread(store.ping_cookie, True)
+        if state == "expired":
+            raise HTTPException(status_code=409, detail="cookie 已保存，但探活提示已失效，请重新获取")
+        return {"ok": True, "state": state}
+
+    @app.post("/api/auth115/cookie/qr", dependencies=[Depends(require_auth)])
+    async def auth115_cookie_qr_start():
+        try:
+            return await asyncio.to_thread(get_store().cookie_qr_start)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"申请 Cookie 登录二维码失败：{exc}")
+
+    @app.get("/api/auth115/cookie/qr", dependencies=[Depends(require_auth)])
+    async def auth115_cookie_qr_status(uid: str = Query(...)):
+        try:
+            return await asyncio.to_thread(get_store().cookie_qr_status, uid)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"查询 Cookie 扫码状态失败：{exc}")
+
+    @app.get("/api/auth115/cookie/qr/image", dependencies=[Depends(require_auth)])
+    async def auth115_cookie_qr_image(uid: str = Query(...)):
+        from fastapi import Response
+        store = get_store()
+
+        def _fetch() -> bytes:
+            import io
+            import qrcode
+            from qrcode.image.svg import SvgPathImage
+            session = store.cookie_qr_session(uid)
+            url = session.get("qrcode_url") or f"https://115.com/scan/dg-{uid}"
+            image = qrcode.make(url, image_factory=SvgPathImage)
+            output = io.BytesIO()
+            image.save(output)
+            return output.getvalue()
+
+        try:
+            png = await asyncio.to_thread(_fetch)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"获取 Cookie 二维码图片失败：{exc}")
+        return Response(content=png, media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/auth115/oauth/qr", dependencies=[Depends(require_auth)])
+    async def auth115_qr_start():
+        store = get_store()
+        try:
+            return await __import__("asyncio").to_thread(store.qr_start)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"申请授权二维码失败：{exc}")
+
+    @app.get("/api/auth115/oauth/qr", dependencies=[Depends(require_auth)])
+    async def auth115_qr_status(uid: str = Query(...)):
+        store = get_store()
+        try:
+            return await __import__("asyncio").to_thread(store.qr_status, uid)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"查询扫码状态失败：{exc}")
+
+    @app.get("/api/auth115/oauth/qr/image", dependencies=[Depends(require_auth)])
+    async def auth115_qr_image(uid: str = Query(...)):
+        """返回授权二维码 PNG：后端向 115 拉取，避免前端跨域与外链跳转。"""
+        import asyncio
+        from fastapi import Response
+        store = get_store()
+
+        def _fetch() -> bytes:
+            store.qr_session(uid)  # 校验会话存在且未过期
+            from p115client import P115OpenClient
+            data = P115OpenClient.login_qrcode({"uid": uid}, app="web")
+            if not isinstance(data, (bytes, bytearray)):
+                raise RuntimeError("二维码接口未返回图片")
+            return bytes(data)
+
+        try:
+            png = await asyncio.to_thread(_fetch)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"获取二维码图片失败：{exc}")
+        return Response(content=png, media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.delete("/api/auth115/oauth", dependencies=[Depends(require_auth)])
+    async def auth115_oauth_clear():
+        get_store().clear_oauth()
+        return {"ok": True}
+
     # ------------------------------------------------------------------ #
     # 3) 运行日志查看
     # ------------------------------------------------------------------ #
@@ -126,19 +326,15 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # 4) 115 网盘浏览（只读）
     # ------------------------------------------------------------------ #
     @app.get("/api/storage/dirs", dependencies=[Depends(require_auth)])
-    async def storage_dirs(cid: int = Query(default=0)):
-        from p115client import P115Client, P115FileSystem
-        cookies = os.getenv("REELAY_115_COOKIES")
-        if not cookies:
-            raise HTTPException(status_code=409, detail="未配置 115 cookies")
-        client = P115Client(cookies)
-        fs = P115FileSystem(client)
-        items = []
-        for it in fs.iterdir(int(cid)):
-            if it.get("is_dir") or it.get("is_directory"):
-                items.append({"id": int(it["id"]), "name": it.get("name"),
-                              "pid": it.get("parent_id")})
-        return {"items": sorted(items, key=lambda x: str(x["name"]))}
+    async def storage_dirs(cid: str = Query(default='0', pattern=r'^[0-9]+$'),
+                           offset: int = Query(default=0, ge=0),
+                           limit: int = Query(default=100, ge=1, le=1000)):
+        import asyncio
+        from .web_storage import browse_dirs, StorageBrowseError
+        try:
+            return await asyncio.to_thread(browse_dirs, get_store(), cid, offset, limit)
+        except StorageBrowseError as exc:
+            return JSONResponse(status_code=exc.status, content={'detail': str(exc), 'code': exc.code})
 
     # ------------------------------------------------------------------ #
     # 5) 源管理：列出 + 立即解析测试（不入库、不转存）
@@ -215,11 +411,11 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # ------------------------------------------------------------------ #
     @app.get("/api/storage/file", dependencies=[Depends(require_auth)])
     async def storage_file(fid: int):
-        from p115client import P115Client, P115FileSystem
-        cookies = os.getenv("REELAY_115_COOKIES")
-        if not cookies:
-            raise HTTPException(status_code=409, detail="未配置 115 cookies")
-        fs = P115FileSystem(P115Client(cookies))
+        from p115client import P115FileSystem
+        client = get_store().cookie_client()
+        if client is None:
+            raise HTTPException(status_code=409, detail="未配置 115 cookie（查询文件需要 cookie）")
+        fs = P115FileSystem(client)
         try:
             attr = fs.get_attr(int(fid), refresh=True)
         except Exception as exc:  # noqa: BLE001

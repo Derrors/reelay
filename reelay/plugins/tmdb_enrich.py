@@ -28,6 +28,12 @@ TMDB_BASE = os.getenv("REELAY_TMDB_BASE_URL", "https://api.themoviedb.org/3")
 @register(kind="hook", stage="after_parse", order=50)
 class TmdbEnrich:
     name = "tmdb_enrich"
+    ui_label = "TMDB 元数据补全"
+    ui_description = "解析后补充规范标题与年份；未配置 TMDB 凭证时保留原标题。"
+    ui_fields = [
+        {'path': 'tmdb.language', 'label': '匹配语言', 'type': 'string', 'choices': ['zh-CN', 'zh-TW', 'en-US']},
+        {'path': 'tmdb.timeout', 'label': '请求超时（秒）', 'type': 'number', 'min': 1, 'max': 60},
+    ]
     stage = "after_parse"
     order = 50
 
@@ -72,16 +78,24 @@ class TmdbEnrich:
         ns["tmdbid"] = hit.get("id")
         p.raw_fields["tmdbid"] = hit.get("id")
         p.raw_fields.setdefault("genre", "")
+        p.genre_ids = [int(value) for value in hit.get("genre_ids") or []
+                       if type(value) is int and value > 0]
+        countries = hit.get("origin_country") or []
+        if isinstance(countries, str):
+            countries = [countries]
+        p.origin_country = [str(value).upper() for value in countries
+                            if isinstance(value, str) and len(value) == 2]
         ctx.log(f"TMDB 匹配：{canonical} ({year}) tmdbid={hit.get('id')}")
         return True
 
     def _search(self, kind: str, title: str, year: int | None) -> dict | None:
-        params = {"api_key": self._key, "query": title, "language": "zh-CN"}
+        from ..core import runtime
+        params = {"api_key": self._key, "query": title, "language": runtime.get('tmdb.language', 'zh-CN')}
         if year:
             params["year" if kind == "movie" else "first_air_date_year"] = year
         url = f"{TMDB_BASE}/search/{kind}?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=runtime.get('tmdb.timeout', 10)) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         results = data.get("results") or []
         return results[0] if results else None

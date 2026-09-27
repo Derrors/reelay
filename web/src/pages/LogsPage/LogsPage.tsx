@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { toast } from 'sonner';
 import { extras } from '@/api/extras';
 
 export default function LogsPage() {
@@ -14,7 +13,7 @@ export default function LogsPage() {
   const [auto, setAuto] = useState(true);
   const [err, setErr] = useState('');
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const r = await extras.logs(600, q || undefined);
       setLines(r.exists ? r.lines : []);
@@ -22,14 +21,14 @@ export default function LogsPage() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : '读取日志失败');
     }
-  };
+  }, [q]);
 
   useEffect(() => {
-    void load();
-    if (!auto) return;
-    const t = window.setInterval(load, 5000);
-    return () => window.clearInterval(t);
-  }, [auto, q]);
+    const initial = window.setTimeout(() => void load(), 0);
+    if (!auto) return () => window.clearTimeout(initial);
+    const t = window.setInterval(() => void load(), 5000);
+    return () => { window.clearTimeout(initial); window.clearInterval(t); };
+  }, [auto, load]);
 
   const shown = useMemo(() => (lines ?? []).slice(-300), [lines]);
 

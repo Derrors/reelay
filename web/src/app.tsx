@@ -39,6 +39,7 @@ export default function App() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="config" element={<ConfigPage />} />
+        <Route path="extensions" element={<ConfigPage key="extensions" initialTab="extensions" />} />
         <Route path="organize" element={<OrganizePage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="storage" element={<StoragePage />} />

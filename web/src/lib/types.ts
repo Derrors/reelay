@@ -64,6 +64,8 @@ export interface IParsedResource {
   season?: number | null;
   episodes?: number[];
   genres?: string[];
+  genre_ids?: number[];
+  origin_country?: string[];
   resolution?: string | null;
   size?: string | null;
   share_code?: string | null;
@@ -109,7 +111,21 @@ export interface ITaskDetail extends ITaskSummary {
   context: ITaskContext;
 }
 
+export interface IExtensionField {
+  path: string; label: string; type: 'string' | 'number' | 'boolean';
+  choices?: string[]; min?: number; max?: number; required?: boolean;
+}
+export interface IExtension {
+  name: string; kind: 'provider' | 'hook' | 'event'; slot: string; label: string;
+  description: string; enabled: boolean; order: number | null;
+  fields: IExtensionField[]; config_section: string | null; config_type?: string | null; required_storage: string | null;
+}
+export interface IExtensionCatalog {
+  providers: Record<string, IExtension[]>; hooks: IExtension[]; events: IExtension[];
+}
 export interface IConfigResponse {
+  revision: string;
+  extensions: IExtensionCatalog;
   config: Record<string, unknown>;
   text: string;
   connections: Record<string, IConnection>;

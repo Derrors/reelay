@@ -19,6 +19,7 @@ import logging
 import os
 import re
 
+from ..core.auth115 import get_store
 from ..core.contracts import PipelineContext
 from ..core.io import run_blocking
 from ..core.media import episode_of as _episode_of
@@ -41,25 +42,36 @@ def _ext_of(filename: str, default: str = "mp4") -> str:
 @register(kind="hook", stage="after_save", order=20)
 class Organizer:
     name = "organizer"
+    ui_label = "媒体库整理"
+    ui_description = "转存后按已持久化计划建目录、改名、移动，并读回核验。"
+    ui_section = "organize"
+    ui_config_type = "naming_templates"
     storage_provider = "p115"
     stage = "after_save"
     order = 20
 
     def __init__(self) -> None:
+        # 测试可注入伪 client（self._client = fake）；生产不再自建 cookie
+        # 客户端——读操作走凭证中心 cookie 客户端，写操作（建目录/改名/
+        # 移动/删除）走混合鉴权（OAuth 优先、cookie 回退）。
         self._client = None
         self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
-        cookies = os.getenv("REELAY_115_COOKIES")
-        if cookies and not self._dry_run:
-            try:
-                from p115client import P115Client
-                self._client = P115Client(cookies)
-            except Exception:
-                self._client = None
+        self._auth = get_store()
+
+    def _read_client(self):
+        """列目录/读属性使用的客户端：注入伪 client 优先，否则用 cookie。"""
+        if self._client is not None:
+            return self._client
+        if self._dry_run:
+            return None
+        return self._auth.cookie_client()
 
     async def prepare(self, ctx: PipelineContext) -> None:
         """Pipeline 在执行前持久化此计划；恢复沿同一组文件 ID 续跑。"""
         ns = ctx.ns("organize")
-        if ns.get("plan") and ns.get("base_cid") == ctx.save_dir_cid:
+        relative_category = ctx.ns("dir_router").get("relative_category", "")
+        if (ns.get("plan") and ns.get("base_cid") == ctx.save_dir_cid
+                and ns.get("relative_category", "") == relative_category):
             return
         problem = self._validate(ctx.parsed) if ctx.parsed else "缺识别结果"
         if problem:
@@ -67,8 +79,9 @@ class Organizer:
         landed = ctx.ns("storage").get("landed") or []
         if not landed:
             raise ValueError("缺少已核验的落地文件")
-        ns["plan"] = self._build_plan(ctx.parsed, landed)
+        ns["plan"] = self._build_plan(ctx.parsed, landed, relative_category)
         ns["base_cid"] = ctx.save_dir_cid
+        ns["relative_category"] = relative_category
         ns.pop("error", None)
         if not ns["plan"]:
             raise ValueError("整理计划没有视频文件")
@@ -81,8 +94,8 @@ class Organizer:
                 ctx.ns("organize")["applied"] = False
                 ctx.log("[dry-run] 整理计划已生成，不执行网盘操作")
                 return True
-            if self._client is None:
-                raise RuntimeError("整理客户端不可用，请检查依赖与凭证")
+            if self._read_client() is None:
+                raise RuntimeError("整理客户端不可用：读核验需要 cookie，写操作可走 OAuth")
             await run_blocking(self._apply_sync, ctx, ctx.parsed, plan)
             self._cleanup_staging(ctx)
             ctx.ns("organize")["applied"] = True
@@ -102,27 +115,33 @@ class Organizer:
         仅在该暂存目录确实为空时删除；非空（有文件没被移走）则保留，绝不误删。
         dry-run 不清理。
         """
-        if self._dry_run or self._client is None:
+        if self._dry_run:
             return
-        import logging
+        read_client = self._read_client()
+        if read_client is None:
+            return
         from p115client import P115FileSystem
         manifest = ctx.ns("storage").get("manifest") or {}
         stage = manifest.get("staging_cid")
         if not isinstance(stage, int):
             return
         try:
-            fs = P115FileSystem(self._client)
+            fs = P115FileSystem(read_client)
             if list(fs.iterdir(stage)):
-                logging.getLogger("reelay.organizer").info(
-                    "暂存目录非空，保留：%s", stage)
+                log.info("暂存目录非空，保留：%s", stage)
                 return
-            if hasattr(self._client, "fs_delete"):
-                self._client.fs_delete([stage])
-                ctx.log("已清理空暂存目录")
+            if self._client is not None:
+                # 测试注入的伪 client
+                if hasattr(self._client, "fs_delete"):
+                    self._client.fs_delete([stage])
+                else:
+                    return
+            else:
+                self._auth.delete([stage])
+            ctx.log("已清理空暂存目录")
         except Exception as exc:  # noqa: BLE001
             # 清理失败不影响已完成的整理结果
-            logging.getLogger("reelay.organizer").warning(
-                "清理暂存目录失败（已忽略）：%s", exc)
+            log.warning("清理暂存目录失败（已忽略）：%s", exc)
 
     # ------------------------------------------------------------------ #
     def _validate(self, p) -> str | None:
@@ -134,41 +153,43 @@ class Organizer:
             # 季允许缺省为 1
         return None
 
-    def _build_plan(self, p, landed: list[dict]) -> list[dict]:
+    def _build_plan(self, p, landed: list[dict], category_path: str = "") -> list[dict]:
+        from ..core.naming_template import render_path
         naming = runtime.get("organize.naming", {}) or {}
-        year = p.year or ""
         title = _safe(p.title)
         is_tv = p.media_type == "tv" or bool(p.episodes)
-
         plan = []
         videos = [x for x in landed if not x.get("is_dir")]
         allowed_episodes = set(p.episodes or [])
         for f in videos:
             ext = _ext_of(f.get("name", ""))
+            detected_season, episode = _episode_of(f.get("name", "")) if is_tv else (None, None)
             if is_tv:
-                detected_season, ep = _episode_of(f.get("name", ""))
-                if ep is None:
+                if episode is None:
                     raise ValueError(f"无法从文件名识别集号：{f.get('name', '')}")
-                if allowed_episodes and ep not in allowed_episodes:
-                    raise ValueError(f"文件集号 E{ep:02d} 不在已识别集数中：{f.get('name', '')}")
+                if allowed_episodes and episode not in allowed_episodes:
+                    raise ValueError(f"文件集号 E{episode:02d} 不在已识别集数中：{f.get('name', '')}")
                 season = detected_season if detected_season is not None else (p.season if p.season is not None else 1)
                 if p.season is not None and season != p.season:
                     raise ValueError(f"文件季号与识别结果不一致：{f.get('name', '')}")
-                tpl = naming.get("tv", "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}")
-                rel = tpl.format(title=title, year=year, season=season, ep=ep, resolution=_safe(p.resolution), ext=ext)
+                template = naming.get("tv", "{{ title }} ({{ year|default('', true) }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}")
             else:
-                tpl = naming.get("movie", "{title} ({year})/{title} ({year}) - {resolution}.{ext}")
-                rel = tpl.format(title=title, year=year, resolution=_safe(p.resolution) or "", ext=ext)
-            parts = [seg for seg in rel.split("/") if seg]
-            if not parts or any(seg in (".", "..") for seg in parts):
-                raise ValueError("命名模板包含无效路径")
+                season, episode = p.season or 1, None
+                template = naming.get("movie", "{{ title }} ({{ year|default('', true) }})/{{ title }} ({{ year|default('', true) }}){% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}")
+            rel = render_path(template, {
+                "title": title, "year": p.year, "season": season, "episode": episode,
+                "ep": episode, "resolution": _safe(p.resolution) if p.resolution else "",
+                "ext": ext, "media_type": p.media_type, "genre_ids": p.genre_ids,
+                "origin_country": p.origin_country, "tmdb_id": p.raw_fields.get("tmdbid"),
+                "original_name": f.get("name", ""),
+            }, label=f"{'剧集' if is_tv else '电影'}命名模板")
+            if category_path:
+                rel = category_path.strip("/") + "/" + rel
+            parts = rel.split("/")
             plan.append({
-                "src_id": f["id"],
-                "src_name": f.get("name", ""),
-                "size": f.get("size"),
-                "sha1": f.get("sha1"),
-                "target_dir": "/".join(parts[:-1]),
-                "target_name": parts[-1],
+                "src_id": f["id"], "src_name": f.get("name", ""),
+                "size": f.get("size"), "sha1": f.get("sha1"),
+                "target_dir": "/".join(parts[:-1]), "target_name": parts[-1],
             })
         if len({(x["target_dir"], x["target_name"]) for x in plan}) != len(plan):
             raise ValueError("整理计划中的多个文件具有相同目标名称")
@@ -177,22 +198,42 @@ class Organizer:
     def _apply_sync(self, ctx: PipelineContext, p, plan: list[dict]) -> None:
         from p115client import P115FileSystem
 
-        client = self._client
-        fs = P115FileSystem(client)
+        # 读（列目录/读属性）走 cookie 客户端；测试注入伪 client 时全部走伪 client。
+        read_client = self._read_client()
+        fs = P115FileSystem(read_client)
+        fake_mode = self._client is not None
 
-        def _mkdir_web(parent: int, name: str) -> int:
-            """webapi 建目录（普通 cookie 可用；app 接口会 errno 99）。
+        def do_mkdir(parent: int, name: str) -> int:
+            if fake_mode:
+                # 测试桩：有 webapi 风格接口就用，否则回退 fs.mkdir
+                if hasattr(read_client, "fs_mkdir"):
+                    resp = read_client.fs_mkdir({"cname": name, "pid": int(parent)})
+                    if isinstance(resp, dict):
+                        fid = resp.get("file_id") or (resp.get("data") or {}).get("category_id")
+                        if fid:
+                            return int(fid)
+                made = fs.mkdir(parent, name=name)
+                return int(made["id"] if isinstance(made, dict) else made)
+            return int(self._auth.mkdir(int(parent), name)["id"])
 
-            无该接口（如测试桩 fake client）时回退 fs.mkdir。
-            """
-            if hasattr(client, "fs_mkdir"):
-                resp = client.fs_mkdir({"cname": name, "pid": int(parent)})
-                if isinstance(resp, dict):
-                    fid = resp.get("file_id") or (resp.get("data") or {}).get("category_id")
-                    if fid:
-                        return int(fid)
-            made = fs.mkdir(parent, name=name)  # 回退
-            return int(made["id"] if isinstance(made, dict) else made)
+        def do_rename(fid: int, name: str) -> None:
+            if fake_mode:
+                if hasattr(read_client, "fs_rename"):
+                    read_client.fs_rename((fid, name))
+                else:
+                    fs.rename(fid, name=name)
+            else:
+                self._auth.rename(int(fid), name)
+
+        def do_move(fid: int, pid: int) -> None:
+            if fake_mode:
+                if hasattr(read_client, "fs_move"):
+                    read_client.fs_move(fid, pid=pid)
+                else:
+                    fs.move(fid, to_dir=pid)
+            else:
+                self._auth.move(int(fid), int(pid))
+
         base_cid = int(ctx.save_dir_cid or 0)
         dir_cache: dict[str, int] = {}
 
@@ -217,7 +258,7 @@ class Organizer:
                         found = int(item["id"])
                         break
                 if found is None:
-                    found = _mkdir_web(pid, seg)
+                    found = do_mkdir(pid, seg)
                 dir_cache[key] = found
                 pid = found
             dir_cache[rel_dir] = pid
@@ -236,15 +277,9 @@ class Organizer:
                 raise ValueError("落地文件内容已变化，停止整理")
             # 根据真实文件 ID 的当前位置续跑；已改名或已移动的步骤无需重做。
             if current["name"] != item["target_name"]:
-                if hasattr(client, "fs_rename"):
-                    client.fs_rename((source_id, item["target_name"]))
-                else:
-                    fs.rename(source_id, name=item["target_name"])
+                do_rename(source_id, item["target_name"])
             if int(current["parent_id"]) != target_cid:
-                if hasattr(client, "fs_move"):
-                    client.fs_move(source_id, pid=target_cid)
-                else:
-                    fs.move(source_id, to_dir=target_cid)
+                do_move(source_id, target_cid)
             final = fs.get_attr(source_id, refresh=True)
             if int(final["parent_id"]) != target_cid or final["name"] != item["target_name"]:
                 raise RuntimeError("整理读回核验不通过，保留计划供后续重试")

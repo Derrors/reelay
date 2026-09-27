@@ -25,22 +25,32 @@ forward:
   target: "@your_archive_channel"
   template: "🎬 {title} ({year}) {resolution}\n📦 {size}\n🔗 {link}"
 
-# 命名与目录整理规则（遵循 Jellyfin/Emby 通用 SxxEyy 规范）
+# 媒体库整理插件：Jinja2 模板（在 Web「插件与扩展」中维护）
 organize:
   naming:
-    movie: "{title} ({year})/{title} ({year}) - {resolution}.{ext}"
-    tv: "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}"
+    movie: "{{ title }} ({{ year|default('', true) }})/{{ title }} ({{ year|default('', true) }}){% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
+    tv: "{{ title }} ({{ year|default('', true) }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}"
 
-# 目录路由：DirRouter 按规则决定进哪个库别名（自上而下匹配，命中即止）
-# 条件语法仅支持「字段 == 值」「字段 contains 值」以及用 and 连接（不使用 eval）
-routing:
-  - when: "genre contains 动画"
-    dir: "动漫"
-  - when: "media_type == movie and resolution == 4K"
-    dir: "电影"
-  - when: "type == tv"
-    dir: "剧集"
-  - default: "默认"
+# 二级分类路由插件：MoviePilot 风格策略（Web「插件与扩展」中维护）
+dir_router:
+  categories:
+    movie:
+      动漫/动画电影: {genre_ids: "16"}
+      电影/港台电影: {origin_country: "TW,HK"}
+      电影/国产电影: {origin_country: "CN"}
+      电影/日韩电影: {origin_country: "JP,KP,KR"}
+      电影/欧美电影: {}
+    tv:
+      动漫/国产动漫: {genre_ids: "16", origin_country: "CN,TW,HK"}
+      动漫/欧美动漫: {genre_ids: "16", origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
+      动漫/日本番剧: {genre_ids: "16", origin_country: "JP"}
+      其他/纪录影片: {genre_ids: "99"}
+      其他/综艺节目: {genre_ids: "10764,10767"}
+      剧集/港台剧集: {origin_country: "TW,HK"}
+      剧集/国产剧集: {origin_country: "CN"}
+      剧集/日韩剧集: {origin_country: "JP,KP,KR"}
+      剧集/南亚剧集: {origin_country: "TH,IN,SG"}
+      剧集/欧美剧集: {origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
 
 # 审批超时兜底（manual 卡片久未处理）
 approval:

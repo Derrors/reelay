@@ -106,6 +106,8 @@ class ParsedResource:
     season: int | None = None
     episodes: list[int] = field(default_factory=list)  # 本条覆盖的集数（追更判断用）
     genres: list[str] = field(default_factory=list)
+    genre_ids: list[int] = field(default_factory=list)          # TMDB 类型 ID，如 16=动画
+    origin_country: list[str] = field(default_factory=list)     # 两位国家/地区代码
     resolution: str | None = None
     size: str | None = None
     share_code: str | None = None     # 115 分享码（资源级去重键）

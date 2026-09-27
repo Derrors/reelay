@@ -89,7 +89,7 @@ class ManagementService:
                 "label": "控制 Bot",
             },
             "p115": {
-                "configured": bool(os.getenv("REELAY_115_COOKIES")),
+                "configured": self._p115_configured(),
                 "label": "115 网盘",
             },
             "llm": {
@@ -109,6 +109,12 @@ class ManagementService:
                 conn["status"] = "stale" if observation["stale"] else observation.get("status", "unverified")
                 conn["observed_at"] = observation["updated_at"]
         return connections
+
+    @staticmethod
+    def _p115_configured() -> bool:
+        """转存主链路依赖cookie；只有OAuth不能当成主流程就绪。"""
+        from .auth115 import get_store
+        return get_store().has_cookie
 
     def list_tasks(self, **filters: Any) -> list[dict[str, Any]]:
         state_value = filters.pop("state", None)
@@ -180,6 +186,10 @@ class ManagementService:
         if save_dir_alias:
             self._validate_alias(save_dir_alias)
             ctx.save_dir_alias = save_dir_alias
+            ctx.save_dir_cid = self.pipeline.cfg["save_dirs"][save_dir_alias]
+            ctx.meta.pop("dir_router", None)
+            ctx.ns("organize").pop("plan", None)
+            ctx.ns("organize").pop("base_cid", None)
         if not ctx.ns("storage").get("landed"):
             raise ConflictError("任务没有已落地文件记录，不能只重新整理")
         ctx.state = TaskState.QUEUED

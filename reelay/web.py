@@ -233,6 +233,8 @@ def create_app(
             "text": service.get_config_text(),
             "connections": service.connection_status(),
             "config_error": pipeline.config_error,
+            "revision": pipeline.revision,
+            "extensions": registry.catalog(service.get_config()),
         }
 
     @app.put("/api/config")

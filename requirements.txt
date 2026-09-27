@@ -6,9 +6,11 @@ telethon>=1.36            # 用你自己的 TG 账号监听多个 bot（MTProto�
 
 # --- 115 网盘 ---
 p115client==0.0.9.6.5.1   # 已核对 SDK：receive / rename / move / mkdir
+qrcode>=7.4,<9            # Web 端本地生成 115 登录二维码（SVG，无需 Pillow）
 
 # --- AI 解析（OpenAI 兼容接口）---
 openai>=1.40             # 走标准兼容 API，可接任意厂商/本地模型
 
-# --- 配置 ---
+# --- 配置与安全模板 ---
 PyYAML>=6.0
+Jinja2>=3.1,<4

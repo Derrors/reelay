@@ -68,12 +68,36 @@ class Worker:
 
     async def _monitor(self) -> None:
         import os
+        import time
+        from .auth115 import get_store as get_auth115_store
+
+        auth = get_auth115_store()
+        next_auth_check = 0.0
         while not self._stop.is_set():
             self.pipeline.reload_config()
+            now = time.time()
+            # Worker 自身心跳必须先落库，不能被外部 115 网络请求阻塞。
             self.store.heartbeat("worker", status="running", pid=os.getpid(),
                                  config_revision=self.pipeline.revision,
                                  config_error=self.pipeline.config_error,
                                  inflight=len(self._seen_inflight), concurrency=self.concurrency)
+            if now >= next_auth_check:
+                auth.reload_if_changed()
+                try:
+                    await asyncio.to_thread(auth.refresh_oauth_if_due)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("115 OAuth 主动续期失败：%s", exc)
+                cookie_state, oauth_state = await asyncio.gather(
+                    asyncio.to_thread(auth.ping_cookie, True),
+                    asyncio.to_thread(auth.ping_oauth, True),
+                )
+                self.store.heartbeat("p115_cookie", status=cookie_state,
+                                     error=auth.cookie_error)
+                self.store.heartbeat("p115_oauth", status=oauth_state,
+                                     error=auth.oauth_error,
+                                     configured=auth.has_oauth)
+                next_auth_check = now + max(
+                    30, int(os.getenv("REELAY_115_AUTH_CHECK_SEC", "300")))
             await asyncio.sleep(1)
 
     def stop(self) -> None:

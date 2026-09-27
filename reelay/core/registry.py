@@ -76,6 +76,12 @@ class Registry:
                     self.get_provider(kind, rule.get(kind, cfg["defaults"][kind]))
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
+        from .config_fields import validate_declared_field
+        objects = [obj for entries in self.providers.values() for obj in entries.values()]
+        objects += [obj for groups in (self.hooks, self.listeners) for entries in groups.values() for obj in entries]
+        for obj in objects:
+            for field in getattr(obj, 'ui_fields', []):
+                validate_declared_field(cfg, field)
         extensions = {self.extension_name(obj) for groups in (self.hooks, self.listeners)
                       for items in groups.values() for obj in items}
         if set(cfg["plugins"]) - extensions:
@@ -84,6 +90,28 @@ class Registry:
             if any(rule.get("storage", cfg["defaults"]["storage"]) != "p115"
                    for rule in [cfg["defaults"], *cfg["sources"]]):
                 raise ValueError("organizer 仅支持 p115；其他存储需关闭它并注册对应的整理扩展")
+
+    def catalog(self, config: dict) -> dict[str, Any]:
+        """目录直接来自已加载注册表；新扩展声明 ui_fields 即可获得配置表单。"""
+        def describe(obj, kind, slot):
+            name = self.extension_name(obj)
+            return {
+                'name': name, 'kind': kind, 'slot': slot,
+                'label': getattr(obj, 'ui_label', name),
+                'description': getattr(obj, 'ui_description', (obj.__doc__ or '').strip().split('\n')[0]),
+                'enabled': config.get('plugins', {}).get(name, True),
+                'order': getattr(obj, 'order', None),
+                'fields': getattr(obj, 'ui_fields', []),
+                'config_section': getattr(obj, 'ui_section', None),
+                'config_type': getattr(obj, 'ui_config_type', None),
+                'required_storage': getattr(obj, 'storage_provider', None),
+            }
+        return {
+            'providers': {kind: [describe(obj, 'provider', kind) for obj in entries.values()]
+                          for kind, entries in self.providers.items()},
+            'hooks': [describe(obj, 'hook', slot) for slot, entries in self.hooks.items() for obj in entries],
+            'events': [describe(obj, 'event', slot) for slot, entries in self.listeners.items() for obj in entries],
+        }
 
     def summary(self) -> dict[str, Any]:
         return {

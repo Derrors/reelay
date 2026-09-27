@@ -19,6 +19,8 @@ MEDIA_SCHEMA: dict[str, Any] = {
         "season": {"type": ["integer", "null"]},
         "episodes": {"type": "array", "items": {"type": "integer"}},
         "genres": {"type": "array", "items": {"type": "string"}},
+        "genre_ids": {"type": "array", "items": {"type": "integer"}},
+        "origin_country": {"type": "array", "items": {"type": "string"}},
         "resolution": {"type": ["string", "null"]},
         "size": {"type": ["string", "null"]},
         "reason": {"type": ["string", "null"]},
@@ -34,7 +36,10 @@ def validate_resource(data: Any, *, complete: bool = False) -> dict[str, Any]:
     allowed = set(MEDIA_SCHEMA["properties"]) | {"share_code", "receive_code", "raw_fields"}
     if complete:
         allowed = set(MEDIA_SCHEMA["properties"])
-        if set(data) != allowed:
+        optional_new = {"genre_ids", "origin_country"}
+        if not optional_new.isdisjoint(data) and not optional_new <= set(data):
+            raise ValueError("AI 解析结果新增分类字段必须同时提供")
+        if set(data) not in (allowed, allowed - optional_new):
             raise ValueError("AI 解析结果字段缺失或包含未知字段")
     if set(data) - allowed:
         raise ValueError("解析结果包含未知字段")
@@ -55,6 +60,14 @@ def validate_resource(data: Any, *, complete: bool = False) -> dict[str, Any]:
         elif key == "genres":
             valid = (type(value) is list and len(value) <= 30
                      and all(type(g) is str and 0 < len(g.strip()) <= 100 for g in value))
+        elif key == "genre_ids":
+            valid = (type(value) is list and len(value) <= 100
+                     and all(type(g) is int and 0 < g <= 999999 for g in value)
+                     and len(set(value)) == len(value))
+        elif key == "origin_country":
+            valid = (type(value) is list and len(value) <= 100
+                     and all(type(c) is str and re.fullmatch(r"[A-Za-z]{2}", c) for c in value)
+                     and len({c.upper() for c in value}) == len(value))
         elif key == "raw_fields":
             valid = isinstance(value, dict)
         elif key in {"share_code", "receive_code"}:

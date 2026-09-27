@@ -14,9 +14,10 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "save_dirs": {"电影": "0", "剧集": "0", "动漫": "0", "默认": "0"},
     "forward": {"enabled": False, "target": "", "template": "{title} ({year}) {resolution}\n{link}"},
     "organize": {"naming": {
-        "movie": "{title} ({year})/{title} ({year}) - {resolution}.{ext}",
-        "tv": "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}",
+        "movie": "{{ title }} ({{ year|default('', true) }})/{{ title }} ({{ year|default('', true) }}){% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}",
+        "tv": "{{ title }} ({{ year|default('', true) }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}",
     }},
+    "dir_router": {},
     "providers": {"source": "telegram", "notify": ["console"]},
     "plugins": {},
     "defaults": {"approval_mode": "manual", "parser": "llm", "decision": "default",
@@ -59,13 +60,17 @@ def normalize_config(data: Any) -> dict[str, Any]:
     # 目录列表是完整映射；不偷偷补回已删除的 CID=0 占位目录。
     if "save_dirs" in data:
         cfg["save_dirs"] = copy.deepcopy(data["save_dirs"])
-    for key in ("save_dirs", "defaults", "forward", "providers", "plugins", "organize", "approval"):
+    for key in ("save_dirs", "defaults", "forward", "providers", "plugins", "organize", "dir_router", "approval"):
         if not isinstance(cfg[key], dict):
             raise ValueError(f"{key} 必须是对象")
     dirs = cfg["save_dirs"]
     if not dirs or any(type(k) is not str or not k.strip() or type(v) not in (str, int)
                        or not str(v).isdecimal() for k, v in dirs.items()):
         raise ValueError("save_dirs 必须包含非空别名与非负整数 CID")
+    if len({k.strip() for k in dirs}) != len(dirs) or any(k != k.strip() for k in dirs):
+        raise ValueError("save_dirs 目录别名不能重复或带首尾空格")
+    if any(not re.fullmatch(r'[0-9]+', str(cid)) for cid in dirs.values()):
+        raise ValueError("save_dirs CID 必须是十进制非负整数字符串")
     cfg["save_dirs"] = {alias: str(cid) for alias, cid in dirs.items()}
     for key in ("sources", "routing"):
         if not isinstance(cfg[key], list):
@@ -95,14 +100,20 @@ def normalize_config(data: Any) -> dict[str, Any]:
             if not isinstance(source["forward"], dict):
                 raise ValueError(f"{label}.forward 必须是对象")
             _validate_forward(merge_config(cfg["forward"], source["forward"]))
-    for rule in cfg["routing"]:
+    from .category_strategy import validate_strategy
+    categories = cfg["dir_router"].get("categories")
+    if categories is None:
+        from .category_strategy import DEFAULT_CATEGORY_STRATEGY
+        cfg["dir_router"]["categories"] = copy.deepcopy(DEFAULT_CATEGORY_STRATEGY)
+        categories = cfg["dir_router"]["categories"]
+    validate_strategy(categories)
+    for rule in cfg["routing"]:  # 旧配置只读兼容
         if not isinstance(rule, dict):
             raise ValueError("routing 规则必须是对象")
         if "default" in rule:
             target = rule["default"]
         else:
-            target = rule.get("dir")
-            when = rule.get("when")
+            target, when = rule.get("dir"), rule.get("when")
             if not isinstance(when, str) or not when.strip():
                 raise ValueError("routing 规则缺少 when")
             for clause in when.split(" and "):
@@ -119,6 +130,11 @@ def normalize_config(data: Any) -> dict[str, Any]:
     naming = cfg["organize"].get("naming")
     if not isinstance(naming, dict) or any(type(v) is not str or not v for v in naming.values()):
         raise ValueError("organize.naming 必须包含非空模板")
+    from .config_fields import validate_naming
+    from .naming_template import migrate_legacy_template
+    for kind, template in list(naming.items()):
+        naming[kind] = migrate_legacy_template(template)
+    validate_naming(naming)
     try:
         json.dumps(cfg, sort_keys=True, allow_nan=False)
     except (TypeError, ValueError) as exc:

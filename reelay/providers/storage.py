@@ -2,12 +2,18 @@
 
 prepare 只创建暂存目录并枚举分享；save 只发送一次转存请求；reconcile
 只读核验。调用方必须先持久化清单和 receiving 状态，才能调用 save。
+
+鉴权分工（混合鉴权）：
+- 分享枚举（P115ShareFileSystem）与 share_receive 转存、列目录/读属性：cookie；
+- 建暂存目录：走凭证中心 ``CredentialStore.mkdir``（优先 OAuth open API，
+  失败回退 cookie webapi）。
 """
 from __future__ import annotations
 
 import os
 from typing import Any
 
+from ..core.auth115 import get_store
 from ..core.contracts import PipelineContext, TransferUncertain
 from ..core.io import run_blocking
 from ..core.registry import register
@@ -70,24 +76,29 @@ class P115Storage:
     name = 'p115'
 
     def __init__(self) -> None:
+        # 测试可直接注入伪 client（self._client = fake）；生产路径通过
+        # _cookie_client() 从凭证中心懒加载 cookie 客户端（分享枚举/转存
+        # 只能走 cookie；建目录等写操作走凭证中心的混合鉴权）。
         self._client = None
         self._init_error = None
         self._dry_run = os.getenv('REELAY_DRY_RUN', '').lower() in {'1', 'true', 'yes'}
-        cookies = os.getenv('REELAY_115_COOKIES')
-        if cookies and not self._dry_run:
-            try:
-                from p115client import P115Client
-                self._client = P115Client(cookies)
-            except Exception as exc:
-                self._init_error = exc
+        self._auth = get_store()
+
+    def _cookie_client(self):
+        if self._client is not None:
+            return self._client
+        if self._dry_run:
+            return None
+        return self._auth.cookie_client()
 
     @property
     def live(self) -> bool:
-        return self._client is not None and not self._dry_run
+        return not self._dry_run and (self._client is not None
+                                      or self._auth.has_cookie)
 
     def _require_client(self) -> None:
-        if not self._client:
-            raise RuntimeError('115 客户端不可用，请检查依赖与凭证') from self._init_error
+        if self._cookie_client() is None:
+            raise RuntimeError('115 客户端不可用：分享枚举/转存需要配置 cookie（写操作可走 OAuth）')
 
     async def prepare(self, ctx: PipelineContext) -> dict[str, Any]:
         if self._dry_run:
@@ -117,13 +128,14 @@ class P115Storage:
     def _prepare_sync(self, ctx: PipelineContext) -> dict[str, Any]:
         from p115client import P115FileSystem, P115ShareFileSystem
         p = ctx.parsed
-        share_fs = P115ShareFileSystem(self._client, p.share_code, p.receive_code)
+        client = self._cookie_client()
+        share_fs = P115ShareFileSystem(client, p.share_code, p.receive_code)
         files = _select_video_items(self._collect_share_videos(share_fs), p)
         if not files:
             raise RuntimeError('分享内未找到视频文件')
         if len({x['name'] for x in files}) != len(files):
             raise RuntimeError('分享内视频文件重名，需人工选择后再转存')
-        fs = P115FileSystem(self._client)
+        fs = P115FileSystem(client)
         parent = int(ctx.save_dir_cid)
         name = f'.reelay-{ctx.task_id}'
         matches = [x for x in fs.iterdir(parent) if x.get('name') == name]
@@ -132,21 +144,25 @@ class P115Storage:
                 raise RuntimeError('暂存目录名称冲突，需人工处理')
             stage = matches[0]
         else:
-            stage = self._mkdir_web(parent, name)
+            stage = self._mkdir(parent, name)
         return {'to_cid': parent, 'staging_cid': int(stage['id']), 'files': files}
 
-    def _mkdir_web(self, parent: int, name: str) -> dict:
-        """在 115 建目录：优先 webapi /files/add（普通登录 cookie 即可）。
+    def _mkdir(self, parent: int, name: str) -> dict:
+        """建暂存目录。
 
-        SDK 默认 app 接口在部分 cookie 上 errno 99「请重新登录」（缺 app
-        签名）；webapi 只需登录 cookie，失败再回退 SDK 原路径。
+        生产走凭证中心混合鉴权（OAuth 优先、cookie 回退）；测试注入伪
+        client 时沿用伪 client 的建目录实现，保持故障注入测试可控。
         """
+        if self._client is not None:
+            return self._mkdir_on_fake(parent, name)
+        return self._auth.mkdir(parent, name)
+
+    def _mkdir_on_fake(self, parent: int, name: str) -> dict:
         import logging
         from p115client import P115FileSystem
+        client = self._client
         try:
-            resp = self._client.fs_mkdir({"cname": name, "pid": int(parent)})
-            # webapi /files/add 成功在顶层返回 file_id/cid（旧版在 data）。
-            # state=False（如重名）也不当成功，交回 SDK 路径按 iterdir 复用。
+            resp = client.fs_mkdir({"cname": name, "pid": int(parent)})
             if isinstance(resp, dict) and resp.get("state", True) is not False:
                 fid = (resp.get("file_id") or resp.get("cid")
                        or (resp.get("data") or {}).get("category_id"))
@@ -155,16 +171,19 @@ class P115Storage:
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("reelay.storage").warning(
                 "webapi 建目录异常，回退 app 接口：%s", exc)
-        return P115FileSystem(self._client).mkdir(parent, name=name)
+        made = P115FileSystem(client).mkdir(parent, name=name)
+        return {"id": int(made["id"] if isinstance(made, dict) else made),
+                "name": name}
 
     def _receive_sync(self, ctx: PipelineContext) -> dict[str, Any]:
         from p115client import P115FileSystem, P115ShareFileSystem
+        client = self._cookie_client()
         manifest = ctx.ns('storage')['manifest']
         # 独占目录非空时只能核验，绝不追加一份转存。
-        if list(P115FileSystem(self._client).iterdir(manifest['staging_cid'])):
+        if list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
             return self._reconcile_sync(manifest)
         p = ctx.parsed
-        share_fs = P115ShareFileSystem(self._client, p.share_code, p.receive_code)
+        share_fs = P115ShareFileSystem(client, p.share_code, p.receive_code)
         # SDK check_response 检查业务状态；异常结果交给 reconcile，不能自动重发。
         recv = share_fs.receive([x['id'] for x in manifest['files']],
                                 to_pid=manifest['staging_cid'])
@@ -174,7 +193,8 @@ class P115Storage:
 
     def _reconcile_sync(self, manifest: dict) -> dict[str, Any]:
         from p115client import P115FileSystem
-        actual = [_file_record(x) for x in P115FileSystem(self._client).iterdir(manifest['staging_cid'])]
+        client = self._cookie_client()
+        actual = [_file_record(x) for x in P115FileSystem(client).iterdir(manifest['staging_cid'])]
         landed = _verified_files(manifest['files'], actual)
         return self._receipt(manifest, landed)
 
