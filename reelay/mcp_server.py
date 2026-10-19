@@ -253,9 +253,11 @@ def build_server(tools: ReelayTools, *, readonly: bool):
         return server
 
     async def approve(task_id: str, save_dir_alias: str | None = None) -> dict[str, Any]:
-        """批准待审批（pending_approval）任务，可选改投到 list_save_dirs 中的另一个目录别名。
+        """批准待审批（pending_approval）任务，可选改投到 list_save_dirs 中的另一个目录别名；
+        不传则按自动分类存放，改投到与分类不同的目录时不再套用分类子目录。
         注意：批准后任务进入 queued，正在运行的 Reelay worker 会执行真实的 115 转存与整理，此处无法撤销。
-        Approve a pending_approval task, optionally overriding the target save-dir alias.
+        Approve a pending_approval task, optionally overriding the target save-dir alias
+        (omit it to keep automatic categorization; an override skips category subfolders).
         This queues a REAL 115 cloud transfer that the running Reelay worker executes;
         it cannot be undone from here. Returns {ok, state} or {ok: false, error}."""
         return await tools.approve(task_id, save_dir_alias=save_dir_alias)

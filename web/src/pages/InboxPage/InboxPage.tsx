@@ -62,7 +62,7 @@ interface CardProps {
 }
 
 function InboxCard({ item, dirs, selected, busy, onToggle, onOpen, onAct }: CardProps) {
-  const [dir, setDir] = useState(item.save_dir_alias ?? dirs[0] ?? '');
+  const [dir, setDir] = useState('');  // 空值 = 按自动分类存放
   const manual = item.state === 'need_manual';
   return (
     <article className={cn(
@@ -117,14 +117,16 @@ function InboxCard({ item, dirs, selected, busy, onToggle, onOpen, onAct }: Card
           {!manual ? (
             <>
               {dirs.length > 1 ? (
-                <Select value={dir} onValueChange={setDir} aria-label="保存目录" className="mr-auto min-w-0 max-w-32 flex-1"
-                  options={dirs.map((d) => ({ value: d, label: d }))} />
+                <Select value={dir} onValueChange={setDir} aria-label="保存目录" className="mr-auto min-w-0 max-w-56 flex-1"
+                  title={dir && dir !== item.auto_dir?.split('/')[0] ? `直接存入「${dir}」，不套用分类子目录`
+                    : `按分类存入「${item.auto_dir ?? '自动'}」`}
+                  placeholder={`自动 · ${item.auto_dir ?? '按分类'}`} options={dirs.map((d) => ({ value: d, label: d }))} />
               ) : null}
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAct('reject')} aria-label="忽略"
                 className="shrink-0 px-2 text-muted-foreground hover:text-destructive sm:px-3">
                 <X /><span className="max-sm:hidden">忽略</span>
               </Button>
-              <Button size="sm" disabled={busy} onClick={() => onAct('approve', dir)} className="shrink-0"><Check />转存</Button>
+              <Button size="sm" disabled={busy} onClick={() => onAct('approve', dir || undefined)} className="shrink-0"><Check />转存</Button>
             </>
           ) : (
             <>
@@ -269,7 +271,7 @@ export default function InboxPage() {
           </label>
           <div className="ml-auto flex items-center gap-2">
             {dirs.length > 1 ? (
-              <Select value={batchDir} onValueChange={setBatchDir} placeholder="保持各自目录" aria-label="批量保存目录"
+              <Select value={batchDir} onValueChange={setBatchDir} placeholder="各自按分类存放" aria-label="批量保存目录"
                 options={dirs.map((d) => ({ value: d, label: `改存到「${d}」` }))} className="hidden w-40 md:block" />
             ) : null}
             <Button size="sm" variant="outline" disabled={!selected.size || busy.size > 0} onClick={() => void batch('reject')}>

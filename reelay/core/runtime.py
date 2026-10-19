@@ -76,6 +76,16 @@ def services() -> Services:
     return current
 
 
+def observe(component: str, status: str, error: str = "") -> None:
+    """记录一次真实调用的结果（如 LLM、TMDB），管理台「连接状态」显示最近一次结果。
+
+    这类观察只在实际调用时产生，不会因为一段时间没有调用而过期；不在管线作用域内时忽略。
+    """
+    current = _SERVICES.get()
+    if current is not None:
+        current.store.heartbeat(component, status=status, error=error, event_driven=True)
+
+
 def set_config(cfg: dict[str, Any]) -> None:
     global _CONFIG
     _CONFIG = cfg or {}

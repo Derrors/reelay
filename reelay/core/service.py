@@ -118,8 +118,12 @@ class ManagementService:
                 stale = observation["stale"]
                 if observation.get("check_interval"):  # 定时探活：超过两个探活周期没有新结果才算过期
                     stale = time.time() - observation["updated_at"] > 2 * observation["check_interval"]
+                elif observation.get("event_driven"):  # 只在真实调用时记录，显示最近一次结果
+                    stale = False
                 conn["status"] = "stale" if stale else observation.get("status", "unverified")
                 conn["observed_at"] = observation["updated_at"]
+                if observation.get("error"):
+                    conn["error"] = observation["error"]
         return connections
 
     @staticmethod
@@ -157,9 +161,9 @@ class ManagementService:
                 "fallback": bool(meta.get("parse", {}).get("fallback")),
                 "tmdb_matched": meta.get("tmdb", {}).get("matched"),
                 "poster_path": p.raw_fields.get("poster_path"),
-                "save_dir_alias": (ctx.save_dir_alias or ctx.source_rule.get("save_to")
-                                   or self.pipeline.cfg["defaults"].get("save_to")),
-                "preview": "\n".join(line for line in lines if line)[:400],
+                "save_dir_alias": ctx.save_dir_alias,
+                "auto_dir": self.pipeline.target_preview(ctx) if state == TaskState.PENDING_APPROVAL.value else None,
+                "preview":"\n".join(line for line in lines if line)[:400],
                 "storage_phase": meta.get("storage", {}).get("phase"),
                 "has_landed": bool(meta.get("storage", {}).get("landed")),
                 "organize_error": meta.get("organize", {}).get("error"),
@@ -170,15 +174,21 @@ class ManagementService:
         record = self.store.get_task_record(task_id)
         if not record:
             raise NotFoundError("任务不存在")
+        ctx = self.store.get_task(task_id) if record["state"] == TaskState.PENDING_APPROVAL.value else None
+        record["auto_dir"] = self.pipeline.target_preview(ctx) if ctx else None
         return record
 
     async def approve(self, task_id: str, *, save_dir_alias: str | None = None) -> None:
+        """save_dir_alias 是手动指定的目录：与自动分类不一致时直接存入，不套用分类子目录。"""
         ctx = self._require_context(task_id)
         if ctx.state != TaskState.PENDING_APPROVAL:
             raise ConflictError("任务不是待审批状态")
         if save_dir_alias:
             self._validate_alias(save_dir_alias)
             ctx.save_dir_alias = save_dir_alias
+            ctx.ns("dir_router")["pinned"] = save_dir_alias
+        elif ctx.ns("dir_router").pop("pinned", None):
+            ctx.save_dir_alias = None  # 撤销此前手动指定的目录，重新按分类
         ctx.state = TaskState.QUEUED
         ctx.log("管理端批准转存")
         self._update(ctx, expected=TaskState.PENDING_APPROVAL)
@@ -230,11 +240,11 @@ class ManagementService:
         ctx = self._require_context(task_id)
         if ctx.state != TaskState.NEED_MANUAL:
             raise ConflictError("只有待人工整理任务可以重新整理")
-        if save_dir_alias:
+        if save_dir_alias and save_dir_alias != ctx.save_dir_alias:
             self._validate_alias(save_dir_alias)
             ctx.save_dir_alias = save_dir_alias
             ctx.save_dir_cid = self.pipeline.cfg["save_dirs"][save_dir_alias]
-            ctx.meta.pop("dir_router", None)
+            ctx.meta.pop("dir_router", None)  # 改到其他目录后不再套用分类子目录
             ctx.ns("organize").pop("plan", None)
             ctx.ns("organize").pop("base_cid", None)
         if not ctx.ns("storage").get("landed"):

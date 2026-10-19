@@ -49,6 +49,9 @@ class Pipeline:
         self.save_dirs: dict[str, str] = self.cfg["save_dirs"]
         self._organize_locks: dict[str, asyncio.Lock] = {}
         self.services = runtime.Services(store, self.notify_targets)
+        # 启动补拉期间推迟日报（见 hold_daily）；消息源完成补拉后由主进程置为 True
+        self.sources_ready = True
+        self._daily_hold_until: float | None = None
 
     def notify_targets(self) -> list[str]:
         return list(self.cfg.get("providers", {}).get("notify", ["console"]))
@@ -84,6 +87,14 @@ class Pipeline:
 
     def task_config(self, ctx: PipelineContext) -> dict:
         return ctx.meta.get("runtime", {}).get("config", self.cfg)
+
+    def target_preview(self, ctx: PipelineContext) -> str:
+        """不手动改目录时任务将存入的位置（含二级分类），供审批卡片与管理台展示。"""
+        with self._scope(ctx):
+            for hook in self.reg.hooks_for("before_save", self.task_config(ctx)):
+                if hasattr(hook, "preview"):
+                    return hook.preview(ctx)
+        return ctx.save_dir_alias or ctx.source_rule.get("save_to") or "默认"
 
     # ------------------------------------------------------------------ #
     # Hook / Event 基础设施
@@ -257,6 +268,7 @@ class Pipeline:
 
         if ctx.decision == Decision.ASK:
             ctx.state = TaskState.PENDING_APPROVAL
+            ctx.ns("dir_router")["preview"] = self.target_preview(ctx)  # 审批卡片展示实际去向
             ctx.log("转人工确认（审批态已落库，可跨重启）")
         else:
             ctx.state = TaskState.QUEUED
@@ -609,6 +621,21 @@ class Pipeline:
     # ------------------------------------------------------------------ #
     # 每日系统事件：日报、追更巡检等扩展订阅 on_daily
     # ------------------------------------------------------------------ #
+    def hold_daily(self, seconds: float, now: float | None = None) -> None:
+        """启动时调用：消息源补拉完、补拉的消息解析完之前不发日报，否则会少算停机期间的
+        消息；最多推迟 seconds 秒，消息源迟迟连不上时照常发送。"""
+        import time
+        self.sources_ready = False
+        self._daily_hold_until = (time.time() if now is None else now) + seconds
+
+    def _daily_on_hold(self, now: float) -> bool:
+        if self._daily_hold_until is None or now >= self._daily_hold_until:
+            return False
+        if self.sources_ready and not self.store.counts_by_state().get(TaskState.RECEIVED.value, 0):
+            self._daily_hold_until = None  # 启动补拉已全部处理，之后不再检查
+            return False
+        return True
+
     async def emit_daily(self, now: float | None = None) -> bool:
         """到达 schedule.daily_hour 后每天发一次 on_daily；返回本次是否发出。"""
         import time
@@ -617,6 +644,8 @@ class Pipeline:
         today = time.strftime("%Y-%m-%d", local)
         hour = int(self.cfg.get("schedule", {}).get("daily_hour", 9))
         if local.tm_hour < hour or self.store.state_get("kernel", "daily_event") == today:
+            return False
+        if self._daily_on_hold(now):
             return False
         ctx = PipelineContext(raw=RawMessage(source="system", msg_id=f"daily-{today}", text=""),
                               task_id=f"daily-{today}")

@@ -127,6 +127,7 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                     raise RuntimeError("消息源意外停止")
                 if hasattr(source, "configure"):
                     source.configure([item["bot"] for item in pipeline.cfg["sources"]])
+                pipeline.sources_ready = getattr(source, "backfill_done", True)
                 if getattr(source, "backfilled", 0) > backfilled:
                     count, backfilled = source.backfilled - backfilled, source.backfilled
                     pipeline.store.stage_notice(
@@ -185,6 +186,7 @@ async def _run_live() -> int:
             await pipeline.accept(PipelineContext(raw=raw))
 
         worker = Worker(pipeline, store, concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")))
+        pipeline.hold_daily(900)  # 日报等启动补拉的消息解析完再发，最多等 15 分钟
 
         async def sweep_loop() -> None:
             interval = max(1, int(os.getenv("REELAY_SWEEP_INTERVAL_SEC", "3600")))

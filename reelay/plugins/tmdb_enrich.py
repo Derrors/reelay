@@ -71,8 +71,10 @@ class TmdbEnrich:
             log.warning("TMDB 查询失败：%s", exc)
             ns["matched"] = False
             ns["error"] = type(exc).__name__
+            runtime.observe("tmdb", "failed", type(exc).__name__)
             return True  # 失败不阻断
 
+        runtime.observe("tmdb", "connected")
         ns["candidates"] = candidates
         if not hit:
             ns["matched"] = False

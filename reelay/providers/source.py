@@ -82,6 +82,7 @@ class TelegramUserbotSource:
         self._session = os.getenv("REELAY_TG_SESSION", "data/userbot.session")
         self._watermark: Callable[[str], int | None] | None = None
         self.backfilled = 0
+        self.backfill_done = False  # 本次监听的启动补拉已结束（含失败），日报据此决定何时发送
 
     def configure(self, targets: list[str]) -> None:
         self._targets = [target.strip().lower() for target in targets]
@@ -111,6 +112,7 @@ class TelegramUserbotSource:
         from telethon import TelegramClient, events  # 延迟导入
 
         self._client = TelegramClient(self._session, int(self._api_id), self._api_hash, catch_up=True)
+        self.backfill_done = False
         ready = asyncio.Event()
 
         # 过滤在回调中读取当前目标列表，热更新无需重建会话；空列表不监听任何来源。
@@ -145,6 +147,8 @@ class TelegramUserbotSource:
                 await self.backfill(emit)
             except Exception as exc:  # noqa: BLE001 - 补拉失败不影响实时监听
                 log.warning("历史消息补拉失败：%s", exc)
+            finally:
+                self.backfill_done = True
             await self._client.run_until_disconnected()
         finally:
             ready.set()

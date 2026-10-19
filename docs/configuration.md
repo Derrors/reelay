@@ -48,7 +48,7 @@ Reelay 有两类配置：
 | `approval.on_timeout` | `remind` | `remind` 提醒；`skip` 超时直接忽略 |
 | `approval.reminder` | `digest` | `digest` 把所有超时任务合并成一条汇总；`card` 逐条重推确认卡片 |
 | `approval.max_reminders` | `3` | 每条最多提醒次数，之后不再提醒但仍保留在待审批；`0` 不限 |
-| `schedule.daily_hour` | `9` | 每日系统事件（日报、追更巡检）发送的本地小时 |
+| `schedule.daily_hour` | `9` | 每日系统事件（日报、追更巡检）发送的本地小时；进程启动时会先等停机期间补拉的消息解析完（最多 15 分钟） |
 
 ### 整理入库
 
@@ -58,7 +58,7 @@ Reelay 有两类配置：
 | `organize.conflict` | `manual` | 目标已有同名不同文件时：`manual` 转人工；`skip` 保留旧文件、新文件进回收站；`suffix` 新文件加「 (2)」并存；`upgrade` 洗版——按画质再按大小比较，新文件更好则替换（旧文件进回收站），否则同 skip |
 | `dir_router.categories` | MoviePilot 风格默认策略 | `movie`/`tv` → `一级/二级` 路径 → 条件（`genre_ids`、`origin_country`，逗号分隔为"或"，同一分类内多个条件为"且"，空条件为兜底且须放最后） |
 
-一级分类名与某个 `save_dirs` 别名相同时，转存根目录跟随分类；否则在来源指定目录下创建完整的二级路径。
+一级分类名与某个 `save_dirs` 别名相同时，转存根目录跟随分类；否则在来源指定目录下创建完整的二级路径。审批时（管理台、MCP）手动选择的目录优先：与分类结果不同时直接存入该目录，不再套用二级分类子目录；不选则按分类自动存放，待审批卡片会显示实际去向。
 
 ### 扩展
 

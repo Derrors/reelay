@@ -442,9 +442,11 @@ class TestSourceBackfillAndAlerts(Base):
         class Backfilling:
             name = "fake"
             backfilled = 0
+            backfill_done = False
 
             async def listen(self, emit):
                 self.backfilled += 37
+                self.backfill_done = True
                 await asyncio.Event().wait()
 
             def health(self):
@@ -454,6 +456,8 @@ class TestSourceBackfillAndAlerts(Base):
         registry.add_provider("source", Backfilling())
         pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"},
                                   "providers": {"source": "fake", "notify": ["console"]}}, registry)
+        pipeline.hold_daily(900)
+        self.assertFalse(pipeline.sources_ready)
         loop = asyncio.create_task(_source_loop(pipeline, None, poll_interval=0.05))
         await asyncio.sleep(0.3)
         loop.cancel()
@@ -462,6 +466,7 @@ class TestSourceBackfillAndAlerts(Base):
             "SELECT snapshot FROM outbox WHERE kind='notice' AND event='notice'")]
         self.assertEqual(len(notices), 1)
         self.assertIn("37 条消息", notices[0])
+        self.assertTrue(pipeline.sources_ready)
 
     async def test_first_listen_does_not_import_history(self):
         source = TelegramUserbotSource()
@@ -492,6 +497,108 @@ class TestSourceBackfillAndAlerts(Base):
             loop.cancel()
             await asyncio.gather(loop, return_exceptions=True)
         self.assertEqual([a["key"] for a in self.store.active_alerts()], ["source"])
+
+
+class TestDailyWaitsForStartupBackfill(Base):
+    CFG = {"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"}, "schedule": {"daily_hour": 0}}
+
+    def daily_summary(self):
+        row = self.store._conn.execute("SELECT snapshot FROM outbox WHERE event='on_daily'").fetchone()
+        return json.loads(row[0])["meta"]["system"]["summary"]
+
+    async def test_daily_report_waits_until_backfilled_messages_are_parsed(self):
+        registry = Registry()
+        registry.add_listener(EpisodeTracker())
+        pipeline = self.pipeline(self.CFG, registry)
+        now = time.time()
+        pipeline.hold_daily(900, now=now)
+        self.assertFalse(await pipeline.emit_daily(now=now + 1))  # 消息源还在补拉
+        pipeline.sources_ready = True
+        ctx = await pipeline.accept(message())
+        self.assertFalse(await pipeline.emit_daily(now=now + 2))  # 补拉的消息还没解析
+        self.store.set_state(ctx.task_id, TaskState.PENDING_APPROVAL, expected=TaskState.RECEIVED)
+        self.assertTrue(await pipeline.emit_daily(now=now + 3))
+        self.assertEqual(self.daily_summary()["received"], 1)
+
+    async def test_daily_report_is_not_held_forever_when_source_never_connects(self):
+        registry = Registry()
+        registry.add_listener(EpisodeTracker())
+        pipeline = self.pipeline(self.CFG, registry)
+        now = time.time()
+        pipeline.hold_daily(900, now=now)
+        self.assertFalse(await pipeline.emit_daily(now=now + 60))
+        self.assertTrue(await pipeline.emit_daily(now=now + 901))
+
+    async def test_daily_report_is_not_held_without_startup_hold(self):
+        registry = Registry()
+        registry.add_listener(EpisodeTracker())
+        pipeline = self.pipeline(self.CFG, registry)
+        await pipeline.accept(message())
+        self.assertTrue(await pipeline.emit_daily())
+
+
+class TestManualDirectoryChoice(Base):
+    CFG = {"save_dirs": {"剧集": "2", "测试": "3", "电影": "4"}, "defaults": {"save_to": "测试"}}
+
+    def setUp(self):
+        super().setUp()
+        from reelay.core.service import ManagementService
+        self.registry = discover()
+        self.pl = self.pipeline(self.CFG, self.registry)
+        self.service = ManagementService(self.store, self.pl, config_path=str(Path(self.temp.name) / "config.yaml"))
+        self.registry.get_provider("parser", "llm")._client = FakeAI(
+            media(title="美人余", genre_ids=[18], origin_country=["CN"]))
+
+    async def pending(self, msg_id="1"):
+        await self.pl.process_new(message(msg_id=msg_id))
+        task_id = self.store.list_by_state(TaskState.PENDING_APPROVAL, 10)[0]["task_id"]
+        return task_id
+
+    async def approve_and_route(self, task_id, alias=None):
+        await self.service.approve(task_id, save_dir_alias=alias)
+        ctx = self.store.get_task(task_id)
+        self.assertTrue(await self.pl._run_hooks("before_save", ctx))
+        return ctx
+
+    async def test_inbox_and_approval_card_show_the_category_target(self):
+        task_id = await self.pending()
+        item = self.service.inbox()["items"][0]
+        self.assertEqual((item["save_dir_alias"], item["auto_dir"]), (None, "剧集/国产剧集"))
+        self.assertEqual(self.service.get_task(task_id)["auto_dir"], "剧集/国产剧集")
+        sent = []
+
+        async def sender(**kwargs):
+            sent.append(kwargs["text"])
+
+        console = ConsoleNotify()
+        console.configure(sender=sender)
+        await console.notify(self.store.get_task(task_id), "pending_approval")
+        self.assertIn("是否转存到「剧集/国产剧集」", sent[0])
+
+    async def test_approval_without_choice_follows_category(self):
+        ctx = await self.approve_and_route(await self.pending())
+        self.assertEqual(ctx.save_dir_alias, "剧集")
+        self.assertEqual(ctx.meta["dir_router"]["relative_category"], "国产剧集")
+
+    async def test_manual_choice_wins_and_skips_category_subfolder(self):
+        ctx = await self.approve_and_route(await self.pending(), "测试")
+        self.assertEqual(ctx.save_dir_alias, "测试")
+        self.assertNotIn("relative_category", ctx.meta["dir_router"])
+        self.assertTrue(any("手动指定目录「测试」" in line for line in ctx.trail))
+
+    async def test_manual_choice_matching_category_root_keeps_subfolder(self):
+        ctx = await self.approve_and_route(await self.pending(), "剧集")
+        self.assertEqual((ctx.save_dir_alias, ctx.meta["dir_router"]["relative_category"]), ("剧集", "国产剧集"))
+
+    async def test_llm_calls_are_reported_to_connection_status(self):
+        await self.pending()
+        later = time.time() + 86400  # 只在真实调用时记录，长时间没有新消息也不算过期
+        with patch.dict(os.environ, {"REELAY_LLM_API_KEY": "k"}), patch("time.time", return_value=later):
+            self.assertEqual(self.service.connection_status()["llm"]["status"], "connected")
+        self.registry.get_provider("parser", "llm")._client = FakeAI(ValueError("bad request"))
+        await self.pl.process_new(message(text=f"另一部剧 第1集 {SHARE}", msg_id="2"))
+        llm = self.service.connection_status()["llm"]
+        self.assertEqual((llm["status"], llm["error"]), ("failed", "ValueError"))
 
 
 class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
@@ -805,7 +912,7 @@ class TestConsoleApi(unittest.TestCase):
         item = body["items"][0]
         self.assertEqual((item["media_type"], item["resolution"], item["confidence_caps"]), ("tv", "4K", ["tmdb_unmatched"]))
         self.assertTrue(item["poster_path"].startswith("/p"))
-        self.assertEqual(item["save_dir_alias"], "默认")
+        self.assertEqual((item["save_dir_alias"], item["auto_dir"]), (None, "默认"))
         self.assertNotIn("http", item["preview"])
         manual = self.client.get("/api/inbox?state=need_manual").json()["items"]
         self.assertEqual([m["error"] for m in manual], ["同名冲突"])

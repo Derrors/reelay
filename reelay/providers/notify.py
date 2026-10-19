@@ -46,7 +46,9 @@ class ConsoleNotify:
                     log.info("[识别后转发→%s] %s", fc.get("target"), rendered.replace("\n", " / "))
 
         elif event == "pending_approval":
-            text = f"🎬 {title}  {p.size or ''}\n来源 {ctx.raw.source}\n是否转存到「{ctx.save_dir_alias or ctx.source_rule.get('save_to','默认')}」？"
+            target = (ctx.meta.get("dir_router", {}).get("preview") or ctx.save_dir_alias
+                      or ctx.source_rule.get("save_to", "默认"))
+            text = f"🎬 {title}  {p.size or ''}\n来源 {ctx.raw.source}\n是否转存到「{target}」？"
             # 关键：按钮 callback_data 只带 task_id
             buttons = [("✅ 转存", f"ok:{ctx.task_id}"), ("🚫 忽略", f"no:{ctx.task_id}")]
             if self._sender:

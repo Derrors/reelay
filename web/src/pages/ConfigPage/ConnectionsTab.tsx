@@ -34,6 +34,7 @@ export function ConnectionsTab({ connections }: { connections: Record<string, IC
                       {c.observed_at
                         ? <span title={fullTime(c.observed_at)}>更新于 {relativeTime(c.observed_at)}</span>
                         : c.configured ? '已填写凭证' : '尚未填写凭证'}
+                      {c.error ? <span className="block truncate text-destructive" title={c.error}>最近错误：{c.error}</span> : null}
                     </p>
                   </div>
                 </div>

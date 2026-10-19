@@ -21,6 +21,7 @@ import time
 from collections import OrderedDict
 from typing import Any
 
+from ..core import runtime
 from ..core.contracts import ParsedResource, PipelineContext
 from ..core.registry import register
 from ..core.validation import MEDIA_SCHEMA, validate_resource
@@ -279,10 +280,13 @@ class LLMParser:
             try:
                 data = await self._complete(ctx, response)
             except PermissionError:
+                runtime.observe("llm", "connected")  # 模型拒答，接口本身可用
                 return self._fallback(ctx, "refused")
             except Exception as exc:
                 # 不持久化 SDK 异常正文（可能带网关凭证或请求头）。
+                runtime.observe("llm", "failed", type(exc).__name__)
                 return self._fallback(ctx, type(exc).__name__)
+            runtime.observe("llm", "connected")
             self._cache.put(key, data)
 
         return ParsedResource(

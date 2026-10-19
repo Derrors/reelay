@@ -94,7 +94,7 @@ class MyListener:
 
 - 事件与任务状态在同一事务内写入 Outbox，异步投递：至少一次、单次 30 秒超时、失败退避重试（最多 8 次）、同一任务内按生成顺序。
 - `ctx` 是事件发生时的快照，修改它不会影响任务。
-- `on_daily` 由内核每天在 `schedule.daily_hour` 发出一次，`ctx.meta["system"]` 里有日期和过去 24 小时汇总，适合日报、巡检类扩展。
+- `on_daily` 由内核每天在 `schedule.daily_hour` 发出一次，`ctx.meta["system"]` 里有日期和过去 24 小时汇总，适合日报、巡检类扩展；进程启动时会等停机期间补拉的消息解析完再发（最多推迟 15 分钟）。
 - 一个类只能订阅一个事件；需要订阅多个事件时写多个类并使用相同的 `name`（共用一个开关），参考 `reelay/plugins/episode_tracker.py`。
 
 ## Provider 契约
@@ -118,7 +118,10 @@ url = runtime.get("webhook.url")                      # 点路径读取当前任
 runtime.services().notify("📦 备份完成", key="my_plugin")  # 发系统通知到所有通知渠道（持久化投递）
 state = runtime.services().state("my_plugin")          # 按扩展隔离的持久化 KV，值需可 JSON 序列化
 state.set("last_run", "2026-10-19")
+runtime.observe("my_api", "failed", "TimeoutError")    # 记录一次外部调用结果（connected / failed）
 ```
+
+`runtime.observe` 记录的是最近一次真实调用的结果，不会因一段时间没有调用而过期，可在 `GET /api/health` 的 `runtime` 中查看；内置的 LLM 解析与 TMDB 补全用它驱动管理台「AI 解析」「TMDB 元数据」的连接状态。
 
 `runtime.get` 读到的是任务接收时的配置快照，配置变更只影响新任务。`runtime.get` 与 `services()` 在内核调用 Hook、Event、通知渠道，以及解析/决策/存储 Provider 的方法时可用（包括其中的 `asyncio.to_thread`）；消息源的 `listen` 是长驻协程，不在任务作用域内。
 

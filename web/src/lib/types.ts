@@ -18,6 +18,7 @@ export interface IConnection {
   label: string;
   status: string;
   observed_at?: number;
+  error?: string;
 }
 
 export interface IRuntimeHealth {
@@ -127,6 +128,8 @@ export interface IInboxItem {
   tmdb_matched: boolean | null;
   poster_path: string | null;
   save_dir_alias: string | null;
+  /** 待审批任务不手动改目录时将存入的位置，如「剧集/国产剧集」。 */
+  auto_dir: string | null;
   preview: string;
   storage_phase: string | null;
   has_landed: boolean;
@@ -156,6 +159,7 @@ export interface ITaskContext {
 
 export interface ITaskDetail extends ITaskSummary {
   context: ITaskContext;
+  auto_dir?: string | null;
 }
 
 export interface IExtensionField {

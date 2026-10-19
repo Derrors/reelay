@@ -58,47 +58,72 @@ class DirRouter:
     order = 10
 
     async def run(self, ctx: PipelineContext) -> bool:
-        p = ctx.parsed
-        config = runtime.get("dir_router", {}) or {}
-        legacy = runtime.get("routing", []) or []
-        strategy = config.get("categories")
-        # 旧任务/测试若只有 legacy routing，保持旧语义；规范化后的新配置一定有 categories。
-        if not strategy and legacy:
-            default_alias = None
-            for rule in legacy:
-                if "default" in rule:
-                    default_alias = rule["default"]
-                elif rule.get("when") and rule.get("dir") and _match_condition(rule["when"], p):
-                    ctx.save_dir_alias = rule["dir"]
-                    return True
-            ctx.save_dir_alias = default_alias or ctx.source_rule.get("save_to") or "默认"
-            return True
-        strategy = strategy or DEFAULT_CATEGORY_STRATEGY
-        selected = classify(strategy, p.media_type if p else "", p.genre_ids if p else [],
-                            p.origin_country if p else [])
-        if selected:
-            ctx.ns("dir_router")["category_path"] = selected
-            root = selected.split("/", 1)[0]
-            aliases = runtime.get("save_dirs", {}) or {}
-            # 如果用户确实建立了一级目录映射，转存根目录跟随分类；否则保留来源指定目录，
-            # Organizer 会在其下创建完整二级路径，避免无效默认配置阻断旧部署。
-            if root in aliases:
-                ctx.save_dir_alias = root
-                ctx.ns("dir_router")["relative_category"] = selected.split("/", 1)[1]
-            else:
-                ctx.ns("dir_router")["relative_category"] = selected
-            ctx.log(f"二级分类命中「{selected}」")
-            return True
+        ns = ctx.ns("dir_router")
+        target = route(ctx.parsed, ctx.source_rule, current=ctx.save_dir_alias, pinned=ns.get("pinned"))
+        if target["alias"]:
+            ctx.save_dir_alias = target["alias"]
+        ns.pop("category_path", None)
+        ns.pop("relative_category", None)
+        if target["category_path"]:
+            ns["category_path"] = target["category_path"]
+            ns["relative_category"] = target["relative_category"]
+        if target["note"]:
+            ctx.log(target["note"])
+        return True
 
-        # 旧 routing 只用于已有配置迁移期；新配置不再由 Web 页面编辑它。
+    def preview(self, ctx: PipelineContext) -> str:
+        """待审批任务不改目录时将存入的位置，如「剧集/国产剧集」。"""
+        target = route(ctx.parsed, ctx.source_rule)
+        alias = target["alias"] or ctx.source_rule.get("save_to") or "默认"
+        return f"{alias}/{target['relative_category']}" if target["relative_category"] else alias
+
+
+def route(p, source_rule: dict, *, current: str | None = None, pinned: str | None = None) -> dict:
+    """按当前作用域的配置算出目标目录，不修改任务。
+
+    返回 alias（None 表示沿用任务/来源目录）、category_path / relative_category（二级分类）
+    与写入轨迹的 note。手动指定的目录与分类结果不一致时直接存进该目录、不套用分类子目录：
+    两者不一致通常说明分类本身就不对。
+    """
+    if pinned:
+        auto = route(p, source_rule)
+        if pinned == (auto["alias"] or source_rule.get("save_to") or "默认"):
+            return auto
+        return {"alias": pinned, "category_path": None, "relative_category": "",
+                "note": f"手动指定目录「{pinned}」，不套用分类子目录"}
+    result = {"alias": None, "category_path": None, "relative_category": "", "note": None}
+    config = runtime.get("dir_router", {}) or {}
+    legacy = runtime.get("routing", []) or []
+    strategy = config.get("categories")
+    # 旧任务/测试若只有 legacy routing，保持旧语义；规范化后的新配置一定有 categories。
+    if not strategy and legacy:
         default_alias = None
-        for rule in runtime.get("routing", []) or []:
+        for rule in legacy:
             if "default" in rule:
                 default_alias = rule["default"]
             elif rule.get("when") and rule.get("dir") and _match_condition(rule["when"], p):
-                ctx.save_dir_alias = rule["dir"]
-                ctx.log(f"兼容路由命中 [{rule['when']}] → 「{rule['dir']}」")
-                return True
-        ctx.save_dir_alias = ctx.save_dir_alias or default_alias or ctx.source_rule.get("save_to") or "默认"
-        ctx.log(f"无二级分类元数据，用根目录「{ctx.save_dir_alias}」")
-        return True
+                return {**result, "alias": rule["dir"]}
+        return {**result, "alias": default_alias or source_rule.get("save_to") or "默认"}
+    strategy = strategy or DEFAULT_CATEGORY_STRATEGY
+    selected = classify(strategy, p.media_type if p else "", p.genre_ids if p else [],
+                        p.origin_country if p else [])
+    if selected:
+        root = selected.split("/", 1)[0]
+        aliases = runtime.get("save_dirs", {}) or {}
+        # 如果用户确实建立了一级目录映射，转存根目录跟随分类；否则保留来源指定目录，
+        # Organizer 会在其下创建完整二级路径，避免无效默认配置阻断旧部署。
+        if root in aliases:
+            return {**result, "alias": root, "category_path": selected,
+                    "relative_category": selected.split("/", 1)[1], "note": f"二级分类命中「{selected}」"}
+        return {**result, "alias": current, "category_path": selected, "relative_category": selected,
+                "note": f"二级分类命中「{selected}」"}
+
+    # 旧 routing 只用于已有配置迁移期；新配置不再由 Web 页面编辑它。
+    default_alias = None
+    for rule in runtime.get("routing", []) or []:
+        if "default" in rule:
+            default_alias = rule["default"]
+        elif rule.get("when") and rule.get("dir") and _match_condition(rule["when"], p):
+            return {**result, "alias": rule["dir"], "note": f"兼容路由命中 [{rule['when']}] → 「{rule['dir']}」"}
+    alias = current or default_alias or source_rule.get("save_to") or "默认"
+    return {**result, "alias": alias, "note": f"无二级分类元数据，用根目录「{alias}」"}

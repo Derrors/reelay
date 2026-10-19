@@ -110,7 +110,7 @@ export default function DashboardPage() {
   const act = async (item: IInboxItem, action: 'approve' | 'reject') => {
     setBusy((prev) => new Set(prev).add(item.task_id));
     try {
-      await api.action(item.task_id, action, action === 'approve' && item.save_dir_alias ? { save_dir_alias: item.save_dir_alias } : undefined);
+      await api.action(item.task_id, action);
       setSnapshot((prev) => (prev ? { ...prev, pending: prev.pending.filter((i) => i.task_id !== item.task_id) } : prev));
       toast.success(action === 'approve' ? `已转存「${item.title ?? '资源'}」` : '已忽略');
     } catch (err) {
@@ -252,7 +252,8 @@ export default function DashboardPage() {
                   <HealthRow label="后台 Worker" status={workerStatus}
                     detail={worker?.updated_at ? `最近心跳 ${fullTime(worker.updated_at)}` : undefined} />
                   {Object.entries(d.connections).map(([key, conn]) => (
-                    <HealthRow key={key} label={conn.label} status={conn.status} />
+                    <HealthRow key={key} label={conn.label} status={conn.status}
+                      detail={conn.error ? `最近错误：${conn.error}` : conn.observed_at ? `更新于 ${fullTime(conn.observed_at)}` : undefined} />
                   ))}
                 </div>
                 {worker?.config_error ? (
