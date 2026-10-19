@@ -215,7 +215,8 @@ class ManagementService:
                 "cache": self.store.state_items("inbox_advice"), "enabled": cfg["ai"]["advice"]}
 
     def _advice_facts(self, ctx: PipelineContext, context: dict) -> tuple[dict, str, bool]:
-        sub = subscriptions.match(context["subs"], ctx.parsed, ctx.meta.get("tmdb", {}), auto_only=False)
+        sub = subscriptions.match(context["subs"], ctx.parsed, ctx.meta.get("tmdb", {}),
+                                  seasons=subscriptions.seasons_of(ctx), auto_only=False)
         facts = inbox.facts(ctx, stored=context["stored"], versions=context["versions"], subscribed=bool(sub),
                             movie_titles=context["movies"])
         return facts, inbox.action(facts, ctx.source_rule.get("confidence_threshold", 0.5)), bool(sub)
@@ -808,7 +809,8 @@ class ManagementService:
         normalized = subscriptions.items({"episode_tracker": {"subscriptions": [entry]}})
         pending = [row["task_id"] for row in self.store.list_by_state(TaskState.PENDING_APPROVAL, 1000)
                    if (ctx := self.store.get_task(row["task_id"])) and subscriptions.match(
-                       normalized, ctx.parsed, ctx.meta.get("tmdb", {}), auto_only=False)]
+                       normalized, ctx.parsed, ctx.meta.get("tmdb", {}), seasons=subscriptions.seasons_of(ctx),
+                       auto_only=False)]
         return {"subscription": entry, "pending": pending}
 
     async def subscribe_from_task(self, task_id: str) -> dict[str, Any]:
@@ -820,7 +822,10 @@ class ManagementService:
         tmdbid = ctx.meta.get("tmdb", {}).get("tmdbid") or p.raw_fields.get("tmdbid")
         if not tmdbid:
             raise ConflictError("这条资源没有匹配到 TMDB 条目，请在「追剧订阅」里按片名订阅")
-        season = p.season if p.season is not None else 1
+        seasons = subscriptions.seasons_of(ctx)
+        if len(seasons) > 1:
+            raise ConflictError("这条资源跨多季，请在「追剧订阅」里选择要订阅的季")
+        season = seasons.pop()
         item = {"title": p.title, "season": season, "tmdbid": int(tmdbid)}
         if tmdb.api_key():
             try:

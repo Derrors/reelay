@@ -27,6 +27,18 @@ def multi_season(pairs) -> list[list[int]] | None:
     return pairs if len({season for season, _ in pairs}) > 1 else None
 
 
+def planned_pairs(ctx) -> list[tuple[int, int]]:
+    """任务涉及的（季, 集）：有转存清单时以清单为准；消息没写集数时用读取分享的结果（share_probe）；
+    否则按识别结果，未写季视为第 1 季。消息与分享都没给出集数时返回空列表。"""
+    pairs = ctx.episode_pairs()
+    if pairs:
+        return pairs
+    share = ctx.meta.get("share") or {}
+    if share.get("status") == "ok" and share.get("pairs"):
+        return [(int(season), int(ep)) for season, ep in share["pairs"]]
+    return []
+
+
 def pairs_label(pairs) -> str:
     """跨多季的（季, 集）→「S01–S03 共 30 集」；季不连续时用顿号分隔。"""
     seasons = sorted({season for season, _ in pairs})

@@ -110,7 +110,8 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
   const autoTarget = item.auto_path ?? item.auto_dir ?? '按分类';
   const share = shareBadge(item.share);
   const suggested = item.advice?.action;
-  const canSubscribe = !manual && episodic(item) && item.tmdb_matched === true && !item.subscribed;
+  // 跨多季的合集要在「追剧订阅」里选季
+  const canSubscribe = !manual && episodic(item) && item.tmdb_matched === true && !item.subscribed && !item.episode_pairs;
   return (
     <article className={cn(
       'group relative flex gap-4 rounded-xl border border-card-border bg-card p-4 shadow-xs transition-shadow hover:shadow-md',

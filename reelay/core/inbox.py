@@ -2,6 +2,7 @@
 
 - 同一集（或同一部电影）有多个待审批版本时，按 ``release`` 偏好用 ``release.compare`` 选出推荐版本；
 - 每条待审批附一条建议：事实（已入库哪些集、是否有更好的版本、是否订阅、识别是否可靠）由代码查出，
+  季集按（季, 集）计，消息没写集数时用读取分享的结果（见 ``media.planned_pairs``），跨多季的合集逐季核对；
   建议动作（批准 / 忽略 / 需要你看一下）也由规则决定；AI 只负责把这些事实写成一句通顺的理由，
   不可用时用模板句子。用户接受或推翻建议的记录随裁决样本保存。
 """
@@ -13,6 +14,7 @@ from typing import Any
 
 from . import ai, release, tmdb
 from .contracts import PipelineContext
+from .media import pairs_label, planned_pairs
 
 ACTIONS = {"approve": "建议批准", "reject": "建议忽略", "review": "需要你看一下"}
 
@@ -22,9 +24,10 @@ def version_key(ctx: PipelineContext) -> tuple | None:
     if not p or not p.title:
         return None
     show = ("tmdb", p.raw_fields.get("tmdbid")) if p.raw_fields.get("tmdbid") else ("title", tmdb.normalize(p.title))
-    if p.media_type == "movie" and not p.episodes:
+    pairs = tuple(sorted(set(planned_pairs(ctx))))
+    if p.media_type == "movie" and not pairs:
         return (*show, "movie")
-    return (*show, "tv", p.season if p.season is not None else 1, tuple(sorted(p.episodes)))
+    return (*show, "tv", pairs or (p.season if p.season is not None else 1,))
 
 
 def candidate(ctx: PipelineContext) -> dict:
@@ -53,9 +56,14 @@ def pick_versions(contexts: list[PipelineContext], prefs: dict) -> dict[str, dic
     return result
 
 
-def _episodes_text(episodes: list[int]) -> str:
+def _pairs_text(pairs: list[list[int]], *, with_season: bool = False) -> str:
+    """单季写成「E01-E03」（with_season 时为「S02 E01-E03」），跨多季写成「S01–S03 共 30 集」。"""
+    seasons = {season for season, _ in pairs}
+    if len(seasons) > 1:
+        return pairs_label(pairs)
     from ..plugins.episode_tracker import format_episodes
-    return format_episodes(episodes, limit=4)
+    text = format_episodes([ep for _, ep in pairs], limit=4)
+    return f"S{seasons.pop():02d} {text}" if with_season and seasons else text
 
 
 def version_label(p) -> str:
@@ -65,21 +73,22 @@ def version_label(p) -> str:
 
 
 def facts(ctx: PipelineContext, *, stored: dict, versions: dict, subscribed: bool, movie_titles: set) -> dict[str, Any]:
+    """episodes / stored_episodes / new_episodes 都是 [季, 集] 列表。"""
     p = ctx.parsed
     meta = ctx.meta
-    season = p.season if p.season is not None else 1
     episodic = p.media_type in ("tv", "anime") or bool(p.episodes)
-    have = sorted(stored.get((p.title, season), set())) if episodic and p.title else []
     out: dict[str, Any] = {
-        "title": p.title, "media_type": p.media_type, "season": season if episodic else None,
-        "episodes": list(p.episodes), "version": version_label(p),
+        "title": p.title, "media_type": p.media_type, "version": version_label(p),
         "confidence": p.confidence, "caps": meta.get("confidence", {}).get("caps", []),
         "fallback": bool(meta.get("parse", {}).get("fallback")), "tmdb_matched": meta.get("tmdb", {}).get("matched"),
         "subscribed": subscribed,
     }
     if episodic:
-        out["stored_episodes"] = have
-        out["new_episodes"] = [e for e in p.episodes if e not in have]
+        pairs = sorted(set(planned_pairs(ctx)))
+        seasons = sorted({season for season, _ in pairs}) or [p.season if p.season is not None else 1]
+        have = sorted((season, ep) for season in seasons for ep in stored.get((p.title, season), set())) if p.title else []
+        out.update(seasons=seasons, episodes=[list(x) for x in pairs], stored_episodes=[list(x) for x in have],
+                   new_episodes=[list(x) for x in pairs if x not in set(have)])
     else:
         out["in_library"] = tmdb.normalize(p.title) in movie_titles if p.title else False
     version = versions.get(ctx.task_id)
@@ -113,17 +122,19 @@ def rule_text(f: dict, act: str) -> str:
             return "库里已有这部电影，看看是否要换成这个版本"
         return f"置信度 {f['confidence']:.0%}，低于阈值"
     parts = []
+    # 只有第 1 季时沿用「E01-E03」，涉及其他季或多季时写明季号
+    with_season = f.get("seasons", [1]) != [1]
     if f.get("stored_episodes"):
-        parts.append(f"已入库 {_episodes_text(f['stored_episodes'])}")
+        parts.append(f"已入库 {_pairs_text(f['stored_episodes'], with_season=with_season)}")
     if act == "reject":
         if f.get("episodes") and not f.get("new_episodes"):
-            parts.append(f"{_episodes_text(f['episodes'])} 都已入库")
+            parts.append(f"{_pairs_text(f['episodes'], with_season=with_season)} 都已入库")
         else:
             parts.append(f"同一集还有 {f['versions']['count'] - 1} 个版本，另一个更符合偏好")
     else:
         version = f"（{f['version']}）" if f["version"] else ""
         if f.get("new_episodes"):
-            parts.append(f"这是 {_episodes_text(f['new_episodes'])}{version}")
+            parts.append(f"这是 {_pairs_text(f['new_episodes'], with_season=with_season)}{version}")
         else:
             parts.append(f"库里还没有{version}")
         if f.get("versions"):
@@ -148,7 +159,8 @@ _SCHEMA = {
 _PROMPT = (
     "你在为影视资源的待审批列表写建议理由。每项给出了代码查出的事实（facts）和已经决定的建议动作（action："
     "approve 批准 / reject 忽略 / review 需要用户看一下）。用一句不超过 40 字的中文写出理由，只依据 facts，"
-    "不要编造，不要改变或质疑 action，不要以「建议」开头。集数写成 E01、E01-E03 的形式。"
+    "不要编造，不要改变或质疑 action，不要以「建议」开头。facts 里的 episodes、stored_episodes、new_episodes "
+    "是 [季, 集] 列表：只有一季时集数写成 E01、E01-E03 的形式，跨多季时写成「S01–S03 共 30 集」。"
     "只输出 JSON：{\"items\": [{\"id\": 任务 ID, \"text\": 理由}]}。"
 )
 

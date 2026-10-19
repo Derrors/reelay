@@ -17,6 +17,7 @@ from dataclasses import asdict
 
 from ..core import ai, rules, runtime, subscriptions
 from ..core.contracts import ApprovalMode, Decision, PipelineContext
+from ..core.media import pairs_label, planned_pairs
 from ..core.registry import register
 
 
@@ -83,6 +84,10 @@ class SubscriptionDecision(DefaultDecision):
 
     只在规则判断为 ASK 时生效，且要求：不是 LLM 降级结果、置信度达标、过滤规则没有疑问、
     TMDB 匹配到订阅的条目、消息里的集还没全部入库。转存时照常以分享清单校验与去重。
+
+    放行只针对订阅的那一季：消息与读取分享（share_probe）都不能确认只涉及一季时不放行（如跨多季的
+    合集、消息没写季集也没读到分享）；消息没写季号时把季记为订阅的那一季，转存时只取该季，不会顺带
+    转存分享里的其他季。
     """
     name = "subscription"
 
@@ -90,6 +95,7 @@ class SubscriptionDecision(DefaultDecision):
         subscriptions.validate(cfg)
 
     async def decide(self, ctx: PipelineContext) -> Decision:
+        ctx.meta.pop("subscription", None)  # 重新解析后不沿用上次的放行
         return self.promote(ctx, await super().decide(ctx))
 
     @staticmethod
@@ -101,21 +107,45 @@ class SubscriptionDecision(DefaultDecision):
             return decision
         if rules.check(rule.get("filters", {}) or {}, p):
             return decision
-        item = subscriptions.match(subscriptions.items(runtime.get_config()), p, ctx.meta.get("tmdb", {}))
+        pairs = planned_pairs(ctx)
+        seasons = {season for season, _ in pairs} or ({p.season} if p.season is not None else set())
+        subs = subscriptions.items(runtime.get_config())
+        # 季未知时与这部剧任何一季的订阅比对，只为在轨迹里说明为什么没有放行
+        item = subscriptions.match(subs, p, ctx.meta.get("tmdb", {}), seasons=seasons or {s["season"] for s in subs})
         if not item:
             return decision
-        season = p.season if p.season is not None else 1
-        if p.episodes:
+        if len(seasons) > 1:
+            ctx.log(f"订阅《{item['title']}》：这条资源跨多季（{pairs_label(pairs)}），不自动放行，仍交给你确认")
+            return decision
+        if not seasons:
+            ctx.log(f"订阅《{item['title']}》：消息没写季集，也没有读取分享的结果，无法确认只涉及第 "
+                    f"{item['season']} 季，仍交给你确认")
+            return decision
+        season = seasons.pop()
+        episodes = {ep for s, ep in pairs if s == season}
+        if episodes:
             try:
                 have = runtime.services().store.stored_series().get((p.title, season), set())
             except RuntimeError:
                 have = set()
-            if set(p.episodes) <= have:
+            if episodes <= have:
                 ctx.log(f"订阅《{item['title']}》：消息里的集都已入库，仍交给你确认")
                 return decision
-        ctx.ns("subscription").update(title=item["title"], season=season, tmdbid=item["tmdbid"])
+        record = ctx.ns("subscription")
+        record.update(title=item["title"], season=season, tmdbid=item["tmdbid"])
+        if p.season is None:
+            p.season, record["pinned"] = season, True
+            ctx.log(f"订阅《{item['title']}》：消息没写季号，记为第 {season} 季，转存时只取这一季")
         ctx.log(f"订阅《{item['title']}》第 {season} 季：新集自动放行")
         return Decision.SAVE
+
+    @staticmethod
+    def withdraw(ctx: PipelineContext) -> None:
+        """订阅放行被后续判断否决时撤回：恢复放行时记下的季号。"""
+        record = ctx.meta.pop("subscription", None)
+        if record and record.get("pinned"):
+            ctx.parsed.season = None
+            ctx.log("偏好判断没有放行，撤回按订阅记下的季号")
 
 
 def _resource(parsed) -> dict:
@@ -159,6 +189,12 @@ class LLMDecision(SubscriptionDecision):
         self._client, self._model = ai.make_client()
 
     async def decide(self, ctx: PipelineContext) -> Decision:
+        decision = await self._prefer(ctx)
+        if decision != Decision.SAVE:
+            self.withdraw(ctx)
+        return decision
+
+    async def _prefer(self, ctx: PipelineContext) -> Decision:
         ctx.meta.get("dir_router", {}).pop("preferred", None)  # 重新解析后不沿用上次的选择
         baseline = await super().decide(ctx)
         if baseline == Decision.SKIP or ctx.meta.get("parse", {}).get("fallback"):

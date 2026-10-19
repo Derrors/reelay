@@ -127,7 +127,7 @@ export function RecognitionTab({ config, setField }: {
             </Field>
           </div>
           <SwitchRow title="转人工前先让 AI 试一次"
-            description="分享里的文件名认不出集号、多季没指定、多个正片候选时，先让 AI 给方案；方案按同一套规则校验，不过才转人工。"
+            description="分享里的文件名认不出集号或季号、同一集有多个文件、多个正片候选时，先让 AI 给方案；方案按同一套规则校验，不过才转人工。"
             checked={aiSection.assist !== false} onCheckedChange={v => setField('ai', 'assist', v)} />
           <SwitchRow title="待审批显示建议"
             description="每条待审批附上建议（批准 / 忽略 / 需要你看一下）与理由；建议由规则决定，AI 只负责把理由写通顺。"

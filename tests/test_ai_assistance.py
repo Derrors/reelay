@@ -173,13 +173,17 @@ class TestVersionsAndAdvice(Base):
 
     def test_rule_actions_cover_stored_unreliable_and_new_items(self):
         base = {"fallback": False, "caps": [], "confidence": 1.0, "version": "1080p", "subscribed": False,
-                "episodes": [3], "stored_episodes": [1, 2], "new_episodes": [3]}
+                "seasons": [1], "episodes": [[1, 3]], "stored_episodes": [[1, 1], [1, 2]], "new_episodes": [[1, 3]]}
         self.assertEqual(inbox.action(base, 0.5), "approve")
         self.assertEqual(inbox.rule_text(base, "approve"), "已入库 E01-E02；这是 E03（1080p）")
         self.assertEqual(inbox.action({**base, "new_episodes": []}, 0.5), "reject")
         self.assertEqual(inbox.action({**base, "caps": ["tmdb_unmatched"]}, 0.5), "review")
         self.assertEqual(inbox.action({**base, "versions": {"count": 2, "best": False}}, 0.5), "reject")
         self.assertIn("TMDB", inbox.rule_text({**base, "caps": ["tmdb_unmatched"]}, "review"))
+        multi = {**base, "seasons": [1, 2], "episodes": [[1, 3], [2, 1], [2, 2]], "new_episodes": [[2, 1], [2, 2]]}
+        self.assertEqual(inbox.rule_text(multi, "approve"), "已入库 S01 E01-E02；这是 S02 E01-E02（1080p）")
+        both = {**multi, "new_episodes": [[1, 3], [2, 1]]}
+        self.assertEqual(inbox.rule_text(both, "approve"), "已入库 S01 E01-E02；这是 S01–S02 共 2 集（1080p）")
 
     async def test_ai_phrasing_is_cached_until_the_facts_change_and_advice_is_recorded(self):
         ctx = self.save_pending("1")
@@ -233,3 +237,96 @@ class TestSourceDraft(Base):
             await self.service.draft_source("@x", ["样例"])
 
 
+
+
+class TestMultiSeasonAndShareProbe(Base):
+    """与「跨多季的合集按季转存」「消息没写集数时读取分享」配合：订阅放行、建议、推荐版本与「追这部剧」。"""
+    CFG = {**Base.CFG, "episode_tracker": {"subscriptions": [{"title": "剧", "season": 2, "tmdbid": 100}]}}
+
+    def probed(self, pairs, msg_id="1", status="ok", **fields):
+        """消息没写季集、由 share_probe 读出（季, 集）的剧集。"""
+        ctx = tv_ctx(msg_id=msg_id, season=None, episodes=(), **fields)
+        seasons = {s for s, _ in pairs}
+        ctx.meta["share"] = {"status": status, "season": seasons.pop() if len(seasons) == 1 else None,
+                             "episodes": sorted({e for _, e in pairs}), "pairs": [list(p) for p in pairs]}
+        return ctx
+
+    def stored(self, pairs, msg_id="s", title="剧"):
+        ctx = tv_ctx(msg_id=msg_id, title=title, season=None, episodes=sorted({e for _, e in pairs}))
+        ctx.save_dir_cid, ctx.result = "2", {"storage_verified": True}
+        ctx.ns("storage").update(manifest={"pairs": [list(p) for p in pairs]}, identity={
+            "cid": "2", "share_code": f"s{msg_id}", "title": title, "season": None,
+            "episodes": sorted({e for _, e in pairs}), "pairs": [list(p) for p in pairs]})
+        ctx.state = TaskState.STORED
+        self.store.save_task(ctx)
+        self.store.finish_transfer(ctx)
+        ctx.state = TaskState.DONE
+        self.store.save_task(ctx)
+
+    async def decide(self, ctx, provider=None):
+        with self.pl._scope(self.pl.cfg):
+            return await (provider or SubscriptionDecision()).decide(ctx)
+
+    async def test_subscription_uses_the_share_season_and_pins_it(self):
+        ctx = self.probed([(2, 1), (2, 2)])
+        self.assertEqual(await self.decide(ctx), Decision.SAVE)
+        self.assertEqual(ctx.parsed.season, 2)  # 转存时只取订阅的这一季
+        self.assertTrue(any("记为第 2 季" in line for line in ctx.trail))
+
+    async def test_multi_season_packs_and_unknown_seasons_are_not_released(self):
+        multi = self.probed([(1, 1), (2, 1)])
+        self.assertEqual(await self.decide(multi), Decision.ASK)
+        self.assertIsNone(multi.parsed.season)
+        self.assertTrue(any("跨多季（S01–S02 共 2 集）" in line for line in multi.trail))
+        unknown = self.probed([(2, 1)], status="error")  # 读取分享出错：不知道是哪一季
+        self.assertEqual(await self.decide(unknown), Decision.ASK)
+        self.assertTrue(any("无法确认只涉及第 2 季" in line for line in unknown.trail))
+        # 只写了集数的消息按第 1 季，与订阅的第 2 季不符
+        self.assertEqual(await self.decide(tv_ctx(season=None, episodes=(3,))), Decision.ASK)
+
+    async def test_preferences_veto_withdraws_the_pinned_season(self):
+        provider = LLMDecision()
+        provider._client = FakeAI({"decision": "skip", "save_to": None, "reason": "不要"})
+        ctx = self.probed([(2, 1)])
+        ctx.source_rule["preferences"] = "只要 4K"
+        self.assertEqual(await self.decide(ctx, provider), Decision.SKIP)
+        self.assertIsNone(ctx.parsed.season)
+        self.assertNotIn("subscription", ctx.meta)
+        # 重新判断时不沿用上次的放行记录（否则会误撤回识别出的季号）
+        stale = tv_ctx(season=3, episodes=(1,))
+        stale.meta["subscription"] = {"pinned": True}
+        self.assertEqual(await self.decide(stale, LLMDecision()), Decision.ASK)
+        self.assertEqual(stale.parsed.season, 3)
+
+    async def test_advice_and_versions_follow_share_pairs(self):
+        self.stored([(1, 1), (1, 2)])
+        first = self.probed([(1, 1), (1, 2), (2, 1)], msg_id="1")
+        second = self.probed([(1, 1), (1, 2), (2, 1)], msg_id="2", resolution="2160p")
+        other = self.probed([(1, 1), (1, 2)], msg_id="3")
+        for ctx in (first, second, other):
+            ctx.state = TaskState.PENDING_APPROVAL
+            self.store.save_task(ctx)
+        items = {item["task_id"]: item for item in self.service.inbox()["items"]}
+        self.assertEqual(items[second.task_id]["version"]["count"], 2)  # 同样的季集才算同一内容的不同版本
+        self.assertIsNone(items[other.task_id]["version"])
+        self.assertEqual(items[second.task_id]["advice"]["text"],
+                         "已入库 S01 E01-E02；这是 S02 E01（2160p）；同一集 2 个版本中最符合偏好；在你的订阅里")
+        self.assertEqual(items[first.task_id]["advice"]["action"], "reject")
+        self.assertEqual(items[other.task_id]["advice"]["action"], "reject")  # 分享里的集都已入库
+        self.assertTrue(items[second.task_id]["subscribed"])  # 涉及的第 2 季在订阅里
+
+    async def test_follow_this_show_uses_the_share_season(self):
+        single = self.probed([(3, 1)], msg_id="1", tmdbid=7)
+        multi = self.probed([(1, 1), (2, 1)], msg_id="2", tmdbid=8)
+        for ctx in (single, multi):
+            ctx.state = TaskState.PENDING_APPROVAL
+            self.store.save_task(ctx)
+        result = await self.service.subscribe_from_task(single.task_id)
+        self.assertEqual((result["subscription"]["season"], result["pending"]), (3, [single.task_id]))
+        with self.assertRaises(ConflictError):
+            await self.service.subscribe_from_task(multi.task_id)
+
+    def test_library_groups_multi_season_packs_by_season(self):
+        self.stored([(1, 1), (1, 2), (2, 1)])
+        item = self.service.library_query()["items"][0]
+        self.assertEqual(item["seasons"], {"1": [1, 2], "2": [1]})

@@ -101,7 +101,8 @@ class Assistant:
             manual = service.inbox(TaskState.NEED_MANUAL.value, limit)["items"]
             return {"pending_approval": [{
                 "task_id": i["task_id"], "title": i["title"], "media_type": i["media_type"], "season": i["season"],
-                "episodes": i["episodes"], "resolution": i["resolution"], "release": i.get("release_tags"),
+                "episodes": i["episodes"], "episode_pairs": i.get("episode_pairs"), "resolution": i["resolution"],
+                "release": i.get("release_tags"),
                 "source": i["source"], "waiting_days": round((time.time() - i["created_at"]) / 86400, 1),
                 "advice": (i.get("advice") or {}).get("action"), "reason": (i.get("advice") or {}).get("text"),
                 "recommended_version": (i.get("version") or {}).get("best"), "subscribed": i.get("subscribed"),

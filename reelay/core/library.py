@@ -33,10 +33,16 @@ def group_library(snapshots: list[dict]) -> list[dict[str, Any]]:
         group["origin_country"].update(p.get("origin_country") or [])
         group["best_rank"] = max(group["best_rank"], resolution_rank(p.get("resolution")))
         group["release"].update(release.describe(p.get("release")))
-        group["files"] += len(((snap.get("meta") or {}).get("storage") or {}).get("landed") or []) or 1
+        storage = (snap.get("meta") or {}).get("storage") or {}
+        group["files"] += len(storage.get("landed") or []) or 1
         if episodic:
-            season = p.get("season") if p.get("season") is not None else 1
-            group["seasons"].setdefault(season, set()).update(p.get("episodes") or [])
+            # 跨多季的合集识别结果没有季、集为各季的并集，按转存清单的（季, 集）汇总
+            pairs = (storage.get("manifest") or {}).get("pairs") or [
+                [p.get("season") if p.get("season") is not None else 1, ep] for ep in p.get("episodes") or []]
+            if not pairs and p.get("season") is not None:
+                group["seasons"].setdefault(p["season"], set())
+            for season, ep in pairs:
+                group["seasons"].setdefault(int(season), set()).add(int(ep))
     out = []
     for group in groups.values():
         out.append({**group, "genre_ids": sorted(group["genre_ids"]), "origin_country": sorted(group["origin_country"]),

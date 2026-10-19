@@ -8,7 +8,8 @@
 - ``auto``：是否自动放行新集（默认 true；设为 false 只做缺集追更提醒）。
 
 自动放行只是把「待你确认」改为「直接转存」：过滤规则、置信度、TMDB 匹配、分享清单校验与
-去重照常生效，任何一项不过都仍交给你。
+去重照常生效，任何一项不过都仍交给你。放行只针对订阅的那一季：消息与读取分享都不能确认只涉及
+这一季（如跨多季的合集）时不放行；消息没写季号时把季记为订阅的那一季，转存时只取该季。
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import re
 from typing import Any
 
 from . import tmdb
+from .media import planned_pairs
 
 FIELDS = ("title", "season", "total", "tmdbid", "auto")
 
@@ -60,14 +62,27 @@ def identity(item: dict) -> tuple:
     return ("tmdb", item["tmdbid"], season) if item.get("tmdbid") else ("title", tmdb.normalize(item["title"]), season)
 
 
-def match(subscriptions: list[dict], parsed, tmdb_ns: dict, *, auto_only: bool = True) -> dict | None:
-    """TMDB 匹配成功的剧集资源对应的订阅；只认 TMDB 规范结果，不认 AI 自己给的片名。"""
+def seasons_of(ctx) -> set[int]:
+    """任务涉及的季（跨多季的合集有多个）；消息与分享都没写集数时按识别结果的季，未写视为第 1 季。"""
+    seasons = {season for season, _ in planned_pairs(ctx)}
+    if seasons:
+        return seasons
+    return {ctx.parsed.season if ctx.parsed and ctx.parsed.season is not None else 1}
+
+
+def match(subscriptions: list[dict], parsed, tmdb_ns: dict, *, seasons: set[int] | None = None,
+          auto_only: bool = True) -> dict | None:
+    """TMDB 匹配成功的剧集资源对应的订阅（任一季命中即可）；只认 TMDB 规范结果，不认 AI 自己给的片名。
+
+    seasons 默认取识别结果的季（未写视为第 1 季）。
+    """
     if not parsed or not tmdb_ns.get("matched") or not (parsed.media_type in ("tv", "anime") or parsed.episodes):
         return None
-    season = parsed.season if parsed.season is not None else 1
+    if seasons is None:
+        seasons = {parsed.season if parsed.season is not None else 1}
     found = tmdb_ns.get("tmdbid") or parsed.raw_fields.get("tmdbid")
     for item in subscriptions:
-        if (auto_only and not item["auto"]) or item["season"] != season:
+        if (auto_only and not item["auto"]) or item["season"] not in seasons:
             continue
         if item["tmdbid"] and item["tmdbid"] == found:
             return item

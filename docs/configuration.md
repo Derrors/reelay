@@ -46,7 +46,7 @@ Reelay 有两类配置：
 | --- | --- | --- |
 | `ai.examples` | `3` | 识别时取同一来源最近几条人工修正作为提示词示例（0–10，0 关闭） |
 | `ai.history` | `20` | `decision: llm` 时附上同一来源最近几条人工批准与忽略（0–100，0 关闭） |
-| `ai.assist` | `true` | 分享清单按规则无法确定要转存哪些文件时（文件名认不出集号、多季没指定、同一集多个文件、电影多个正片候选），先让 AI 给方案；方案按同一套规则校验，不过才转人工 |
+| `ai.assist` | `true` | 分享清单按规则无法确定要转存哪些文件时（文件名认不出集号或季号、同一季同一集多个文件、电影多个正片候选、消息只写了集数而分享跨多季），先让 AI 给方案；方案按同一套规则校验，不过才转人工 |
 | `ai.advice` | `true` | 待审批附建议动作（批准 / 忽略 / 需要你看一下）与理由；动作由规则决定，AI 只负责措辞 |
 | `ai.suggest_auto.min_decisions` | `20` | 某来源人工确认满这么多次后才评估是否建议改为自动转存 |
 | `ai.suggest_auto.approve_rate` | `0.9` | 批准率不低于该值 |
@@ -99,7 +99,7 @@ Reelay 有两类配置：
 | `tmdb.language` / `tmdb.timeout` | `zh-CN` / `10` | TMDB 匹配语言与超时秒数 |
 | `episode_tracker.track_all` | `true` | 自动跟踪最近有新集入库的剧，只报告断档和 TMDB 已播未入库的新集 |
 | `episode_tracker.lookback_days` | `30` | 自动跟踪的时间窗口 |
-| `episode_tracker.subscriptions` | `[]` | 剧集订阅 `{title, season?, total?, tmdbid?, auto?}`：缺集巡检从第 1 集开始检查；`auto`（默认 `true`）时，`decision` 为 `subscription` 或 `llm` 的来源里同一 tmdbid（没有时按 TMDB 规范片名）、同一季的新集直接转存。仍要求 TMDB 匹配、置信度达标、过滤规则无疑问、消息里的集未全部入库。管理台「追剧订阅」与待审批「追这部剧」会写入这里 |
+| `episode_tracker.subscriptions` | `[]` | 剧集订阅 `{title, season?, total?, tmdbid?, auto?}`：缺集巡检从第 1 集开始检查；`auto`（默认 `true`）时，`decision` 为 `subscription` 或 `llm` 的来源里同一 tmdbid（没有时按 TMDB 规范片名）、同一季的新集直接转存。仍要求 TMDB 匹配、置信度达标、过滤规则无疑问、消息里的集未全部入库；消息没写季集时以读取分享（`share_probe`）的结果确认季，跨多季的合集不放行，消息没写季号时转存只取订阅的那一季。管理台「追剧订阅」与待审批「追这部剧」会写入这里 |
 | `daily_report.narrative` | `true` | 配置了 AI 时，日报开头附一段 AI 按统计事实写的提醒，数字版保留 |
 | `strm.output_dir` | — | STRM 输出目录（本机路径），启用 `strm` 时必填 |
 | `strm.base_url` | — | 媒体服务器能访问到的 Reelay 地址，如 `http://192.168.1.10:28080` |
