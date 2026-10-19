@@ -86,6 +86,7 @@ Reelay 有两类配置：
 | `REELAY_115_OAUTH_FILE` | 115 凭证文件，默认 `data/115_credentials.json`（权限 600） |
 | `REELAY_LLM_BASE_URL` / `REELAY_LLM_API_KEY` / `REELAY_LLM_MODEL` | OpenAI 兼容接口，模型默认 `gpt-4o-mini` |
 | `REELAY_TMDB_API_KEY` | TMDB v3 API Key 或 v4 Read Access Token |
+| `REELAY_TMDB_BASE_URL` | TMDB 接口地址，默认 `https://api.themoviedb.org/3`；国内该域名常被 DNS 污染，可改用官方备用域名 `https://api.tmdb.org/3` 或自己的反向代理 |
 | `REELAY_WEB_PASSWORD` | 管理台密码；暴露到本机以外时必须设置 |
 | `REELAY_STRM_SECRET` | STRM 签名密钥；留空则自动生成并保存到 `data/strm.secret` |
 

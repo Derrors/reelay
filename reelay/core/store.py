@@ -497,6 +497,18 @@ class Store:
             if reset_retries:
                 self._conn.execute("UPDATE tasks SET retries=0, not_before=0 WHERE task_id=?", (ctx.task_id,))
 
+    def refresh_snapshot(self, ctx: PipelineContext, *, updated_at: float) -> bool:
+        """只替换片名与快照，不改状态和更新时间（审批超时计时、入库统计照旧）。
+
+        updated_at 是读取快照时的值：期间任务被任何其他写入改过则放弃，返回 False。
+        """
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE tasks SET title=?, snapshot=? WHERE task_id=? AND state=? AND updated_at=?",
+                (ctx.parsed.title if ctx.parsed else None, json.dumps(_dump_ctx(ctx), ensure_ascii=False),
+                 ctx.task_id, ctx.state.value, updated_at))
+            return cur.rowcount == 1
+
     def delete_task(self, task_id: str) -> bool:
         """仅用于删除误入的任务记录；不删除 115 文件。"""
         with self._lock:

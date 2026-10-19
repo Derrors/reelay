@@ -601,6 +601,82 @@ class TestManualDirectoryChoice(Base):
         self.assertEqual((llm["status"], llm["error"]), ("failed", "ValueError"))
 
 
+class TestRefreshMetadataAfterTmdbConfigured(Base):
+    HIT = {"id": 294446, "name": "美人余", "first_air_date": "2026-10-09", "origin_country": ["CN"],
+           "genre_ids": [18], "poster_path": "/poster.jpg", "_kind": "tv", "_score": 1.1}
+
+    def setUp(self):
+        super().setUp()
+        with patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "k"}):
+            registry = discover()
+        self.pl = self.pipeline({"save_dirs": {"剧集": "2", "默认": "1"}, "defaults": {"save_to": "默认"}}, registry)
+
+    def task(self, title, state=TaskState.PENDING_APPROVAL, msg_id="1"):
+        """配置 TMDB 之前识别的任务：meta["tmdb"] 记着未查询的原因。"""
+        ctx = message(msg_id=msg_id)
+        ctx.parsed = ParsedResource(is_media=True, title=title, year=2026, media_type="tv", season=1,
+                                    episodes=[23], share_code="abc", confidence=1.0)
+        ctx.ns("tmdb").update(matched=False, note="未配 TMDB key，沿用 AI 标题")
+        ctx.state = state
+        self.store.save_task(ctx)
+        return ctx.task_id
+
+    def updated_at(self, task_id):
+        return self.store._conn.execute("SELECT updated_at FROM tasks WHERE task_id=?", (task_id,)).fetchone()[0]
+
+    async def test_pending_task_gets_tmdb_metadata_and_poster_without_llm(self):
+        task_id = self.task("美人余")
+        before = self.updated_at(task_id)
+        with patch.object(tmdb, "best_match", return_value=(self.HIT, [self.HIT])) as match:
+            self.assertEqual(await self.pl.refresh_metadata(), 1)
+            self.assertEqual(await self.pl.refresh_metadata(), 0)  # 已补全的任务不再重复查询
+        self.assertEqual(match.call_count, 1)
+        ctx = self.store.get_task(task_id)
+        self.assertEqual((ctx.state, ctx.parsed.raw_fields["poster_path"], ctx.parsed.raw_fields["tmdbid"]),
+                         (TaskState.PENDING_APPROVAL, "/poster.jpg", 294446))
+        self.assertEqual((ctx.parsed.genre_ids, ctx.parsed.origin_country), ([18], ["CN"]))
+        self.assertTrue(ctx.meta["confidence"]["checks"]["tmdb"])
+        self.assertEqual(ctx.meta["dir_router"]["preview"], "剧集/国产剧集")
+        self.assertTrue(any("补跑元数据补全" in line for line in ctx.trail))
+        self.assertEqual(self.updated_at(task_id), before)  # 审批超时不重新计时
+
+    async def test_unmatched_pending_task_is_capped_for_manual_review(self):
+        task_id = self.task("星河彼岸的回声")
+        with patch.object(tmdb, "best_match", return_value=(None, [])) as match:
+            self.assertEqual(await self.pl.refresh_metadata(), 1)
+            self.assertEqual(await self.pl.refresh_metadata(), 0)
+        self.assertEqual(match.call_count, 1)
+        confidence_meta = self.store.get_task(task_id).meta["confidence"]
+        self.assertEqual((confidence_meta["score"], confidence_meta["caps"]), (0.45, ["tmdb_unmatched"]))
+
+    async def test_done_task_only_gets_poster_when_title_is_unchanged(self):
+        same = self.task("美人余", TaskState.DONE, msg_id="1")
+        renamed = self.task("美人余 竖屏版", TaskState.DONE, msg_id="2")
+        before = {task_id: self.updated_at(task_id) for task_id in (same, renamed)}
+        with patch.object(tmdb, "best_match", return_value=(self.HIT, [self.HIT])) as match:
+            self.assertEqual(await self.pl.refresh_metadata(), 2)
+            self.assertEqual(await self.pl.refresh_metadata(), 0)
+        self.assertEqual(match.call_count, 2)
+        kept = self.store.get_task(same)
+        self.assertEqual((kept.parsed.title, kept.parsed.raw_fields.get("poster_path")), ("美人余", "/poster.jpg"))
+        untouched = self.store.get_task(renamed)
+        self.assertEqual((untouched.parsed.title, untouched.parsed.raw_fields.get("poster_path")), ("美人余 竖屏版", None))
+        self.assertEqual({task_id: self.updated_at(task_id) for task_id in (same, renamed)}, before)  # 入库统计不变
+
+    async def test_snapshot_refresh_gives_up_when_task_changed_meanwhile(self):
+        task_id = self.task("美人余")
+        ctx = self.store.get_task(task_id)
+        self.assertFalse(self.store.refresh_snapshot(ctx, updated_at=self.updated_at(task_id) - 1))
+        self.assertTrue(self.store.refresh_snapshot(ctx, updated_at=self.updated_at(task_id)))
+
+    async def test_nothing_to_refresh_without_tmdb_key(self):
+        self.task("美人余")
+        pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"}}, discover())
+        with patch.object(tmdb, "best_match") as match:
+            self.assertEqual(await pipeline.refresh_metadata(), 0)
+        match.assert_not_called()
+
+
 class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
     RESULTS = [
         {"id": 1, "title": "完全不同的电影", "release_date": "2026-01-01"},

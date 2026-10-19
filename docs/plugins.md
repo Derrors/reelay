@@ -134,6 +134,8 @@ Provider 由配置选择：`providers.source`、`providers.notify`，以及 `def
 
 `candidates`、`kind`、`score` 等其余字段只供任务详情排查，内核不读取。
 
+已有任务的补跑：`after_parse` Hook 可以实现 `needs_refresh(ctx) -> bool`。主进程启动时，内核对待审批和已入库任务逐条询问，返回 True 的补跑该 Hook（不重新调用 LLM）：待审批任务整体采用新结果并重算置信度；已入库任务的片名、路径与去重键已经落地，只在片名不变时补上 `poster_path`。补跑只更新快照，不改任务的更新时间，审批超时与入库统计不受影响。`tmdb_enrich` 对配置 key 之前识别（有 `note`）或上次查询出错（有 `error`）的任务返回 True，所以配好 TMDB 重启后，已有任务也会补上规范元数据和海报。
+
 接入其他数据源有两种方式：
 
 - **补充**：order 大于 50，只在 TMDB 没有匹配时查询；命中后写入上表字段，并整体替换 `meta["tmdb"]`——残留的 `note` / `error` 会让结果仍按中立处理。

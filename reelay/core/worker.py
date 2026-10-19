@@ -63,8 +63,9 @@ class Worker:
             producer = asyncio.create_task(produce())
             consumers = [asyncio.create_task(self._consume()) for _ in range(self.concurrency)]
             dispatcher = asyncio.create_task(self._dispatch(drain=drain))
-            monitor = asyncio.create_task(self._monitor()) if not drain else None
-            tasks = [producer, *consumers, dispatcher, *([monitor] if monitor else [])]
+            tasks = [producer, *consumers, dispatcher]
+            if not drain:
+                tasks += [asyncio.create_task(self._monitor()), asyncio.create_task(self._refresh_metadata())]
             await asyncio.gather(*tasks)  # 持久层故障不能让消费者悄悄退出、留下空转进程
         finally:
             self._stop.set()
@@ -75,6 +76,16 @@ class Worker:
                 self.store.heartbeat("worker", status="stopped", config_revision=self.pipeline.revision)
             finally:
                 self.store.release_worker()
+
+    async def _refresh_metadata(self) -> None:
+        """启动时补跑一次元数据补全：刚配好 TMDB 时，已有任务也能补上规范元数据与海报。"""
+        try:
+            count = await self.pipeline.refresh_metadata()
+        except Exception as exc:  # noqa: BLE001 - 补全失败不影响主链路
+            log.warning("补全已有任务的元数据失败：%s", exc)
+            return
+        if count:
+            log.info("已为 %d 条已有任务补全元数据", count)
 
     async def _dispatch(self, *, drain: bool) -> None:
         while not self._stop.is_set():

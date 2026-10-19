@@ -88,6 +88,43 @@ class Pipeline:
     def task_config(self, ctx: PipelineContext) -> dict:
         return ctx.meta.get("runtime", {}).get("config", self.cfg)
 
+    async def refresh_metadata(self) -> int:
+        """补跑元数据补全（如配置 TMDB 之前识别的任务），不重新调用 LLM；返回更新的任务数。
+
+        由声明 ``needs_refresh(ctx)`` 的 after_parse Hook 决定哪些任务需要补跑。待审批任务整体
+        采用新结果并重算置信度；已入库任务的片名、路径与去重键都已落地，只在片名不变时补海报。
+        """
+        refreshed = 0
+        for state in (TaskState.PENDING_APPROVAL, TaskState.DONE):
+            for row in self.store.list_by_state(state, 100_000):
+                ctx = self.store.get_task(row["task_id"])
+                if not ctx or not ctx.parsed:
+                    continue
+                hooks = [hook for hook in self.reg.hooks_for("after_parse", self.cfg)
+                         if hasattr(hook, "needs_refresh") and hook.needs_refresh(ctx)]
+                if not hooks:
+                    continue
+                fresh = copy.deepcopy(ctx)
+                fresh.log("补跑元数据补全（未重新调用 LLM）")
+                for hook in hooks:
+                    try:
+                        with self._scope(fresh):
+                            await hook.run(fresh)
+                    except Exception as exc:  # 与识别阶段一样失败隔离
+                        log.warning("补跑 %s 失败：%s", self.reg.extension_name(hook), exc)
+                if state == TaskState.PENDING_APPROVAL:
+                    confidence.apply(fresh)
+                    fresh.ns("dir_router")["preview"] = self.target_preview(fresh)
+                    ctx = fresh
+                else:
+                    poster = fresh.parsed.raw_fields.get("poster_path")
+                    if poster and fresh.parsed.title == ctx.parsed.title:
+                        ctx.parsed.raw_fields["poster_path"] = poster
+                    ctx.meta, ctx.trail = fresh.meta, fresh.trail
+                if self.store.refresh_snapshot(ctx, updated_at=row["updated_at"]):
+                    refreshed += 1
+        return refreshed
+
     def target_preview(self, ctx: PipelineContext) -> str:
         """不手动改目录时任务将存入的位置（含二级分类），供审批卡片与管理台展示。"""
         with self._scope(ctx):

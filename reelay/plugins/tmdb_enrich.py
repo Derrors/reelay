@@ -45,6 +45,13 @@ class TmdbEnrich:
         self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
         self._key = None if self._dry_run else tmdb.api_key()
 
+    def needs_refresh(self, ctx: PipelineContext) -> bool:
+        """配置 key 之前识别、或上次查询出错的任务，启动时补跑一次。"""
+        p, ns = ctx.parsed, ctx.meta.get("tmdb")
+        return bool(self._key and p and p.is_media and p.title
+                    and not ctx.meta.get("parse", {}).get("prefilter")
+                    and (ns is None or ns.get("note") or ns.get("error")))
+
     async def run(self, ctx: PipelineContext) -> bool:
         p = ctx.parsed
         if not p or not p.is_media or not p.title or ctx.meta.get("parse", {}).get("prefilter"):
