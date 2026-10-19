@@ -97,6 +97,32 @@ class TestSnapshotAndStore(Base):
         self.assertEqual(self.store.source_watermark("@bot"), 120)
         self.assertIsNone(self.store.source_watermark("@other"))
 
+    def test_schema_version_is_recorded_and_old_databases_migrate(self):
+        import sqlite3
+        from reelay.core.store import SCHEMA_VERSION
+        self.assertEqual(self.store._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        legacy = Path(self.temp.name) / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, state TEXT NOT NULL, source TEXT, msg_id TEXT, "
+                     "title TEXT, snapshot TEXT NOT NULL, error TEXT, retries INTEGER NOT NULL DEFAULT 0, "
+                     "created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+        conn.commit()
+        conn.close()
+        migrated = Store(legacy)
+        columns = {r["name"] for r in migrated._conn.execute("PRAGMA table_info(tasks)")}
+        self.assertIn("not_before", columns)
+        self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        migrated.close()
+
+    def test_newer_database_is_refused(self):
+        import sqlite3
+        newer = Path(self.temp.name) / "newer.db"
+        conn = sqlite3.connect(newer)
+        conn.execute("PRAGMA user_version=999")
+        conn.close()
+        with self.assertRaises(RuntimeError):
+            Store(newer)
+
     def test_alert_notifies_once_until_recovered(self):
         self.assertTrue(self.store.raise_alert("k", "坏了", ["console"]))
         self.assertFalse(self.store.raise_alert("k", "还是坏的", ["console"]))

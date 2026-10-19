@@ -102,6 +102,18 @@ CREATE TABLE IF NOT EXISTS plugin_state (
 SYSTEM_TASK = "system"
 
 
+def _add_task_not_before(conn: sqlite3.Connection) -> None:
+    """v2：失败退避的下次执行时间；Worker 只领取到期任务，不在消费者里睡眠。"""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "not_before" not in columns:
+        conn.execute("ALTER TABLE tasks ADD COLUMN not_before REAL NOT NULL DEFAULT 0")
+
+
+# 迁移按顺序追加、只增不改；第 n 项把数据库从版本 n-1 升到 n。v1 是 _SCHEMA 建立的基线。
+MIGRATIONS = (lambda conn: None, _add_task_not_before)
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
 class Store:
     """线程安全的 SQLite 封装。所有写走同一把锁（单写），读可并发。"""
 
@@ -119,10 +131,16 @@ class Store:
         self._conn.commit()
 
     def _migrate(self) -> None:
-        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)")}
-        if "not_before" not in columns:
-            # 失败退避的下次执行时间；Worker 只领取到期任务，不在消费者里睡眠。
-            self._conn.execute("ALTER TABLE tasks ADD COLUMN not_before REAL NOT NULL DEFAULT 0")
+        """按 PRAGMA user_version 顺序执行迁移；新表由 _SCHEMA 的 IF NOT EXISTS 创建。"""
+        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"数据库结构版本 {version} 高于当前程序支持的 {SCHEMA_VERSION}，请升级 Reelay 后再打开")
+        for target, migrate in enumerate(MIGRATIONS, start=1):
+            if version < target:
+                migrate(self._conn)
+        if version != SCHEMA_VERSION:
+            self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def _init_pragmas(self) -> None:
         cur = self._conn
