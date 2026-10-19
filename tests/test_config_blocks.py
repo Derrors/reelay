@@ -108,19 +108,21 @@ class TestConfigBlocks(unittest.TestCase):
 class TestDirectoryReads(unittest.TestCase):
     def test_long_id_preserved_and_pagination(self):
         client=Mock()
-        client.fs_files.return_value={'state':True,'count':3,'data':[
+        client.fs_files.return_value={'state':True,'count':3,'path':[{'cid':'0','name':'根目录'}],'data':[
             {'cid':'9876543210987654301','n':'影视','pid':'0'},
             {'fid':'999','cid':'0','n':'file.txt'}]}
         result=browse_dirs(SimpleNamespace(has_oauth=False,cookie_client=lambda:client),'0',0,2)
         self.assertEqual(result['items'][0]['id'],'9876543210987654301')
+        self.assertEqual(result['path'][-1], {'id': '0', 'name': '根目录'})
         self.assertEqual(result['next_offset'],2)
         self.assertEqual(len(result['items']),1)
 
     def test_open_list_response(self):
         client=Mock()
-        client.fs_files_open.return_value={'state':True,'count':1,'data':[{'file_id':'9876543210987654301','file_name':'电影','file_category':'0','parent_id':'0'}]}
-        result=browse_dirs(SimpleNamespace(has_oauth=True,open_client=lambda:client),'0')
+        client.fs_files_open.return_value={'state':True,'count':1,'path':[{'file_id':'9876543210987654301','file_name':'电影'}],'data':[{'file_id':'9876543210987654301','file_name':'电影','file_category':'0','parent_id':'0'}]}
+        result=browse_dirs(SimpleNamespace(has_oauth=True,open_client=lambda:client),'9876543210987654301')
         self.assertEqual(result['items'][0]['id'],'9876543210987654301')
+        self.assertEqual(result['path'][-1]['name'],'电影')
         self.assertEqual(result['via'],'oauth')
 
     def test_expired_credentials_and_missing_directory(self):

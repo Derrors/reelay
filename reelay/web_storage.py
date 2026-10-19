@@ -25,8 +25,17 @@ def browse_dirs(credentials, cid: str, offset: int = 0, limit: int = 100) -> dic
         if not isinstance(data, list):
             raise StorageBrowseError('invalid_response', '115返回的目录数据格式异常，请稍后重试。', 502)
         path = result.get('path') or []
-        if path and str(path[-1].get('cid', path[-1].get('id', cid))) != cid:
+        if path and str(path[-1].get('cid', path[-1].get('file_id', path[-1].get('id', cid)))) != cid:
             raise StorageBrowseError('directory_missing', '目标目录不存在或无权访问，未回退到根目录。', 404)
+        breadcrumbs = []
+        for node in path:
+            node_id = node.get('cid', node.get('file_id', node.get('id')))
+            if node_id is None or not str(node_id).isascii() or not str(node_id).isdecimal():
+                continue
+            node_name = node.get('name', node.get('file_name', node.get('n')))
+            breadcrumbs.append({'id': str(node_id), 'name': str(node_name or ('根目录' if str(node_id) == '0' else ''))})
+        if cid == '0' and not breadcrumbs:
+            breadcrumbs = [{'id': '0', 'name': '根目录'}]
         items = []
         for item in data:
             # web 列表目录无 fid，cid 为目录ID；open 列表 file_category=0。
@@ -44,7 +53,7 @@ def browse_dirs(credentials, cid: str, offset: int = 0, limit: int = 100) -> dic
                 items.append({'id': str(fid), 'name': str(name or ''), 'pid': str(pid)})
         total = int(result.get('count', offset + len(data)))
         next_offset = offset + len(data) if offset + len(data) < total and data else None
-        return {'items': sorted(items, key=lambda x: x['name']), 'cid': cid,
+        return {'items': sorted(items, key=lambda x: x['name']), 'cid': cid, 'path': breadcrumbs,
                 'next_offset': next_offset, 'total_entries': total, 'via': mode}
     except StorageBrowseError:
         raise

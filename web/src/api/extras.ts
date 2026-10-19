@@ -100,7 +100,7 @@ export const extras = {
     if (q) p.set('q', q);
     return req<ILogResp>(`logs?${p}`);
   },
-  dirs: (cid: string, offset = 0) => req<{ items: IDirItem[]; next_offset: number | null; via: string }>(`storage/dirs?cid=${encodeURIComponent(cid)}&offset=${offset}`),
+  dirs: (cid: string, offset = 0) => req<{ items: IDirItem[]; path: IDirItem[]; next_offset: number | null; via: string }>(`storage/dirs?cid=${encodeURIComponent(cid)}&offset=${offset}`),
   sources: () => req<ISourcesResp>('sources'),
   testParse: (text: string, urls: string[], source?: string) =>
     req<{ parsed: IParsedResource | null; decision: string }>('sources/test-parse', {
