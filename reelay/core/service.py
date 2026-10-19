@@ -2,6 +2,9 @@
 
 服务只改变任务/配置的权威状态，不直接绕过 Pipeline 操作 115。这样两个入口并发操作时，
 状态检查与错误语义一致。
+
+人工裁决（批准、忽略、修正识别结果）在这里统一记成带标签的样本（``feedback`` 表），
+供解析示例、偏好决策、通过率统计与本地评测使用：AI 提议，事实源校验，人工裁决，裁决结果反馈给 AI。
 """
 
 from __future__ import annotations
@@ -12,8 +15,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from . import ai
 from .config import normalize_config
-from .validation import validate_resource
+from .validation import MEDIA_SCHEMA, validate_resource
 from .contracts import ParsedResource, PipelineContext, TaskState
 from .media import multi_season
 from .pipeline import Pipeline
@@ -27,6 +31,19 @@ class ConflictError(RuntimeError):
 
 class NotFoundError(RuntimeError):
     pass
+
+
+def parsed_sample(parsed: ParsedResource | None) -> dict | None:
+    """写入裁决样本的识别结果：去掉分享标识，原始字段只留 tmdbid。"""
+    if parsed is None:
+        return None
+    values = asdict(parsed)
+    values.pop("share_code", None)
+    values.pop("receive_code", None)
+    raw = values.pop("raw_fields", None) or {}
+    if raw.get("tmdbid"):
+        values["tmdbid"] = raw["tmdbid"]
+    return values
 
 
 class ManagementService:
@@ -202,6 +219,8 @@ class ManagementService:
         ctx = self._require_context(task_id)
         if ctx.state != TaskState.PENDING_APPROVAL:
             raise ConflictError("任务不是待审批状态")
+        advice = self.advice_action(ctx)
+        target = self.pipeline.target_preview(ctx)
         if save_dir_alias:
             self._validate_alias(save_dir_alias)
             ctx.save_dir_alias = save_dir_alias
@@ -211,10 +230,22 @@ class ManagementService:
         ctx.state = TaskState.QUEUED
         ctx.log("管理端批准转存")
         self._update(ctx, expected=TaskState.PENDING_APPROVAL)
+        self._record(ctx, "approve", {"save_dir_alias": save_dir_alias or None, "target": target}, advice)
 
     async def reject(self, task_id: str) -> None:
+        ctx = self.store.get_task(task_id)
+        advice = self.advice_action(ctx) if ctx and ctx.state == TaskState.PENDING_APPROVAL else None
         if not await self.pipeline.reject(task_id):
             raise ConflictError("任务不是待审批状态")
+        self._record(ctx, "reject", {}, advice)
+
+    def advice_action(self, ctx: PipelineContext) -> str | None:
+        """裁决时管理台给出的建议动作，记入样本以统计「按建议处理」的比例。"""
+        return None
+
+    def _record(self, ctx: PipelineContext, kind: str, label: dict, advice: str | None = None) -> None:
+        self.store.add_feedback(task_id=ctx.task_id, source=ctx.raw.source, kind=kind, text=ai.scrub(ctx.raw.text),
+                                parsed=parsed_sample(ctx.parsed), label=label, advice=advice)
 
     async def retry(self, task_id: str) -> None:
         ctx = self._require_context(task_id)
@@ -248,6 +279,7 @@ class ManagementService:
         ctx.ns("runtime").update(config=copy.deepcopy(self.pipeline.cfg), revision=self.pipeline.revision)
         ctx.meta.pop("parse", None)
         ctx.meta.pop("preference", None)
+        ctx.meta.get("dir_router", {}).pop("preferred", None)
         ctx.meta.pop("storage", None)  # 无远端写检查点，显式重新解析可重新选择 Provider。
         ctx.meta["parse_request"] = {"bypass_cache": True}  # 人工要求重新解析，不复用缓存结果
         ctx.state = TaskState.RECEIVED
@@ -297,13 +329,114 @@ class ManagementService:
         validate_resource(patch)
         if storage.get("landed") and set(patch) & {"share_code", "receive_code"}:
             raise ConflictError("已转存任务不能修改分享标识")
-        values = asdict(ctx.parsed or ParsedResource())
+        before = asdict(ctx.parsed or ParsedResource())
+        values = dict(before)
         values.update(patch)
         ctx.parsed = ParsedResource(**validate_resource(values))
         ctx.ns("organize").pop("plan", None)
         ctx.log("管理端修正了解析结果")
         self._update(ctx, expected=ctx.state)
+        after = asdict(ctx.parsed)
+        changes = {key: [before[key], after[key]] for key in MEDIA_SCHEMA["properties"]
+                   if key in after and before.get(key) != after[key]}
+        if changes:
+            # result 是修正后的完整识别结果，作为同来源后续解析的示例与本地评测的标准答案。
+            self._record(ctx, "correct", {"changes": changes, "result": {
+                key: after[key] for key in MEDIA_SCHEMA["properties"] if key in after}})
         return self.get_task(task_id)
+
+    # ------------------------------------------------------------------ #
+    # 审批数据洞察：按来源的通过率与切换自动审批的建议
+    # ------------------------------------------------------------------ #
+    def insights(self) -> dict[str, Any]:
+        """最近若干次人工裁决里批准占比够高、修正够少的 manual 来源，建议改为自动转存。
+
+        建议只是提示：切换后自动转存仍要通过过滤规则、置信度阈值、TMDB 匹配与分享清单校验。
+        """
+        cfg = self.get_config()
+        rule = cfg["ai"]["suggest_auto"]
+        window = max(30, rule["min_decisions"])
+        stats = self.store.decision_stats(window)
+        names = {item["bot"].lower(): item["bot"] for item in cfg["sources"]}
+        names.update({key: names.get(key, key) for key in stats if key})
+        sources = []
+        for key, bot in sorted(names.items()):
+            item = stats.get(key, {"decisions": 0, "approved": 0, "rejected": 0, "corrected": 0,
+                                   "advised": 0, "followed": 0})
+            mode = self.pipeline._rule_for(bot).get("approval_mode", "manual")
+            decisions = item["decisions"]
+            approve_rate = item["approved"] / decisions if decisions else None
+            correct_rate = item["corrected"] / decisions if decisions else None
+            suggest = (mode == "manual" and decisions >= rule["min_decisions"]
+                       and approve_rate >= rule["approve_rate"] and correct_rate <= rule["max_correct_rate"])
+            if suggest:
+                reason = (f"最近 {decisions} 次确认中批准 {item['approved']} 次（{approve_rate:.0%}），"
+                          f"修正识别 {item['corrected']} 次，可以考虑改为自动转存")
+            elif mode != "manual":
+                reason = "已是自动转存"
+            elif decisions < rule["min_decisions"]:
+                reason = f"人工确认 {decisions} 次，满 {rule['min_decisions']} 次后评估"
+            elif approve_rate < rule["approve_rate"]:
+                reason = f"批准率 {approve_rate:.0%}，低于 {rule['approve_rate']:.0%}"
+            else:
+                reason = f"修正识别占 {correct_rate:.0%}，高于 {rule['max_correct_rate']:.0%}"
+            sources.append({"source": bot, "approval_mode": mode, **item, "approve_rate": approve_rate,
+                            "correct_rate": correct_rate, "suggest_auto": suggest, "reason": reason})
+        return {"window": window, "rule": rule, "sources": sources}
+
+    async def enable_auto_approval(self, source: str) -> dict[str, Any]:
+        """采纳建议：把来源的确认方式改为 auto（没有来源规则时新增一条）。"""
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("缺少来源")
+        cfg = self.get_config()
+        if self.pipeline.config_error:
+            raise ConflictError("配置文件当前无效，先修复原始文件")
+        for item in cfg["sources"]:
+            if item["bot"].lower() == source.strip().lower():
+                item["approval_mode"] = "auto"
+                break
+        else:
+            cfg["sources"].append({"bot": source.strip(), "approval_mode": "auto"})
+        return await self.save_config(cfg)
+
+    # ------------------------------------------------------------------ #
+    # AI 客户端（与解析器共用；测试替换解析器的 _client 即可覆盖）
+    # ------------------------------------------------------------------ #
+    def ai_client(self) -> tuple[Any, str]:
+        parser = self.pipeline.reg.providers.get("parser", {}).get("llm")
+        if parser is not None:
+            return parser._client, parser._model
+        return ai.make_client()
+
+    def ai_scope(self):
+        """服务层发起的 AI 调用也记入调用记录。"""
+        return self.pipeline._scope(self.pipeline.cfg)
+
+    def llm_usage(self, days: int = 30) -> dict[str, Any]:
+        import time
+        return self.store.llm_usage(time.time() - days * 86400)
+
+    def _require_ai(self) -> tuple[Any, str]:
+        client, model = self.ai_client()
+        if client is None:
+            raise ConflictError("未配置 AI（REELAY_LLM_API_KEY），无法使用这项功能")
+        return client, model
+
+    # ------------------------------------------------------------------ #
+    # 一句话偏好 → 确定性规则（AI 起草，配置校验，用户确认后经配置接口写入）
+    # ------------------------------------------------------------------ #
+    async def compile_rules(self, text: str, scope: str = "defaults") -> dict[str, Any]:
+        from .compiler import compile_rules
+        client, model = self._require_ai()
+        cfg = self.get_config()
+        if self.pipeline.config_error:
+            raise ConflictError("配置文件当前无效，先修复原始文件")
+        with self.ai_scope():
+            try:
+                return await compile_rules(client, model, cfg=cfg, scope=scope or "defaults", request=text,
+                                           check=self.pipeline.reg.validate_config)
+            except ai.AIError as exc:
+                raise ConflictError(f"AI 起草规则失败（{exc.category}），请稍后重试") from None
 
     def organize_preview(
         self,

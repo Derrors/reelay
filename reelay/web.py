@@ -28,6 +28,7 @@ from .core.store import Store
 from .core.worker import Worker
 from . import __version__
 from .realtime import EventBus, event_stream
+from .web_ai import register_ai
 from .web_extras import api_guard, is_authenticated, register_extras
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -126,6 +127,7 @@ def create_app(
     # /api/tasks/advanced 会被当成 task_id="advanced" 命中详情接口。
     register_extras(app, project_root=PROJECT_ROOT, store=store,
                     service=service, registry=registry)
+    register_ai(app, service=service)
 
     @app.get("/api/health")
     async def health(request: Request):

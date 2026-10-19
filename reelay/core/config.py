@@ -33,6 +33,11 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "routing": [],
     "approval": {"timeout_hours": 24, "on_timeout": "remind", "reminder": "digest", "max_reminders": 3},
     "schedule": {"daily_hour": 9},
+    # AI 能力：人工裁决回流、转人工前的方案兜底、收件箱建议与自动审批建议
+    "ai": {"examples": 3, "history": 20, "assist": True, "advice": True,
+           "suggest_auto": {"min_decisions": 20, "approve_rate": 0.9, "max_correct_rate": 0.1}},
+    # 同一集多个版本时的偏好（收件箱推荐版本与洗版共用），顺序即优先级
+    "release": {"prefer_subtitles": ["chs", "cht"], "prefer_audio": [], "hdr": "any", "prefer_sources": []},
 }
 
 
@@ -68,7 +73,7 @@ def normalize_config(data: Any) -> dict[str, Any]:
     if "save_dirs" in data:
         cfg["save_dirs"] = copy.deepcopy(data["save_dirs"])
     for key in ("save_dirs", "defaults", "forward", "providers", "plugins", "organize", "dir_router",
-                "approval", "schedule"):
+                "approval", "schedule", "ai", "release"):
         if not isinstance(cfg[key], dict):
             raise ValueError(f"{key} 必须是对象")
     dirs = cfg["save_dirs"]
@@ -142,6 +147,9 @@ def normalize_config(data: Any) -> dict[str, Any]:
     hour = cfg["schedule"].get("daily_hour")
     if type(hour) is not int or not 0 <= hour <= 23:
         raise ValueError("schedule.daily_hour 必须是 0 到 23 的整数")
+    _validate_ai(cfg["ai"])
+    from .release import validate_preferences
+    validate_preferences(cfg["release"])
     if cfg["organize"].get("conflict") not in CONFLICT_STRATEGIES:
         raise ValueError("organize.conflict 必须为 manual、skip、suffix 或 upgrade")
     naming = cfg["organize"].get("naming")
@@ -175,15 +183,28 @@ def _validate_rule(rule: dict, dirs: dict, label: str) -> None:
     threshold = rule.get("confidence_threshold")
     if type(threshold) not in (int, float) or not math.isfinite(threshold) or not 0 <= threshold <= 1:
         raise ValueError(f"{label}.confidence_threshold 必须在 0 到 1 之间")
-    filters = rule.get("filters", {})
     if type(rule.get("preferences", "")) is not str or len(rule.get("preferences", "")) > 10000:
         raise ValueError(f"{label}.preferences 必须是长度不超过 10000 的字符串")
-    if not isinstance(filters, dict):
-        raise ValueError(f"{label}.filters 必须是对象")
-    for key in ("must_have", "block_keywords"):
-        values = filters.get(key, [])
-        if type(values) is not list or any(type(v) is not str or not v for v in values):
-            raise ValueError(f"{label}.filters.{key} 必须是非空字符串数组")
+    from .rules import validate_filters
+    validate_filters(rule.get("filters", {}), f"{label}.filters")
+
+
+def _validate_ai(section: dict) -> None:
+    for key, low, high in (("examples", 0, 10), ("history", 0, 100)):
+        if type(section.get(key)) is not int or not low <= section[key] <= high:
+            raise ValueError(f"ai.{key} 必须是 {low} 到 {high} 的整数")
+    for key in ("assist", "advice"):
+        if type(section.get(key)) is not bool:
+            raise ValueError(f"ai.{key} 必须是布尔值")
+    suggest = section.get("suggest_auto")
+    if not isinstance(suggest, dict):
+        raise ValueError("ai.suggest_auto 必须是对象")
+    if type(suggest.get("min_decisions")) is not int or not 5 <= suggest["min_decisions"] <= 500:
+        raise ValueError("ai.suggest_auto.min_decisions 必须是 5 到 500 的整数")
+    for key, low in (("approve_rate", 0.5), ("max_correct_rate", 0.0)):
+        value = suggest.get(key)
+        if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= 1:
+            raise ValueError(f"ai.suggest_auto.{key} 必须在 {low:g} 到 1 之间")
 
 
 def _validate_forward(fc: dict) -> None:

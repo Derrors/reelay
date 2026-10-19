@@ -70,6 +70,7 @@ Changelog = "https://github.com/Derrors/reelay/blob/main/CHANGELOG.md"
 reelay = "reelay.main:main"
 reelay-web = "reelay.web:main"
 reelay-mcp = "reelay.mcp_server:main"
+reelay-eval = "reelay.eval:main"
 
 [tool.setuptools.packages.find]
 include = ["reelay*"]

@@ -210,7 +210,8 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
                 raise HTTPException(status_code=409, detail='配置文件当前无效，先修复原始文件；不会覆盖损坏配置。')
             if payload.get('revision') != config_revision(cfg):
                 raise HTTPException(status_code=409, detail='配置已被其他页面或进程修改，请重新加载后再保存。')
-            allowed = {'save_dirs', 'defaults', 'sources', 'forward', 'organize', 'dir_router', 'routing', 'approval', 'providers', 'plugins'}
+            allowed = {'save_dirs', 'defaults', 'sources', 'forward', 'organize', 'dir_router', 'routing', 'approval',
+                       'providers', 'plugins', 'ai', 'release'}
             catalog = registry.catalog(cfg)
             objects = [x for rows in catalog['providers'].values() for x in rows] + catalog['hooks'] + catalog['events']
             allowed.update(f['path'].split('.')[0] for x in objects for f in x['fields'])

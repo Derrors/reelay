@@ -78,7 +78,11 @@ class Organizer:
         landed = ctx.ns("storage").get("landed") or []
         if not landed:
             raise ValueError("缺少已核验的落地文件")
-        ns["plan"] = self._build_plan(ctx.parsed, landed, relative_category)
+        # 转存清单里每个文件的季集已经过校验（含转人工前 AI 补出、经规则校验的季集），整理沿用它。
+        manifest = ctx.ns("storage").get("manifest") or {}
+        mapping = {f["name"]: (f.get("season"), f["episode"]) for f in manifest.get("files", [])
+                   if f.get("name") and type(f.get("episode")) is int}
+        ns["plan"] = self._build_plan(ctx.parsed, landed, relative_category, mapping)
         ns["base_cid"] = ctx.save_dir_cid
         ns["relative_category"] = relative_category
         ns.pop("error", None)
@@ -171,7 +175,8 @@ class Organizer:
             # 季允许缺省为 1
         return None
 
-    def _build_plan(self, p, landed: list[dict], category_path: str = "") -> list[dict]:
+    def _build_plan(self, p, landed: list[dict], category_path: str = "",
+                    mapping: dict[str, tuple] | None = None) -> list[dict]:
         from ..core.naming_template import render_path
         naming = runtime.get("organize.naming", {}) or {}
         title = _safe(p.title)
@@ -179,9 +184,11 @@ class Organizer:
         plan = []
         videos = [x for x in landed if not x.get("is_dir")]
         allowed_episodes = set(p.episodes or [])
+        mapping = mapping or {}
         for f in videos:
             ext = _ext_of(f.get("name", ""))
-            detected_season, episode = _episode_of(f.get("name", "")) if is_tv else (None, None)
+            detected_season, episode = ((mapping.get(f.get("name", "")) or _episode_of(f.get("name", "")))
+                                        if is_tv else (None, None))
             if is_tv:
                 if episode is None:
                     raise ValueError(f"无法从文件名识别集号：{f.get('name', '')}")

@@ -11,13 +11,15 @@ prepare 只创建暂存目录并枚举分享；save 只发送一次转存请求�
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
+from ..core import ai, assist, runtime
 from ..core.auth115 import get_store
 from ..core.contracts import AlreadyStored, NeedsManual, PipelineContext, TransferUncertain
 from ..core.io import run_blocking
 from ..core.registry import register
-from ..core.media import episode_of, is_extra, summarize_pairs
+from ..core.media import episode_of, is_extra, resolution_rank, summarize_pairs
 
 VIDEO_EXT = {'.mp4', '.mkv', '.ts', '.avi', '.mov', '.flv', '.wmv', '.webm',
              '.m2ts', '.mpg', '.mpeg', '.rmvb', '.iso'}
@@ -29,19 +31,40 @@ def _is_video(name: str) -> bool:
 
 # 电影分享中小于最大文件该比例的视频视为花絮/样片。
 MOVIE_EXTRA_RATIO = 0.15
+# 分段电影（CD1/CD2、上下部）：只能整体转存，不能只选一段。
+_MULTIPART_RE = re.compile(r'(?i)(?<![a-z])(?:cd|disc|disk|part|pt)[ ._\-]*\d|[上下]部|[上下]集')
 
 
-def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: str = 'share') -> dict:
+def _movie_choice_problem(videos: list[dict], chosen: str, parsed) -> str | None:
+    if any(_MULTIPART_RE.search(x.get('name', '')) for x in videos):
+        return '电影分享疑似分段（CD1/CD2、上下部），不能只选一个文件'
+    rank = resolution_rank(chosen)
+    if rank < max(resolution_rank(x.get('name', '')) for x in videos) and rank != resolution_rank(parsed.resolution):
+        return f'方案选择的「{chosen}」不是清晰度最高的版本，也不是消息所写的清晰度'
+    return None
+
+
+def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: str = 'share',
+                        hints: dict | None = None) -> dict:
     """确定本次转存的文件。分享清单是集数的事实来源，消息/LLM 给出的集数只作提示。
 
     返回 ``{'files', 'episodes', 'season', 'pairs'}``：每个文件带自己的季与集，``pairs`` 为
     本次转存的 ``[季, 集]``。消息指定了季时只取该季；没指定而分享跨多季时按文件名中的季号逐季
     转存，此时 ``season`` 为 None、``episodes`` 为各季集号的并集。无法确定时抛 NeedsManual（转存前
     停止），内容全部已入库时抛 AlreadyStored。``stored`` 为已入库的 ``[季, 集]``。
+
+    ``hints`` 是 AI 在转人工前给出的方案（见 ``core/assist.py``），按同一套规则校验：只能补上文件名
+    识别不出的季集、在跨多季又不能逐季转存时按消息选一季、丢掉同一季同一集清晰度不更高的多余版本、
+    在电影多个正片候选中选清晰度最高（或与消息一致）的一个；与文件名冲突或校验不过照样转人工。
     """
+    hints = hints or {}
     videos = [x for x in video_items if not is_extra(x.get('name', ''))]
     if not videos:
         raise NeedsManual('分享内未找到正片视频文件')
+    names = {x.get('name', '') for x in videos}
+    for name in [*hints.get('episodes', {}), *hints.get('drop', []), *filter(None, [hints.get('movie_file')])]:
+        if name not in names:
+            raise NeedsManual(f'方案引用了分享里没有的正片文件：{name}')
     episodic = parsed.media_type in ('tv', 'anime') or bool(parsed.episodes)
     if not episodic:
         sizes = [x.get('size') for x in videos]
@@ -49,18 +72,40 @@ def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: st
             largest = max(sizes)
             videos = [x for x in videos if x['size'] >= largest * MOVIE_EXTRA_RATIO]
         if len(videos) > 1:
-            names = '、'.join(x.get('name', '') for x in videos[:5])
-            raise NeedsManual(f'电影分享包含 {len(videos)} 个正片候选，需人工选择：{names}')
+            chosen = hints.get('movie_file')
+            if not chosen:
+                names = '、'.join(x.get('name', '') for x in videos[:5])
+                raise NeedsManual(f'电影分享包含 {len(videos)} 个正片候选，需人工选择：{names}')
+            problem = _movie_choice_problem(videos, chosen, parsed)
+            if problem:
+                raise NeedsManual(problem)
+            videos = [x for x in videos if x.get('name') == chosen]
+            if not videos:
+                raise NeedsManual(f'方案选择的「{chosen}」不是正片候选')
         return {'files': videos, 'episodes': [], 'season': None}
 
-    detected = [(x, *episode_of(x.get('name', ''))) for x in videos]
+    detected = []
+    for x in videos:
+        name = x.get('name', '')
+        file_season, ep = episode_of(name)
+        if name in hints.get('episodes', {}):
+            hint_season, hint_ep = hints['episodes'][name]
+            if ep is not None and ep != hint_ep:
+                raise NeedsManual(f'方案的集号与文件名不一致：{name}')
+            if None not in (file_season, hint_season) and file_season != hint_season:
+                raise NeedsManual(f'方案的季号与文件名不一致：{name}')
+            file_season = file_season if file_season is not None else hint_season
+            ep = hint_ep
+        detected.append((x, file_season, ep))
     unknown = [x.get('name', '') for x, _, ep in detected if ep is None]
     if unknown:
         raise NeedsManual(f'无法从文件名识别集号：{"、".join(unknown[:5])}')
     marked = {s for _, s, _ in detected if s is not None}
-    if parsed.season is not None or len(marked) <= 1:
-        # 单季：消息指定的季，或分享里唯一的季；文件名不带季号的视为该季
-        season = parsed.season if parsed.season is not None else (marked.pop() if marked else 1)
+    chosen = hints.get('season') if hints.get('season') in marked else None
+    if parsed.season is not None or len(marked) <= 1 or chosen is not None:
+        # 单季：消息指定的季、分享里唯一的季，或 AI 按消息选出的那一季；文件名不带季号的视为该季
+        season = parsed.season if parsed.season is not None else (
+            chosen if chosen is not None else (marked.pop() if marked else 1))
         picked = [(item, season, ep) for item, s, ep in detected if s in (None, season)]
     else:
         # 跨多季的合集：按文件名中的季号逐季转存；不带季号的文件无法判断属于哪一季
@@ -70,12 +115,22 @@ def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: st
         if scope == 'message' and parsed.episodes:
             raise NeedsManual(f'分享包含多季 {sorted(marked)}，消息只写了集数，需先指定季号')
         season, picked = None, detected
-    by_pair: dict[tuple[int, int], dict] = {}
+    groups: dict[tuple[int, int], list[dict]] = {}
     for item, s, ep in picked:
-        if (s, ep) in by_pair:
-            raise NeedsManual(f'分享内第 {ep} 集有多个文件，需人工选择' if season is not None
-                              else f'分享内第 {s} 季第 {ep} 集有多个文件，需人工选择')
-        by_pair[(s, ep)] = item
+        groups.setdefault((s, ep), []).append(item)
+    dropped = set(hints.get('drop', []))
+    by_pair: dict[tuple[int, int], dict] = {}
+    for (s, ep), items in groups.items():
+        label = f'第 {ep} 集' if season is not None else f'第 {s} 季第 {ep} 集'
+        kept = [x for x in items if x.get('name') not in dropped]
+        if not kept:
+            raise NeedsManual(f'方案丢弃了{label}的全部文件')
+        if len(kept) > 1:
+            raise NeedsManual(f'分享内{label}有多个文件，需人工选择')
+        rank = resolution_rank(kept[0].get('name'))
+        if any(resolution_rank(x.get('name')) > rank for x in items if x is not kept[0]):
+            raise NeedsManual(f'方案保留的{label}版本清晰度低于被丢弃的版本')
+        by_pair[(s, ep)] = kept[0]
     if not by_pair:
         raise NeedsManual(f'分享内没有第 {season} 季的视频')
     if scope == 'message' and parsed.episodes:
@@ -171,6 +226,7 @@ class P115Storage:
         # 测试替换 ``_auth`` 为伪凭证中心，与生产走同一条代码路径。
         self._dry_run = os.getenv('REELAY_DRY_RUN', '').lower() in {'1', 'true', 'yes'}
         self._auth = get_store()
+        self._client, self._model = ai.make_client()  # 转人工前的 AI 兜底
 
     def _cookie_client(self):
         return None if self._dry_run else self._auth.cookie_client()
@@ -198,17 +254,47 @@ class P115Storage:
                      if episodic else ['movie.mp4'])
             listing = [{'id': f'dry-{ctx.task_id}-{i}', 'name': name, 'size': 1, 'sha1': None, 'is_dir': False}
                        for i, name in enumerate(names)]
-            selection = self._select(ctx, listing)
+            selection = await self.select(ctx, listing)
             return {'dry_run': True, 'to_cid': int(ctx.save_dir_cid),
                     'staging_cid': f'dry-stage-{ctx.task_id}', **selection}
         self._require_client()
-        return await run_blocking(self._prepare_sync, ctx)
+        listing = await run_blocking(self._list_share_sync, ctx)
+        selection = await self.select(ctx, listing)
+        return await run_blocking(self._stage_sync, ctx, selection)
 
     @staticmethod
-    def _select(ctx: PipelineContext, listing: list[dict]) -> dict:
+    def _select(ctx: PipelineContext, listing: list[dict], hints: dict | None = None) -> dict:
         return _select_video_items(listing, ctx.parsed,
                                    stored=ctx.ns('storage').get('stored_episodes') or [],
-                                   scope=ctx.source_rule.get('episodes_from', 'share'))
+                                   scope=ctx.source_rule.get('episodes_from', 'share'), hints=hints)
+
+    async def select(self, ctx: PipelineContext, listing: list[dict]) -> dict:
+        """按规则确定转存文件；规则无法确定时先让 AI 给出方案，方案经同一套规则校验，不过再转人工。"""
+        try:
+            return self._select(ctx, listing)
+        except NeedsManual as exc:
+            if self._client is None or not runtime.get('ai.assist', True):
+                raise
+            problem = str(exc)
+        record = ctx.ns('assist')
+        record.clear()
+        record['problem'] = problem
+        try:
+            proposal = await assist.propose_selection(self._client, self._model, ctx, listing, problem)
+        except ai.AIError as err:
+            record['error'] = err.category
+            ctx.log(f'AI 未能给出转存方案（{err.category}），转人工')
+            raise NeedsManual(problem) from None
+        record['proposal'] = assist.describe(proposal)
+        try:
+            selection = self._select(ctx, listing, proposal)
+        except NeedsManual as again:
+            record.update(accepted=False, rejected=str(again))
+            ctx.log(f'AI 方案未通过规则校验：{again}')
+            raise NeedsManual(f'{problem}（AI 方案未通过校验：{again}）') from None
+        record['accepted'] = True
+        ctx.log(f'规则无法确定转存文件（{problem}），AI 方案已通过校验：{proposal["reason"]}')
+        return selection
 
     async def discard(self, ctx: PipelineContext) -> None:
         """去重跳过时删除尚未使用的空暂存目录；非空绝不删除。"""
@@ -236,16 +322,17 @@ class P115Storage:
         self._require_client()
         return await run_blocking(self._reconcile_sync, manifest)
 
-    def _prepare_sync(self, ctx: PipelineContext) -> dict[str, Any]:
-        from p115client import P115FileSystem, P115ShareFileSystem
+    def _list_share_sync(self, ctx: PipelineContext) -> list[dict]:
+        from p115client import P115ShareFileSystem
         p = ctx.parsed
-        client = self._cookie_client()
-        share_fs = P115ShareFileSystem(client, p.share_code, p.receive_code)
-        selection = self._select(ctx, self._collect_share_videos(share_fs))
+        return self._collect_share_videos(P115ShareFileSystem(self._cookie_client(), p.share_code, p.receive_code))
+
+    def _stage_sync(self, ctx: PipelineContext, selection: dict) -> dict[str, Any]:
+        from p115client import P115FileSystem
         files = selection['files']
         if len({x['name'] for x in files}) != len(files):
             raise NeedsManual('分享内视频文件重名，需人工选择后再转存')
-        fs = P115FileSystem(client)
+        fs = P115FileSystem(self._cookie_client())
         parent = int(ctx.save_dir_cid)
         name = f'.reelay-{ctx.task_id}'
         matches = [x for x in fs.iterdir(parent) if x.get('name') == name]

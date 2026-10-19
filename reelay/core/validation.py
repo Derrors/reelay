@@ -6,6 +6,8 @@ import math
 import re
 from typing import Any
 
+from . import release as release_info
+
 
 MEDIA_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -23,6 +25,7 @@ MEDIA_SCHEMA: dict[str, Any] = {
         "origin_country": {"type": "array", "items": {"type": "string"}},
         "resolution": {"type": ["string", "null"]},
         "size": {"type": ["string", "null"]},
+        "release": release_info.SCHEMA,
         "reason": {"type": ["string", "null"]},
     },
     "additionalProperties": False,
@@ -39,7 +42,10 @@ def validate_resource(data: Any, *, complete: bool = False) -> dict[str, Any]:
         optional_new = {"genre_ids", "origin_country"}
         if not optional_new.isdisjoint(data) and not optional_new <= set(data):
             raise ValueError("AI 解析结果新增分类字段必须同时提供")
-        if set(data) not in (allowed, allowed - optional_new):
+        # release 晚于其他字段加入：不支持 schema 的兼容接口可能不返回它。
+        accepted = [allowed, allowed - optional_new]
+        accepted += [fields - {"release"} for fields in accepted]
+        if set(data) not in accepted:
             raise ValueError("AI 解析结果字段缺失或包含未知字段")
     if set(data) - allowed:
         raise ValueError("解析结果包含未知字段")
@@ -73,6 +79,9 @@ def validate_resource(data: Any, *, complete: bool = False) -> dict[str, Any]:
         elif key in {"share_code", "receive_code"}:
             pattern = r"[A-Za-z0-9]{1,100}" if key == "share_code" else r"[A-Za-z0-9]{4}"
             valid = value is None or (type(value) is str and re.fullmatch(pattern, value) is not None)
+        elif key == "release":
+            data[key] = {} if value == {} else release_info.validate(value)
+            continue
         else:
             valid = value is None or (type(value) is str and len(value) <= 2000)
         if not valid:

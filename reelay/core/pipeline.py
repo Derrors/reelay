@@ -717,4 +717,5 @@ class Pipeline:
         await self._emit("on_daily", ctx, persist=False)
         self.store.stage_system_event(ctx)
         self.store.state_set("kernel", "daily_event", today)
+        self.store.prune_llm_calls(now - 90 * 86400)  # AI 调用记录保留 90 天
         return True

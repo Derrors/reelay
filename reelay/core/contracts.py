@@ -118,6 +118,8 @@ class ParsedResource:
     origin_country: list[str] = field(default_factory=list)     # 两位国家/地区代码
     resolution: str | None = None
     size: str | None = None
+    # 发布版本信息：字幕、音轨、HDR、片源、编码、打包形式（见 core/release.py），同集多版本时据此择优
+    release: dict[str, Any] = field(default_factory=dict)
     share_code: str | None = None     # 115 分享码（资源级去重键）
     receive_code: str | None = None   # 访问码
     reason: str | None = None         # AI 判定理由（便于回查）
