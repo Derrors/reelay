@@ -27,8 +27,10 @@ def _environment() -> ImmutableSandboxedEnvironment:
                                          loader=None, enable_async=False)
     safe = {name: env.filters[name] for name in ALLOWED_FILTERS - {"pad2"} if name in env.filters}
     safe["pad2"] = lambda value: f"{int(value):02d}"
-    env.filters.clear(); env.filters.update(safe)
-    env.tests.clear(); env.globals.clear()
+    env.filters.clear()
+    env.filters.update(safe)
+    env.tests.clear()
+    env.globals.clear()
     return env
 
 

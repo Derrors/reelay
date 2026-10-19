@@ -38,7 +38,8 @@ def _parse_size_gb(value: Any) -> float:
     m = re.match(r"\s*([0-9.]+)\s*([KMGT]?B|GB|MB|KB|TB)", str(value), re.I)
     if not m:
         return 0.0
-    num = float(m.group(1)); unit = m.group(2).upper()
+    num = float(m.group(1))
+    unit = m.group(2).upper()
     return num * {"B": 1 / 1024 ** 3, "KB": 1 / 1024 ** 2,
                   "MB": 1 / 1024, "GB": 1, "TB": 1024}.get(unit, 0.0)
 
@@ -154,7 +155,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
             registry.validate_config(cfg)
             return {'ok': True}
         except (ValueError, TypeError, AttributeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post('/api/extensions/organizer/preview')
     async def organizer_template_preview(request: Request):
@@ -170,7 +171,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
                       "original_name": "sample.S01E02.mkv"}
             return {'path': render_path(template, values, label=f'{kind}命名模板')}
         except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post('/api/extensions/dir-router/preview')
     async def dir_router_preview(request: Request):
@@ -183,7 +184,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
                             payload.get('origin_country', []))
             return {'path': path}
         except (ValueError, TypeError, AttributeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.patch('/api/config/sections')
     async def save_config_sections(request: Request):
@@ -209,7 +210,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
             try:
                 saved = await service.save_config(updated)
             except (ValueError, KeyError) as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             return {'config': saved, 'revision': config_revision(saved)}
 
     import asyncio
@@ -258,16 +259,16 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         try:
             return await asyncio.to_thread(get_store().cookie_qr_start)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"申请 Cookie 登录二维码失败：{exc}")
+            raise HTTPException(status_code=502, detail=f"申请 Cookie 登录二维码失败：{exc}") from exc
 
     @app.get("/api/auth115/cookie/qr")
     async def auth115_cookie_qr_status(uid: str = Query(...)):
         try:
             return await asyncio.to_thread(get_store().cookie_qr_status, uid)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"查询 Cookie 扫码状态失败：{exc}")
+            raise HTTPException(status_code=502, detail=f"查询 Cookie 扫码状态失败：{exc}") from exc
 
     @app.get("/api/auth115/cookie/qr/image")
     async def auth115_cookie_qr_image(uid: str = Query(...)):
@@ -288,9 +289,9 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         try:
             png = await asyncio.to_thread(_fetch)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"获取 Cookie 二维码图片失败：{exc}")
+            raise HTTPException(status_code=502, detail=f"获取 Cookie 二维码图片失败：{exc}") from exc
         return Response(content=png, media_type="image/svg+xml",
                         headers={"Cache-Control": "no-store"})
 
@@ -300,7 +301,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         try:
             return await __import__("asyncio").to_thread(store.qr_start)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"申请授权二维码失败：{exc}")
+            raise HTTPException(status_code=502, detail=f"申请授权二维码失败：{exc}") from exc
 
     @app.get("/api/auth115/oauth/qr")
     async def auth115_qr_status(uid: str = Query(...)):
@@ -308,9 +309,9 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         try:
             return await __import__("asyncio").to_thread(store.qr_status, uid)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"查询扫码状态失败：{exc}")
+            raise HTTPException(status_code=502, detail=f"查询扫码状态失败：{exc}") from exc
 
     @app.get("/api/auth115/oauth/qr/image")
     async def auth115_qr_image(uid: str = Query(...)):
@@ -330,9 +331,9 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         try:
             png = await asyncio.to_thread(_fetch)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"获取二维码图片失败：{exc}")
+            raise HTTPException(status_code=502, detail=f"获取二维码图片失败：{exc}") from exc
         return Response(content=png, media_type="image/png",
                         headers={"Cache-Control": "no-store"})
 
@@ -417,21 +418,22 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     @app.get("/api/tasks/advanced")
     async def advanced_tasks(q: str | None = None, media_type: str | None = None,
                              limit: int = Query(default=200, ge=1, le=1000)):
-        import sqlite3
-        db = os.getenv("REELAY_DB_PATH", str(project_root / "data" / "reelay.db"))
-        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
+        conn = store._conn  # 与应用同一个 Store；不要按环境变量另开连接
         where, args = ["state='done'"], []
         if q:
-            where.append("title LIKE ?"); args.append(f"%{q}%")
+            where.append("title LIKE ?")
+            args.append(f"%{q}%")
         if media_type:
-            where.append("json_extract(snapshot,'$.parsed.media_type')=?"); args.append(media_type)
+            where.append("json_extract(snapshot,'$.parsed.media_type')=?")
+            args.append(media_type)
         rows = conn.execute(
             f"SELECT task_id,title,state,snapshot,updated_at FROM tasks "
             f"WHERE {' AND '.join(where)} ORDER BY updated_at DESC LIMIT ?",
             (*args, limit)).fetchall()
         groups: dict[str, dict] = {}
         for r in rows:
-            snap = json.loads(r["snapshot"]); p = snap.get("parsed") or {}
+            snap = json.loads(r["snapshot"])
+            p = snap.get("parsed") or {}
             key = p.get("title") or "(未识别)"
             g = groups.setdefault(key, {"title": key, "media_type": p.get("media_type"),
                                         "year": p.get("year"), "episodes": [], "tasks": 0,
@@ -460,7 +462,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         try:
             attr = fs.get_attr(int(fid), refresh=True)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=404, detail=f"未找到文件：{exc}")
+            raise HTTPException(status_code=404, detail=f"未找到文件：{exc}") from exc
         return {k: attr.get(k) for k in
                 ("id", "name", "size", "sha1", "parent_id", "is_dir", "pickcode",
                  "ctime", "mtime")}
@@ -495,13 +497,8 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # ------------------------------------------------------------------ #
     @app.get("/api/stats")
     async def stats(days: int = Query(default=30, ge=1, le=365)):
-        rows = store.dashboard() if hasattr(store, "dashboard") else {}
-        # 任务按天/状态聚合由 SQL 直接统计
-        import sqlite3
-        db = store.db_path if hasattr(store, "db_path") else os.getenv(
-            "REELAY_DB_PATH", str(project_root / "data" / "reelay.db"))
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
+        # 任务按天/状态聚合由 SQL 直接统计；复用应用的 Store 连接，不为每个请求新开连接。
+        conn = store._conn
         since = time.time() - days * 86400
         daily = conn.execute(
             "SELECT substr(datetime(updated_at,'unixepoch','localtime'),1,10) d, state, "
@@ -510,14 +507,13 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         by_title = conn.execute(
             "SELECT title, state, count(*) n FROM tasks WHERE title IS NOT NULL "
             "GROUP BY title ORDER BY n DESC LIMIT 15").fetchall()
-        total_bytes = conn.execute(
-            "SELECT COALESCE(SUM(CAST(json_extract(snapshot,'$.parsed.size') AS REAL)),0) "
-            "FROM tasks WHERE state='done' AND json_extract(snapshot,'$.parsed.size') IS NOT NULL"
-        ).fetchone()[0]
-        conn.close()
+        # 解析出的 size 是 "15.12 GB" 这类文本，按单位换算后再求和。
+        sizes = conn.execute(
+            "SELECT json_extract(snapshot,'$.parsed.size') FROM tasks "
+            "WHERE state='done' AND json_extract(snapshot,'$.parsed.size') IS NOT NULL").fetchall()
         return {
-            "counts": rows.get("counts", {}),
+            "counts": store.counts_by_state(),
             "daily": [dict(r) for r in daily],
             "top_titles": [dict(r) for r in by_title],
-            "estimated_done_gb": round(float(total_bytes or 0) / (1024 ** 3), 2),
+            "estimated_done_gb": round(sum(_parse_size_gb(row[0]) for row in sizes), 2),
         }

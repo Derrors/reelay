@@ -1,0 +1,22 @@
+# pip install -e ".[dev]" && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: detect-private-key
+  - repo: local
+    hooks:
+      - id: web-lint
+        name: web typecheck + eslint
+        entry: bash -c 'cd web && npm run -s typecheck && npm run -s lint:eslint'
+        language: system
+        files: ^web/
+        pass_filenames: false

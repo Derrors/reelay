@@ -189,14 +189,14 @@ def create_app(
         try:
             return {"items": service.list_tasks(state=state, source=source, query=query, limit=limit)}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.get("/api/deliveries")
     async def deliveries(status: str = "failed", limit: int = Query(default=100, ge=1, le=500)):
         try:
             return {"items": store.list_deliveries(status=status, limit=limit)}
         except ValueError as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/deliveries/{delivery_id}/retry")
     async def retry_delivery(delivery_id: int):
@@ -209,7 +209,7 @@ def create_app(
         try:
             return service.get_task(task_id)
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/tasks/{task_id}/approve")
     async def approve(task_id: str, payload: ActionPayload | None = None):
@@ -220,7 +220,7 @@ def create_app(
             )
             return {"ok": True}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/tasks/{task_id}/reject")
     async def reject(task_id: str):
@@ -228,7 +228,7 @@ def create_app(
             await service.reject(task_id)
             return {"ok": True}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/tasks/{task_id}/retry")
     async def retry(task_id: str):
@@ -236,7 +236,7 @@ def create_app(
             await service.retry(task_id)
             return {"ok": True}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/tasks/{task_id}/reparse")
     async def reparse(task_id: str):
@@ -244,7 +244,7 @@ def create_app(
             await service.reparse(task_id)
             return {"ok": True}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/tasks/{task_id}/reorganize")
     async def reorganize(task_id: str, payload: ActionPayload):
@@ -252,7 +252,7 @@ def create_app(
             await service.requeue_organize(task_id, save_dir_alias=payload.save_dir_alias)
             return {"ok": True}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/tasks/{task_id}/reconcile")
     async def reconcile(task_id: str):
@@ -260,21 +260,21 @@ def create_app(
             await service.reconcile_transfer(task_id)
             return {"ok": True}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.patch("/api/tasks/{task_id}/parsed")
     async def patch_parsed(task_id: str, payload: ParsePatchPayload):
         try:
             return service.patch_parsed(task_id, payload.values)
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.post("/api/organize/preview")
     async def organize_preview(payload: OrganizePreviewPayload):
         try:
             return {"items": service.organize_preview(parsed=payload.parsed, landed=payload.landed)}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.get("/api/config")
     async def get_config():
@@ -292,7 +292,7 @@ def create_app(
         try:
             return {"config": await service.save_config(payload.config)}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     @app.put("/api/config/text")
     async def put_config_text(payload: ConfigTextPayload):
@@ -300,7 +300,7 @@ def create_app(
             config = await service.save_config_text(payload.text)
             return {"config": config, "text": service.get_config_text()}
         except Exception as exc:
-            raise _error(exc)
+            raise _error(exc) from exc
 
     frontend = Path(frontend_dir or PROJECT_ROOT / "web" / "dist").resolve()
     frontend_assets = frontend / "assets"

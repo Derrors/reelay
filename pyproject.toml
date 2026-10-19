@@ -1,14 +1,26 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "reelay"
 version = "0.1.0"
-description = "监听 Telegram 资源 Bot，AI 识别影视资源与 115 链接，审批后转存并整理入库。可扩展内核骨架。"
+description = "自托管的 Telegram → 115 网盘自动转存：AI 识别分享链接，审批后转存并按媒体库规范整理入库。"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Derrors" }]
+keywords = ["telegram", "115", "media-library", "jellyfin", "emby", "llm", "self-hosted"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: AsyncIO",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+]
 dependencies = [
     "Jinja2>=3.1,<4",
 ]
@@ -25,7 +37,6 @@ full = [
 web = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "httpx2>=0.1",
     "PyYAML>=6.0",
 ]
 agent = ["mcp>=1.2"]
@@ -37,9 +48,19 @@ all = [
     "PyYAML>=6.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "httpx2>=0.1",
     "mcp>=1.2",
 ]
+# 开发与 CI：pip install -e ".[all,dev]"
+dev = [
+    "ruff>=0.15",
+    "pre-commit>=4",
+    "httpx2>=2",  # starlette TestClient
+]
+
+[project.urls]
+Homepage = "https://github.com/Derrors/reelay"
+Issues = "https://github.com/Derrors/reelay/issues"
+Changelog = "https://github.com/Derrors/reelay/blob/main/CHANGELOG.md"
 
 [project.scripts]
 reelay = "reelay.main:main"
@@ -48,3 +69,13 @@ reelay-mcp = "reelay.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["reelay*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["web"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+# FastAPI 的 Query()/Depends() 作为参数默认值是框架惯用法
+ignore = ["B008"]

@@ -124,12 +124,15 @@ class TestDirectoryReads(unittest.TestCase):
         self.assertEqual(result['via'],'oauth')
 
     def test_expired_credentials_and_missing_directory(self):
-        client=Mock(); credentials=SimpleNamespace(has_oauth=False,cookie_client=lambda:client)
+        client=Mock()
+        credentials=SimpleNamespace(has_oauth=False,cookie_client=lambda:client)
         client.fs_files.return_value={'state':False,'errno':99,'error':'请重新登录'}
-        with self.assertRaises(StorageBrowseError) as caught: browse_dirs(credentials,'0')
+        with self.assertRaises(StorageBrowseError) as caught:
+            browse_dirs(credentials,'0')
         self.assertEqual(caught.exception.code,'credentials_expired')
         client.fs_files.return_value={'state':True,'data':[],'path':[{'cid':'0'}]}
-        with self.assertRaises(StorageBrowseError) as caught: browse_dirs(credentials,'12')
+        with self.assertRaises(StorageBrowseError) as caught:
+            browse_dirs(credentials,'12')
         self.assertEqual(caught.exception.code,'directory_missing')
 
     def test_invalid_templates_rejected(self):
@@ -138,4 +141,5 @@ class TestDirectoryReads(unittest.TestCase):
             '{{ title }}/{{ season|pad2 }}.{{ missing }}', '/{{ title }}.{{ ext }}',
             '{missing}/{ext}',
         ]:
-            with self.assertRaises(ValueError): normalize_config({'organize':{'naming':{'tv':template}}})
+            with self.assertRaises(ValueError):
+                normalize_config({'organize':{'naming':{'tv':template}}})

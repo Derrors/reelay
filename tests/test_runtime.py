@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import tempfile
 import time
 import types
@@ -409,7 +410,7 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         await pipeline.accept(context())
         await pipeline.dispatch_deliveries()
         self.assertEqual(store.delivery_counts(), {"done": 1, "pending": 1})
-        for attempt in range(7):
+        for _ in range(7):
             store._conn.execute("UPDATE outbox SET next_attempt=0 WHERE status='pending'")
             store._conn.commit()
             await pipeline.dispatch_deliveries()
@@ -432,7 +433,7 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         store = self.store()
         store._conn.execute("CREATE TRIGGER fail_event BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT, 'disk failure'); END")
         pipeline = Pipeline(reg, store, {})
-        with self.assertRaises(Exception):
+        with self.assertRaises(sqlite3.IntegrityError):
             await pipeline.accept(context())
         self.assertEqual(store.counts_by_state(), {})
         self.assertEqual(store.delivery_counts(), {})

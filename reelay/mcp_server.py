@@ -198,7 +198,10 @@ def _server_class():
 
 def build_server(tools: ReelayTools, *, readonly: bool):
     """注册工具；全部声明为 async，SQLite 访问留在事件循环线程，不进线程池。"""
-    server = _server_class()("reelay", instructions=_INSTRUCTIONS)
+    # SDK 构造时会按 log_level 配置根日志；默认 WARNING，避免 stderr 被 INFO 刷屏。
+    level = os.getenv("REELAY_LOG_LEVEL", "WARNING").upper()
+    level = level if level in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"} else "WARNING"
+    server = _server_class()("reelay", instructions=_INSTRUCTIONS, log_level=level)
 
     async def status() -> dict[str, Any]:
         """Reelay 运行概况：各状态任务数、待处理/执行中/失败/完成数、运行模式、通知投递与 worker/消息源/115 健康状态。

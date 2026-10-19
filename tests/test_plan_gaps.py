@@ -594,6 +594,20 @@ class TestWebAuthGuard(unittest.TestCase):
         self.assertEqual(body["decision"], "ask")  # 未配 LLM：降级结果只能人工确认，而不是被当作“非影视”跳过
         self.assertLess(body["confidence"]["score"], 0.5)
 
+    def test_stats_counts_and_size_use_app_store(self):
+        self.client.post("/api/auth/login", json={"password": "pw"})
+        store = self.app.state.store
+        for size in ("1.5 GB", "512 MB"):
+            ctx = message(msg_id=size)
+            ctx.parsed = ParsedResource(is_media=True, title="片", size=size)
+            ctx.state = TaskState.DONE
+            store.save_task(ctx)
+        body = self.client.get("/api/stats").json()
+        self.assertEqual(body["counts"], {"done": 2})
+        self.assertEqual(body["estimated_done_gb"], 2.0)
+        self.assertEqual(self.client.get("/api/tasks/advanced").status_code, 200)
+        self.assertEqual(self.client.get("/api/stats").status_code, 200)  # 共享连接未被关闭
+
     def test_health_hides_runtime_details_without_login(self):
         self.assertEqual(self.client.get("/api/health").json(), {"ok": True, "service": "reelay"})
 

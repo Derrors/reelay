@@ -8,7 +8,8 @@
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.app.json",
     "lint": "concurrently npm:typecheck npm:lint:eslint",
-    "lint:eslint": "eslint src"
+    "lint:eslint": "eslint src",
+    "test": "vitest run"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.14",
@@ -45,6 +46,7 @@
     "globals": "^17",
     "typescript": "~5.9",
     "typescript-eslint": "^8",
-    "vite": "^8"
+    "vite": "^8",
+    "vitest": "^4.1.12"
   }
 }
