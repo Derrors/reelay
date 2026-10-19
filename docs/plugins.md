@@ -109,6 +109,65 @@ class MyListener:
 
 Provider 由配置选择：`providers.source`、`providers.notify`，以及 `defaults`/`sources[]` 中的 `parser`、`decision`、`storage`。
 
+## 元数据补全约定
+
+识别完成后，内置的 `tmdb_enrich`（`after_parse`，order 50）按标题与年份匹配 TMDB 条目并回填元数据。TMDB 的 ID 体系是 Reelay 的数据标准：类型 ID 就是 TMDB 类型 ID，命名中的 `[tmdbid=…]` 供 Jellyfin / Emby 刮削，海报按 TMDB 图片路径显示。下面的字段由内核和其他扩展直接读取；接入其他数据源（如豆瓣、Bangumi）时，请把结果对应到 TMDB 条目并写入同样的字段。
+
+写入 `ctx.parsed`：
+
+| 字段 | 内容 | 谁在读 |
+| --- | --- | --- |
+| `title` / `year` | 规范标题与上映 / 首播年份 | 去重键（`片名\|S01\|E02`，不同来源的同一部作品靠它合并）、整理路径、缺集追更 |
+| `genre_ids` | TMDB 类型 ID 整数列表，整体替换 AI 的值 | 二级分类 `dir_router.categories`（如 16 = 动画）、命名模板 |
+| `origin_country` | 两位大写国家/地区代码；数据源没有时保留 AI 的值，不要清空 | 二级分类、命名模板 |
+| `raw_fields["tmdbid"]` | TMDB 条目 ID（整数） | 命名模板变量 `tmdb_id`（默认模板写入 `[tmdbid=…]`）、缺集追更查询已播集数 |
+| `raw_fields["poster_path"]` | TMDB 图片路径，如 `/abc.jpg`，不是完整 URL | 管理台海报（拼接 `https://image.tmdb.org/t/p/<尺寸>`）；没有时显示文字封面 |
+
+写入 `ctx.meta["tmdb"]`：确定性置信度在全部 `after_parse` Hook 之后计算，按这里的结果判断（`reelay/core/confidence.py`）。
+
+| 情况 | 写入 | 对置信度的影响 |
+| --- | --- | --- |
+| 匹配成功 | `matched: True`、`tmdbid` | 计为通过的信号 |
+| 查询成功但没有可信匹配 | `matched: False` | 封顶 0.45，标记「TMDB 未匹配」，转人工确认 |
+| 没有查询（未配置凭证、模拟模式） | `matched: False`、`note: 原因` | 中立，不影响分数 |
+| 查询出错（网络、限流等） | `matched: False`、`error: 异常类型名` | 中立，不影响分数 |
+
+`candidates`、`kind`、`score` 等其余字段只供任务详情排查，内核不读取。
+
+接入其他数据源有两种方式：
+
+- **补充**：order 大于 50，只在 TMDB 没有匹配时查询；命中后写入上表字段，并整体替换 `meta["tmdb"]`——残留的 `note` / `error` 会让结果仍按中立处理。
+- **替代**：在 `plugins` 中关闭 `tmdb_enrich`，由你的 Hook 按同样约定写入。
+
+```python
+import asyncio
+
+from reelay.core import runtime
+from reelay.core.registry import register
+
+
+@register(kind="hook", stage="after_parse", order=60)
+class DoubanFallback:
+    name = "douban_fallback"
+
+    async def run(self, ctx) -> bool:
+        p = ctx.parsed
+        if not p or not p.is_media or ctx.meta.get("tmdb", {}).get("matched"):
+            return True
+        hit = await asyncio.to_thread(lookup_via_douban, p.title, p.year)  # 你的实现：经豆瓣找到对应的 TMDB 条目
+        runtime.observe("douban", "connected")
+        if hit:
+            p.title, p.year = hit["title"], hit["year"]
+            p.raw_fields["tmdbid"] = hit["tmdbid"]
+            # 能拿到时同样回填 genre_ids、origin_country、raw_fields["poster_path"]
+            ns = ctx.ns("tmdb")
+            ns.clear()
+            ns.update(matched=True, tmdbid=hit["tmdbid"], source="douban")
+        return True
+```
+
+对应不到 TMDB 条目的结果不要只写自有 ID：去重、分类、命名与追更都以 TMDB 条目为准，这种情况按「没有可信匹配」处理。
+
 ## 读取配置与使用内核服务
 
 ```python
