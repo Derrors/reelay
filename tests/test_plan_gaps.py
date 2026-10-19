@@ -714,6 +714,117 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
         match.assert_not_called()
 
 
+class FakeShareFS:
+    def __init__(self, tree=None, error=None):
+        self.tree, self.error, self.calls = tree or {}, error, 0
+
+    def iterdir(self, cid):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.tree[cid]
+
+
+def share_file(name, size=100):
+    return {"id": name, "name": name, "size": size, "is_directory": False}
+
+
+def share_dir(cid):
+    return {"id": cid, "name": f"目录{cid}", "is_directory": True}
+
+
+class TestShareProbe(Base):
+    """消息没写集数的剧集：识别后只读列出分享，补出实际的季与集，提前标出失效与多季。"""
+
+    def setUp(self):
+        super().setUp()
+        self.parsed = ParsedResource(is_media=True, title="剧", year=2026, media_type="tv", share_code="abc")
+
+    def test_describe_share_reads_season_episodes_and_size(self):
+        from reelay.providers.storage import describe_share
+        fs = FakeShareFS({0: [share_dir(1), share_file("说明.txt")],
+                          1: [share_file(f"Show.S01E{ep:02d}.2160p.mkv", 1024 ** 3) for ep in range(1, 11)]})
+        result = describe_share(fs, self.parsed)
+        self.assertEqual((result["status"], result["season"], result["episodes"], result["videos"], result["size"]),
+                         ("ok", 1, list(range(1, 11)), 10, 10 * 1024 ** 3))
+        self.assertEqual(self.parsed.episodes, [])  # 不改识别结果
+
+    def test_describe_share_flags_problems_before_approval(self):
+        from reelay.providers.storage import describe_share
+        multi = FakeShareFS({0: [share_dir(1), share_dir(2)], 1: [share_file("A.S01E01.mkv")], 2: [share_file("A.S02E01.mkv")]})
+        self.assertEqual(describe_share(multi, self.parsed)["status"], "issue")
+        self.assertIn("多季", describe_share(multi, self.parsed)["note"])
+        gone = describe_share(FakeShareFS(error=OSError(5, {"state": False, "error": "访问码错误"})), self.parsed)
+        self.assertEqual(gone["status"], "unavailable")
+        self.assertIn("访问码错误", gone["note"])
+        with self.assertRaises(ConnectionError):  # 临时错误交给调用方稍后重试
+            describe_share(FakeShareFS(error=ConnectionError("timeout")), self.parsed)
+        huge = FakeShareFS({0: [share_dir(i) for i in range(1, 40)], **{i: [share_dir(100 + i)] for i in range(1, 40)}})
+        self.assertEqual(describe_share(huge, self.parsed, max_dirs=5)["status"], "incomplete")
+        self.assertEqual(huge.calls, 5)
+
+    async def probe(self, ctx, describe):
+        from reelay.plugins import share_probe
+        hook = share_probe.ShareProbe()
+        with patch.object(share_probe, "get_store", return_value=types.SimpleNamespace(has_cookie=True)), \
+                patch.object(share_probe, "PROBE_INTERVAL", 0), \
+                patch.object(share_probe.ShareProbe, "_describe", staticmethod(describe)):
+            self.assertTrue(await hook.run(ctx))
+            return hook.needs_refresh(ctx)
+
+    async def test_hook_only_reads_series_without_episodes(self):
+        calls = []
+
+        def describe(parsed):
+            calls.append(parsed.title)
+            return {"status": "ok", "videos": 10, "size": 71 * 1024 ** 3, "season": 1, "episodes": list(range(1, 11))}
+
+        ctx = message()
+        ctx.parsed = self.parsed
+        await self.probe(ctx, describe)
+        self.assertEqual((ctx.meta["share"]["episodes"], ctx.meta["share"]["size_text"]), (list(range(1, 11)), "71.0 GB"))
+        self.assertTrue(any("读取分享：10 个视频" in line for line in ctx.trail))
+        for change in ({"episodes": [3]}, {"media_type": "movie"}, {"share_code": None}):
+            other = message()
+            other.parsed = ParsedResource(**{**self.parsed.__dict__, **change})
+            await self.probe(other, describe)
+            self.assertNotIn("share", other.meta)
+        self.assertEqual(calls, ["剧"])
+
+    async def test_read_errors_are_retried_on_next_startup(self):
+        def describe(parsed):
+            raise ConnectionError("timeout")
+
+        ctx = message()
+        ctx.parsed, ctx.state = self.parsed, TaskState.PENDING_APPROVAL
+        self.assertTrue(await self.probe(ctx, describe))  # needs_refresh
+        self.assertEqual(ctx.meta["share"]["status"], "error")
+
+    async def test_inbox_shows_episodes_and_size_read_from_share(self):
+        from reelay.core.service import ManagementService
+        ctx = message()
+        ctx.parsed, ctx.state = self.parsed, TaskState.PENDING_APPROVAL
+        ctx.ns("share").update(status="ok", videos=10, season=1, episodes=list(range(1, 11)), size_text="71.1 GB")
+        self.store.save_task(ctx)
+        service = ManagementService(self.store, self.pipeline(), config_path=str(Path(self.temp.name) / "c.yaml"))
+        item = service.inbox()["items"][0]
+        self.assertEqual((item["season"], item["episodes"], item["size"]), (1, list(range(1, 11)), "71.1 GB"))
+        self.assertEqual(item["share"], {"status": "ok", "note": None, "videos": 10, "from_share": True})
+
+    async def test_pending_tasks_are_read_once_at_startup(self):
+        from reelay.plugins import share_probe
+        ctx = message()
+        ctx.parsed, ctx.state = self.parsed, TaskState.PENDING_APPROVAL
+        self.store.save_task(ctx)
+        pipeline = self.pipeline(registry=discover())
+        describe = staticmethod(lambda parsed: {"status": "unavailable", "note": "分享无法访问：访问码错误"})
+        with patch.object(share_probe, "get_store", return_value=types.SimpleNamespace(has_cookie=True)), \
+                patch.object(share_probe, "PROBE_INTERVAL", 0), patch.object(share_probe.ShareProbe, "_describe", describe):
+            self.assertEqual(await pipeline.refresh_metadata(), 1)
+            self.assertEqual(await pipeline.refresh_metadata(), 0)
+        self.assertEqual(self.store.get_task(ctx.task_id).meta["share"]["status"], "unavailable")
+
+
 class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
     RESULTS = [
         {"id": 1, "title": "完全不同的电影", "release_date": "2026-01-01"},

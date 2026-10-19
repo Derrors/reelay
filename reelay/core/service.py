@@ -152,10 +152,17 @@ class ManagementService:
             p = ctx.parsed or ParsedResource()
             meta = ctx.meta
             lines = [re.sub(r"https?://\S+", "", line).strip() for line in (ctx.raw.text or "").splitlines()]
+            # 消息没写集数时，用读取分享得到的季、集与大小展示（不改识别结果，转存仍以分享为准）
+            share = meta.get("share") or {}
+            from_share = not p.episodes and bool(share.get("episodes"))
             items.append({
                 **{key: row[key] for key in ("task_id", "state", "source", "created_at", "updated_at", "error")},
-                "title": p.title, "year": p.year, "media_type": p.media_type, "season": p.season,
-                "episodes": p.episodes, "resolution": p.resolution, "size": p.size, "reason": p.reason,
+                "title": p.title, "year": p.year, "media_type": p.media_type,
+                "season": share.get("season") if from_share else p.season,
+                "episodes": share["episodes"] if from_share else p.episodes,
+                "resolution": p.resolution, "size": p.size or share.get("size_text"), "reason": p.reason,
+                "share": {"status": share.get("status"), "note": share.get("note"), "videos": share.get("videos"),
+                          "from_share": from_share} if share else None,
                 "confidence": p.confidence,
                 "confidence_caps": meta.get("confidence", {}).get("caps", []),
                 "fallback": bool(meta.get("parse", {}).get("fallback")),

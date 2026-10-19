@@ -15,8 +15,8 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { fullTime, relativeTime } from '@/lib/format';
 import { Realtime } from '@/lib/realtime';
-import { CONFIDENCE_CAP_LABELS } from '@/lib/status';
-import type { IInboxItem } from '@/lib/types';
+import { CONFIDENCE_CAP_LABELS, type Tone } from '@/lib/status';
+import type { IInboxItem, IShareProbe } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 type Tab = 'pending_approval' | 'need_manual';
@@ -51,6 +51,24 @@ function ConfidenceBar({ value }: { value: number }) {
   );
 }
 
+/** 消息没写集数的剧集读取分享的结果：集数来自分享时注明，失效、多季等转存时会转人工的情况提前标出。 */
+function shareBadge(share: IShareProbe | null): { tone: Tone; label: string; title: string } | null {
+  if (!share?.status) return null;
+  const note = share.note ?? '';
+  switch (share.status) {
+    case 'ok':
+      return share.from_share ? { tone: 'info', label: '集数来自分享', title: `读取分享：${share.videos ?? 0} 个视频` } : null;
+    case 'unavailable':
+      return { tone: 'danger', label: '分享无法访问', title: note };
+    case 'issue':
+      return { tone: 'warning', label: note.split(/[：，]/)[0] || '转存时需人工', title: `${note}（转存时会转人工）` };
+    case 'incomplete':
+      return { tone: 'neutral', label: '分享内容较多，未读完', title: note };
+    default:
+      return null;  // 读取出错：启动时会重试，不打扰
+  }
+}
+
 interface CardProps {
   item: IInboxItem;
   dirs: string[];
@@ -67,6 +85,7 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
   const [dir, setDir] = useState('');  // 空值 = 按自动分类存放
   const manual = item.state === 'need_manual';
   const autoTarget = item.auto_path ?? item.auto_dir ?? '按分类';
+  const share = shareBadge(item.share);
   return (
     <article className={cn(
       'group relative flex gap-4 rounded-xl border border-card-border bg-card p-4 shadow-xs transition-shadow hover:shadow-md',
@@ -99,8 +118,9 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
           <span className="min-w-0 truncate">{item.source} · <span title={fullTime(item.created_at)}>{relativeTime(item.created_at)}</span></span>
           {!manual ? <ConfidenceBar value={item.confidence} /> : null}
         </div>
-        {!manual && (item.fallback || item.confidence_caps.length) ? (
+        {!manual && (item.fallback || item.confidence_caps.length || share) ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
+            {share ? <span title={share.title}><ToneBadge tone={share.tone}>{share.label}</ToneBadge></span> : null}
             {item.fallback ? <ToneBadge tone="warning">AI 识别降级</ToneBadge> : null}
             {item.confidence_caps.filter((c) => c !== 'parse_fallback').map((cap) => (
               <ToneBadge key={cap} tone="warning">{CONFIDENCE_CAP_LABELS[cap] ?? cap}</ToneBadge>

@@ -107,6 +107,14 @@ export interface ITaskSummary {
 }
 
 /** 收件箱卡片：/api/inbox 一次返回展示所需字段（不含分享链接）。 */
+export interface IShareProbe {
+  /** ok 已确定季与集；issue 转存时需人工；unavailable 分享失效；incomplete 内容过多未读完；error 读取出错待重试。 */
+  status: 'ok' | 'issue' | 'unavailable' | 'incomplete' | 'error' | null;
+  note: string | null;
+  videos: number | null;
+  from_share: boolean;
+}
+
 export interface IInboxItem {
   task_id: string;
   state: TaskState;
@@ -132,6 +140,8 @@ export interface IInboxItem {
   auto_dir: string | null;
   /** 同一位置在网盘中的真实路径，如「/测试/剧集/国产剧集」；尚未读取到时为 null。 */
   auto_path: string | null;
+  /** 消息没写集数的剧集读取分享的结果；from_share 表示 season/episodes/size 来自分享。 */
+  share: IShareProbe | null;
   preview: string;
   storage_phase: string | null;
   has_landed: boolean;

@@ -64,7 +64,7 @@ class MyListener: ...
 class MyHook:
     name = "my_hook"
     stage = "after_parse"   # before_parse / after_parse / before_save / after_save
-    order = 60              # 同一阶段内从小到大执行；内置：dir_router 10，tmdb_enrich 50，organizer 20，strm 30
+    order = 60              # 同一阶段内从小到大执行；内置：dir_router 10，tmdb_enrich 50，share_probe 60，organizer 20，strm 30
 
     async def run(self, ctx) -> bool:
         ...

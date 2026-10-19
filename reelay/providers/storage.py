@@ -83,6 +83,52 @@ def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: st
     return {'files': files, 'episodes': wanted, 'season': season}
 
 
+# 只读描述分享时最多列出的目录数：逐集一个目录的大合集要几百次请求，容易触发 115 风控。
+DESCRIBE_MAX_DIRS = 20
+# 115 表示分享本身不可用（而非临时网络错误）的提示语。
+_SHARE_GONE = ('访问码', '提取码', '取消', '不存在', '过期', '失效', '删除', '违规', '禁止')
+
+
+def describe_share(share_fs, parsed, *, max_dirs: int = DESCRIBE_MAX_DIRS) -> dict[str, Any]:
+    """只读描述分享内容，供待审批展示：视频数、总大小、季与集，以及转存时会转人工的原因。
+
+    status：``ok`` 已确定季与集；``issue`` 能读取但转存时需人工（note 为原因）；``unavailable``
+    分享失效或访问码错误；``incomplete`` 目录太多未读完。临时错误直接抛出，由调用方稍后重试。
+    与转存使用同一套选集规则，但不改识别结果：转存时仍以那时的分享清单为准。
+    """
+    videos: list[dict] = []
+    queue, listed = [(0, 0)], 0
+    while queue:
+        cid, depth = queue.pop(0)
+        if listed >= max_dirs:
+            return {'status': 'incomplete', 'videos': len(videos),
+                    'note': f'分享内容较多，只读取了前 {max_dirs} 个目录'}
+        try:
+            entries = list(share_fs.iterdir(cid))
+        except Exception as exc:
+            detail = next((a.get('error') or a.get('message') for a in getattr(exc, 'args', ())
+                           if isinstance(a, dict)), None) or str(exc)
+            if listed == 0 and any(word in detail for word in _SHARE_GONE):
+                return {'status': 'unavailable', 'note': f'分享无法访问：{detail[:60]}'}
+            raise
+        listed += 1
+        for item in entries:
+            if item.get('is_directory') or item.get('is_dir'):
+                if depth >= 3:
+                    return {'status': 'issue', 'videos': len(videos), 'note': '分享目录过深，不能完整核验视频清单'}
+                queue.append((item['id'], depth + 1))
+            elif _is_video(item.get('name', '')):
+                videos.append(_file_record(item))
+    result: dict[str, Any] = {'status': 'ok', 'videos': len(videos),
+                              'size': sum(x['size'] for x in videos if type(x.get('size')) is int)}
+    try:
+        selection = _select_video_items(videos, parsed, scope='share')
+        result.update(season=selection['season'], episodes=selection['episodes'])
+    except NeedsManual as exc:
+        result.update(status='issue', note=str(exc))
+    return result
+
+
 def _file_record(item: dict) -> dict:
     return {'id': str(item['id']), 'name': item.get('name', ''),
             'size': item.get('size'), 'sha1': item.get('sha1') or None,
