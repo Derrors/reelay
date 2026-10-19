@@ -152,7 +152,11 @@ class TelegramUserbotSource:
 
 
     async def backfill(self, emit: EmitFn) -> int:
-        """补拉每个来源水位之后的消息。首次监听（无水位）不导入历史。"""
+        """补拉每个来源水位之后、最近 max_days 天内最新的 limit 条消息，按时间顺序入库。
+
+        从最新往旧读取：停机很久时优先补最近的消息（较早的分享大多已失效），遇到超过
+        max_days 的消息即停止，上限只计入需要补拉的消息。首次监听（无水位）不导入历史。
+        """
         limit = int(os.getenv("REELAY_TG_BACKFILL_LIMIT", "200"))
         max_age = float(os.getenv("REELAY_TG_BACKFILL_MAX_DAYS", "7")) * 86400
         if not self._watermark or limit <= 0:
@@ -165,19 +169,25 @@ class TelegramUserbotSource:
             mark = self._watermark(source)
             if mark is None:
                 continue
-            count = 0
-            async for msg in self._client.iter_messages(entity, min_id=mark, reverse=True, limit=limit):
-                if getattr(msg, "action", None):
-                    continue  # 服务消息（置顶、入群等）
+            recent, truncated = [], False
+            async for msg in self._client.iter_messages(entity, min_id=mark):
                 date = getattr(msg, "date", None)
                 if date is not None and time.time() - date.timestamp() > max_age:
-                    continue  # 太旧的分享大多已失效
+                    break  # 消息按时间倒序，之后的都更旧
+                if getattr(msg, "action", None):
+                    continue  # 服务消息（置顶、入群等）
+                if len(recent) >= limit:
+                    truncated = True
+                    break
+                recent.append(msg)
+            for msg in reversed(recent):
                 await emit(RawMessage(source=source, msg_id=str(msg.id), text=msg.raw_text or "",
                                       urls=_extract_urls(msg), extra={"backfill": True}))
-                count += 1
-            if count:
-                log.info("补拉 %s 水位 %s 之后的 %d 条消息", source, mark, count)
-            total += count
+            if recent:
+                log.info("补拉 %s 水位 %s 之后的 %d 条消息", source, mark, len(recent))
+            if truncated:
+                log.warning("%s 停机期间的消息超过补拉上限 %d 条，更早的消息未补拉", source, limit)
+            total += len(recent)
         self.backfilled += total
         return total
 

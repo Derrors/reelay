@@ -262,7 +262,9 @@ class Pipeline:
             ctx.state = TaskState.QUEUED
         await self._emit("on_identified", ctx, persist=False)
         await self._notify_all(ctx, "identified", persist=False)
-        if ctx.decision == Decision.ASK:
+        # 补拉的历史消息不逐条推送确认卡片：长时间停机后会一次补进上百条，刷屏且多已过时；
+        # 它们照常进入管理台「待审批」，超时后由审批汇总提醒覆盖。
+        if ctx.decision == Decision.ASK and not ctx.raw.extra.get("backfill"):
             await self._notify_all(ctx, "pending_approval", persist=False)
         self.store.save_task(ctx)
 

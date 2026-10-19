@@ -363,11 +363,18 @@ class FakeTelegram:
     async def get_entity(self, ref):
         return types.SimpleNamespace(username="Bot", id=7)
 
-    async def iter_messages(self, entity, *, min_id, reverse, limit):
+    async def iter_messages(self, entity, limit=None, *, min_id=0, reverse=False):
+        """与 Telethon 一致：默认从新到旧返回，limit 计入所有读到的消息。"""
         self.requests.append(min_id)
-        for msg in self.messages:
-            if msg.id > min_id:
-                yield msg
+        ordered = sorted(self.messages, key=lambda m: m.id, reverse=not reverse)
+        returned = 0
+        for msg in ordered:
+            if msg.id <= min_id:
+                continue
+            if limit is not None and returned >= limit:
+                return
+            returned += 1
+            yield msg
 
 
 def tg_message(msg_id, *, days=0, action=None):
@@ -380,8 +387,8 @@ class TestSourceBackfillAndAlerts(Base):
     async def test_backfill_emits_messages_after_watermark_only(self):
         source = TelegramUserbotSource()
         source.configure(["@bot"])
-        source._client = FakeTelegram([tg_message(5), tg_message(6), tg_message(7, action="pin"),
-                                       tg_message(8, days=30), tg_message(9)])
+        source._client = FakeTelegram([tg_message(5, days=40), tg_message(6, days=30), tg_message(7, action="pin"),
+                                       tg_message(8), tg_message(9)])
         source.bind_watermark(lambda name: 5 if name == "@Bot" else None)
         emitted = []
 
@@ -389,8 +396,72 @@ class TestSourceBackfillAndAlerts(Base):
             emitted.append(raw)
 
         self.assertEqual(await source.backfill(emit), 2)
-        self.assertEqual([raw.msg_id for raw in emitted], ["6", "9"])
+        self.assertEqual([raw.msg_id for raw in emitted], ["8", "9"])  # 按时间顺序入库
         self.assertTrue(all(raw.source == "@Bot" and raw.extra["backfill"] for raw in emitted))
+
+    async def test_long_downtime_backfills_newest_messages_within_window(self):
+        """停机很久时（水位之后先是大量过期消息），上限只计入窗口内最新的消息。"""
+        source = TelegramUserbotSource()
+        source.configure(["@bot"])
+        old = [tg_message(i, days=10) for i in range(11, 411)]
+        recent = [tg_message(i) for i in range(411, 416)]
+        source._client = FakeTelegram(old + recent)
+        source.bind_watermark(lambda name: 10)
+        emitted = []
+
+        async def emit(raw):
+            emitted.append(raw.msg_id)
+
+        with patch.dict(os.environ, {"REELAY_TG_BACKFILL_LIMIT": "3"}):
+            self.assertEqual(await source.backfill(emit), 3)
+        self.assertEqual(emitted, ["413", "414", "415"])
+        emitted.clear()
+        self.assertEqual(await source.backfill(emit), 5)  # 默认上限 200：只补 7 天内的 5 条
+        self.assertEqual(emitted, [str(i) for i in range(411, 416)])
+
+    async def test_backfilled_tasks_skip_per_task_approval_cards(self):
+        from reelay.providers.decision import DefaultDecision
+        from reelay.providers.parser import RegexParser
+        registry = Registry()
+        registry.add_provider("parser", RegexParser())
+        registry.add_provider("decision", DefaultDecision())
+        pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "providers": {"source": "telegram", "notify": ["console"]},
+                                  "defaults": {"save_to": "默认", "parser": "regex"}}, registry)
+        live, old = message(msg_id="1"), message(msg_id="2")
+        old.raw.extra["backfill"] = True
+        for ctx in (live, old):
+            await pipeline.process_new(ctx)
+            self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.PENDING_APPROVAL)
+        cards = [r["task_id"] for r in self.store._conn.execute(
+            "SELECT task_id FROM outbox WHERE event='pending_approval'")]
+        self.assertEqual(cards, [live.task_id])
+
+    async def test_source_loop_sends_one_backfill_summary(self):
+        from reelay.main import _source_loop
+
+        class Backfilling:
+            name = "fake"
+            backfilled = 0
+
+            async def listen(self, emit):
+                self.backfilled += 37
+                await asyncio.Event().wait()
+
+            def health(self):
+                return {"status": "connected"}
+
+        registry = Registry()
+        registry.add_provider("source", Backfilling())
+        pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"},
+                                  "providers": {"source": "fake", "notify": ["console"]}}, registry)
+        loop = asyncio.create_task(_source_loop(pipeline, None, poll_interval=0.05))
+        await asyncio.sleep(0.3)
+        loop.cancel()
+        await asyncio.gather(loop, return_exceptions=True)
+        notices = [json.loads(r[0])["text"] for r in self.store._conn.execute(
+            "SELECT snapshot FROM outbox WHERE kind='notice' AND event='notice'")]
+        self.assertEqual(len(notices), 1)
+        self.assertIn("37 条消息", notices[0])
 
     async def test_first_listen_does_not_import_history(self):
         source = TelegramUserbotSource()

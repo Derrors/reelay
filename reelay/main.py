@@ -119,6 +119,7 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
         listener = asyncio.create_task(source.listen(emit))
         status, error = "stopped", None
         down_since = time.monotonic()
+        backfilled = getattr(source, "backfilled", 0)
         try:
             while pipeline.cfg["providers"]["source"] == name:
                 if listener.done():
@@ -126,6 +127,11 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                     raise RuntimeError("消息源意外停止")
                 if hasattr(source, "configure"):
                     source.configure([item["bot"] for item in pipeline.cfg["sources"]])
+                if getattr(source, "backfilled", 0) > backfilled:
+                    count, backfilled = source.backfilled - backfilled, source.backfilled
+                    pipeline.store.stage_notice(
+                        "backfill", f"📥 已补拉停机期间的 {count} 条消息。补拉的消息不逐条推送确认卡片，"
+                        "需要确认的资源请在管理台「待审批」中处理。", pipeline.notify_targets())
                 health = source.health() if hasattr(source, "health") else {"status": "unobserved"}
                 pipeline.store.heartbeat("source", provider=name, config_revision=pipeline.revision, **health)
                 if health.get("status") in ("connected", "unobserved"):
