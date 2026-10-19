@@ -7,7 +7,7 @@
 监听你关注的资源频道与 Bot，用 AI 识别影视资源和 115 分享链接，<br>
 经你确认后转存进自己的网盘，并按 Jellyfin / Emby 规范整理入库。
 
-[![CI](https://github.com/Derrors/reelay/actions/workflows/ci.yml/badge.svg)](https://github.com/Derrors/reelay/actions/workflows/ci.yml)
+[![持续集成](https://github.com/Derrors/reelay/actions/workflows/ci.yml/badge.svg)](https://github.com/Derrors/reelay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776ab.svg)
 
