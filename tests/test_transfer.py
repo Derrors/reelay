@@ -31,6 +31,7 @@ class Cloud:
         }
         self.next_id = 100
         self.shares = {}
+        self.share_gone = {}  # 分享码 -> 不可用原因（如「链接已过期」）
         self.calls = []
         self.receive_mode = {}
         self.barrier = None
@@ -117,6 +118,21 @@ class Cloud:
                             cloud.items[copied['id']]['sha1'] = 'wrong-hash'
                     if mode == 'timeout':
                         raise TimeoutError('转存成功，但响应中断')
+                    if mode == 'lost':
+                        for item in list(cloud.items.values()):
+                            if item['parent_id'] == to_pid:
+                                cloud.items.pop(item['id'])
+                        raise TimeoutError('请求超时，结果不明')
+                    if mode in ('busy', 'expired', 'rejected_after_landing'):
+                        error = '链接已过期' if mode == 'expired' else '操作太频繁，请稍后再试'
+                        if mode == 'expired':
+                            cloud.share_gone[self.code] = error
+                        if mode != 'rejected_after_landing':
+                            for item in list(cloud.items.values()):
+                                if item['parent_id'] == to_pid:
+                                    cloud.items.pop(item['id'])
+                        # 与 p115client 一致：业务错误以 P115OSError(errno, 响应) 抛出
+                        raise OSError(5, {'state': False, 'error': error, 'errno': 4100018})
                     return {'state': True}
 
         module.P115FileSystem = FS
@@ -158,6 +174,12 @@ class Cloud:
             for fid in ids:
                 self.items.pop(int(fid), None)
         return {'state': True}
+
+    def share_snap(self, payload):
+        """只读查询分享状态（与 115 webapi 返回结构一致）。"""
+        reason = self.share_gone.get(payload['share_code'])
+        info = {'share_state': 7, 'forbid_reason': reason} if reason else {'share_state': 1, 'forbid_reason': ''}
+        return {'state': True, 'data': {'shareinfo': info}}
 
     def receives(self):
         return [x for x in self.calls if x[0] == 'receive']
@@ -337,6 +359,66 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(failed.ns('task')['no_auto_retry'])
         self.assertEqual(self.cloud.receives(), [])
         self.assertEqual(self.store._conn.execute('SELECT COUNT(*) FROM resource_claims').fetchone()[0], 0)
+
+    def claims(self):
+        return self.store._conn.execute('SELECT COUNT(*) FROM resource_claims').fetchone()[0]
+
+    async def test_expired_share_fails_before_creating_staging_directory(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        self.cloud.share_gone['share'] = '链接已过期'
+        failed = await self.execute(self.task())
+        self.assertEqual(failed.state, TaskState.FAILED)
+        self.assertTrue(failed.ns('task')['no_auto_retry'])
+        self.assertEqual(self.store.get_task_record(failed.task_id)['error'], '分享不可用，无法转存：链接已过期')
+        self.assertEqual((self.cloud.receives(), self.cloud.children(1), self.claims()), ([], [], 0))
+
+    async def test_share_expiring_at_transfer_is_a_failure_not_an_unknown_result(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        self.cloud.receive_mode['share'] = 'expired'
+        failed = await self.execute(self.task())
+        self.assertEqual(failed.state, TaskState.FAILED)  # 115 明确拒绝：不是「结果不明待核验」
+        self.assertTrue(failed.ns('task')['no_auto_retry'])
+        self.assertIn('分享不可用，无法转存：链接已过期', self.store.get_task_record(failed.task_id)['error'])
+        self.assertNotIn('manifest', failed.ns('storage'))
+        self.assertEqual(self.cloud.children(1), [])  # 空暂存目录已清理
+        self.assertEqual(self.claims(), 0)
+
+    async def test_transient_rejection_is_retried_and_sends_again(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        self.cloud.receive_mode['share'] = 'busy'
+        failed = await self.execute(self.task())
+        self.assertEqual(failed.state, TaskState.FAILED)
+        self.assertFalse(failed.ns('task').get('no_auto_retry'))
+        self.assertEqual(failed.ns('storage')['phase'], 'ready')  # 没有发生转存，重试时重新发送
+        self.assertIn('115 拒绝转存：操作太频繁', self.store.get_task_record(failed.task_id)['error'])
+        self.cloud.receive_mode.pop('share')
+        await self.service.retry(failed.task_id)
+        done = await self.execute(failed)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual(len(self.cloud.receives()), 2)
+        self.assertEqual(done.ns('storage')['manifest']['staging_cid'], failed.ns('storage')['manifest']['staging_cid'])
+
+    async def test_rejection_with_files_landed_is_still_verified_not_resent(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        self.cloud.receive_mode['share'] = 'rejected_after_landing'
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)  # 只读核验发现文件已完整落地
+        self.assertEqual(len(self.cloud.receives()), 1)
+        self.assertTrue(any('改为只读核验，不重发' in line for line in done.trail))
+
+    async def test_verifying_an_empty_staging_after_the_share_expired_concludes_failure(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        self.cloud.receive_mode['share'] = 'lost'
+        uncertain = await self.execute(self.task())
+        self.assertEqual(uncertain.state, TaskState.NEED_MANUAL)  # 分享仍有效：结果不明，只核验不重发
+        await self.service.reconcile_transfer(uncertain.task_id)
+        self.assertEqual((await self.execute(uncertain)).state, TaskState.NEED_MANUAL)
+        self.cloud.share_gone['share'] = '链接已过期'
+        await self.service.reconcile_transfer(uncertain.task_id)
+        failed = await self.execute(uncertain)
+        self.assertEqual(failed.state, TaskState.FAILED)
+        self.assertTrue(failed.ns('task')['no_auto_retry'])
+        self.assertEqual((len(self.cloud.receives()), self.cloud.children(1), self.claims()), (1, [], 0))
 
     async def test_waiting_task_rechecks_episodes_stored_meanwhile(self):
         self.cloud.add_share('a', 'S01E01.mkv', 'S01E02.mkv')

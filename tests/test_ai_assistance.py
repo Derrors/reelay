@@ -204,6 +204,16 @@ class TestVersionsAndAdvice(Base):
         self.assertEqual(self.store.feedback_rows()[-1]["advice"], "reject")
         self.assertEqual(self.store.decision_stats(30)["@bot"]["followed"], 1)
 
+    def test_unavailable_shares_are_advised_to_be_ignored(self):
+        ctx = tv_ctx(msg_id="1")
+        ctx.ns("share").update(status="unavailable", note="分享无法访问：链接已过期")
+        ctx.state = TaskState.PENDING_APPROVAL
+        self.store.save_task(ctx)
+        item = self.service.inbox()["items"][0]
+        self.assertEqual((item["advice"]["action"], item["advice"]["text"]),
+                         ("reject", "分享无法访问：链接已过期，无法转存"))
+        self.assertEqual(item["share"]["status"], "unavailable")
+
     async def test_advice_can_be_turned_off(self):
         self.configure({**self.CFG, "ai": {"advice": False}})
         self.save_pending("1")

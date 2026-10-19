@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Any
 
 from ..core import ai, assist, runtime
 from ..core.auth115 import get_store
-from ..core.contracts import AlreadyStored, NeedsManual, PipelineContext, TransferUncertain
+from ..core.contracts import (AlreadyStored, NeedsManual, PipelineContext, ShareUnavailable, TransferRejected,
+                              TransferUncertain)
 from ..core.io import run_blocking
 from ..core.registry import register
 from ..core.media import episode_of, is_extra, resolution_rank, summarize_pairs
@@ -193,6 +195,37 @@ def describe_share(share_fs, parsed, *, max_dirs: int = DESCRIBE_MAX_DIRS) -> di
     return result
 
 
+def business_error(exc: Exception) -> str | None:
+    """115 明确拒绝请求时（响应 state 为 false）返回错误信息；网络错误、超时等结果不明的返回 None。"""
+    for arg in getattr(exc, 'args', ()):
+        if isinstance(arg, dict) and arg.get('state') is False:
+            return str(arg.get('error') or arg.get('msg') or f"errno {arg.get('errno')}")[:100]
+    return None
+
+
+def share_problem(client, share_code: str, receive_code: str | None) -> str | None:
+    """分享不可用时返回 115 给出的原因（如「链接已过期」），可用返回 None。只读，一次请求。
+
+    列出分享内容不能说明分享可用：过期的分享仍能列出文件，转存时才被拒绝。
+    """
+    try:
+        resp = client.share_snap({'share_code': share_code, 'receive_code': receive_code or '', 'cid': 0, 'limit': 1})
+    except Exception as exc:
+        reason = business_error(exc)
+        if reason is None:
+            raise
+        return reason
+    if not resp.get('state'):
+        return str(resp.get('error') or resp.get('msg') or '分享无法访问')[:100]
+    info = (resp.get('data') or {}).get('shareinfo') or {}
+    if info.get('forbid_reason'):
+        return str(info['forbid_reason'])[:100]
+    expire = str(info.get('expire_time') or '')
+    if expire.isdigit() and 0 < int(expire) < time.time():
+        return '链接已过期'
+    return None
+
+
 def _file_record(item: dict) -> dict:
     return {'id': str(item['id']), 'name': item.get('name', ''),
             'size': item.get('size'), 'sha1': item.get('sha1') or None,
@@ -320,12 +353,27 @@ class P115Storage:
         if self._dry_run:
             return self._receipt(manifest, manifest['files'], dry_run=True)
         self._require_client()
-        return await run_blocking(self._reconcile_sync, manifest)
+        return await run_blocking(self._verify_sync, ctx)
+
+    def _verify_sync(self, ctx: PipelineContext) -> dict[str, Any]:
+        """只读核验。暂存目录为空且分享已不可用时，转存确定没有发生、以后也不会发生，按失败处理。"""
+        from p115client import P115FileSystem
+        manifest, p = ctx.ns('storage')['manifest'], ctx.parsed
+        client = self._cookie_client()
+        if not list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
+            problem = share_problem(client, p.share_code, p.receive_code)
+            if problem:
+                raise TransferRejected(problem, permanent=True)
+        return self._reconcile_sync(manifest)
 
     def _list_share_sync(self, ctx: PipelineContext) -> list[dict]:
         from p115client import P115ShareFileSystem
         p = ctx.parsed
-        return self._collect_share_videos(P115ShareFileSystem(self._cookie_client(), p.share_code, p.receive_code))
+        client = self._cookie_client()
+        problem = share_problem(client, p.share_code, p.receive_code)
+        if problem:
+            raise ShareUnavailable(problem)
+        return self._collect_share_videos(P115ShareFileSystem(client, p.share_code, p.receive_code))
 
     def _stage_sync(self, ctx: PipelineContext, selection: dict) -> dict[str, Any]:
         from p115client import P115FileSystem
@@ -354,8 +402,16 @@ class P115Storage:
         p = ctx.parsed
         share_fs = P115ShareFileSystem(client, p.share_code, p.receive_code)
         # SDK check_response 检查业务状态；异常结果交给 reconcile，不能自动重发。
-        recv = share_fs.receive([x['id'] for x in manifest['files']],
-                                to_pid=manifest['staging_cid'])
+        try:
+            recv = share_fs.receive([x['id'] for x in manifest['files']],
+                                    to_pid=manifest['staging_cid'])
+        except Exception as exc:
+            reason = business_error(exc)
+            # 115 明确拒绝且暂存目录仍为空：确定没有转存。其余情况（超时、已有文件落地）交给 reconcile 只读核验。
+            if reason is None or list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
+                raise
+            problem = share_problem(client, p.share_code, p.receive_code)
+            raise TransferRejected(problem or reason, permanent=bool(problem)) from None
         receipt = self._reconcile_sync(manifest)
         receipt['received'] = recv
         return receipt

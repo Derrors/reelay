@@ -48,7 +48,9 @@ def make_client() -> tuple[Any | None, str]:
         return None, model
     try:
         from openai import AsyncOpenAI  # 延迟导入
-        return AsyncOpenAI(api_key=key, base_url=os.getenv("REELAY_LLM_BASE_URL") or None), model
+        # 关掉 SDK 自带的重试：重试只由 request() 负责，否则两层叠加，超时时一次调用最多要发 9 次请求，
+        # 调用记录也对不上实际请求。
+        return AsyncOpenAI(api_key=key, base_url=os.getenv("REELAY_LLM_BASE_URL") or None, max_retries=0), model
     except Exception:  # noqa: BLE001 - 未安装 SDK 时按未配置处理
         return None, model
 

@@ -71,12 +71,16 @@ class Base(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {"REELAY_LLM_RETRY_DELAY": "0"}, clear=True)
         self.env.start()
+        # 凭证中心默认读仓库 data/ 下的凭证文件：开发机上可能有真实 cookie，测试里分享读取不能访问 115
+        self.no_115 = patch("reelay.plugins.share_probe.get_store", return_value=types.SimpleNamespace(has_cookie=False))
+        self.no_115.start()
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.temp.name) / "t.db")
 
     def tearDown(self):
         self.store.close()
         self.temp.cleanup()
+        self.no_115.stop()
         self.env.stop()
 
     def pipeline(self, cfg=None, registry=None):
@@ -773,7 +777,8 @@ class TestShareProbe(Base):
         hook = share_probe.ShareProbe()
         with patch.object(share_probe, "get_store", return_value=types.SimpleNamespace(has_cookie=True)), \
                 patch.object(share_probe, "PROBE_INTERVAL", 0), \
-                patch.object(share_probe.ShareProbe, "_describe", staticmethod(describe)):
+                patch.object(share_probe.ShareProbe, "_probe",
+                             staticmethod(lambda parsed, read: describe(parsed) if read else {"status": "available"})):
             self.assertTrue(await hook.run(ctx))
             return hook.needs_refresh(ctx)
 
@@ -789,11 +794,15 @@ class TestShareProbe(Base):
         await self.probe(ctx, describe)
         self.assertEqual((ctx.meta["share"]["episodes"], ctx.meta["share"]["size_text"]), (list(range(1, 11)), "71.0 GB"))
         self.assertTrue(any("读取分享：10 个视频" in line for line in ctx.trail))
-        for change in ({"episodes": [3]}, {"media_type": "movie"}, {"share_code": None}):
+        for change in ({"episodes": [3]}, {"media_type": "movie"}):  # 只查分享状态，不列季集
             other = message()
             other.parsed = ParsedResource(**{**self.parsed.__dict__, **change})
             await self.probe(other, describe)
-            self.assertNotIn("share", other.meta)
+            self.assertEqual(other.meta["share"]["status"], "available")
+        other = message()
+        other.parsed = ParsedResource(**{**self.parsed.__dict__, "share_code": None})
+        await self.probe(other, describe)
+        self.assertNotIn("share", other.meta)
         self.assertEqual(calls, ["剧"])
 
     async def test_read_errors_are_retried_on_next_startup(self):
@@ -847,9 +856,9 @@ class TestShareProbe(Base):
         ctx.parsed, ctx.state = self.parsed, TaskState.PENDING_APPROVAL
         self.store.save_task(ctx)
         pipeline = self.pipeline(registry=discover())
-        describe = staticmethod(lambda parsed: {"status": "unavailable", "note": "分享无法访问：访问码错误"})
+        probe = staticmethod(lambda parsed, read: {"status": "unavailable", "note": "分享无法访问：访问码错误"})
         with patch.object(share_probe, "get_store", return_value=types.SimpleNamespace(has_cookie=True)), \
-                patch.object(share_probe, "PROBE_INTERVAL", 0), patch.object(share_probe.ShareProbe, "_describe", describe):
+                patch.object(share_probe, "PROBE_INTERVAL", 0), patch.object(share_probe.ShareProbe, "_probe", probe):
             self.assertEqual(await pipeline.refresh_metadata(), 1)
             self.assertEqual(await pipeline.refresh_metadata(), 0)
             stored = self.store.get_task(ctx.task_id)
@@ -857,6 +866,35 @@ class TestShareProbe(Base):
             stored.meta["share"]["version"] = share_probe.PROBE_VERSION - 1  # 按旧规则读取的结果在启动时重读
             self.store.save_task(stored)
             self.assertEqual(await pipeline.refresh_metadata(), 1)
+
+    async def test_share_status_is_checked_before_listing_and_rechecked_when_old(self):
+        from reelay.plugins import share_probe
+        snaps = {"gone": {"state": True, "data": {"shareinfo": {"share_state": 7, "forbid_reason": "链接已过期"}}},
+                 "late": {"state": True, "data": {"shareinfo": {"share_state": 1, "expire_time": 1}}},
+                 "ok": {"state": True, "data": {"shareinfo": {"share_state": 1, "expire_time": 0}}}}
+        client = types.SimpleNamespace(share_snap=lambda payload: snaps[payload["share_code"]])
+        listed = []
+        with patch.object(share_probe, "get_store", return_value=types.SimpleNamespace(cookie_client=lambda: client)), \
+                patch("reelay.providers.storage.describe_share", lambda fs, parsed: listed.append(parsed) or {"status": "ok"}), \
+                patch("p115client.P115ShareFileSystem", lambda *a: None, create=True):
+            for code, read in (("gone", True), ("late", False)):
+                parsed = ParsedResource(**{**self.parsed.__dict__, "share_code": code})
+                self.assertEqual(share_probe.ShareProbe._probe(parsed, read),
+                                 {"status": "unavailable", "note": "分享无法访问：链接已过期"})
+            ok = ParsedResource(**{**self.parsed.__dict__, "share_code": "ok"})
+            self.assertEqual(share_probe.ShareProbe._probe(ok, False), {"status": "available"})
+            self.assertEqual(listed, [])  # 不可用的分享不再列目录；不需要季集的只查状态
+            self.assertEqual(share_probe.ShareProbe._probe(ok, True), {"status": "ok"})
+        hook = share_probe.ShareProbe()
+        ctx = message()
+        ctx.parsed, ctx.state = ParsedResource(**{**self.parsed.__dict__, "episodes": [3]}), TaskState.PENDING_APPROVAL
+        with patch.object(share_probe, "get_store", return_value=types.SimpleNamespace(has_cookie=True)):
+            ctx.ns("share").update(status="available", version=share_probe.PROBE_VERSION, probed_at=time.time())
+            self.assertFalse(hook.needs_refresh(ctx))
+            ctx.ns("share")["probed_at"] = time.time() - share_probe.CHECK_TTL - 1  # 分享会过期：太久没查就重查
+            self.assertTrue(hook.needs_refresh(ctx))
+            ctx.ns("share").update(status="unavailable")  # 已确认失效的不再查
+            self.assertFalse(hook.needs_refresh(ctx))
 
 
 class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):

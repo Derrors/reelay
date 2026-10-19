@@ -88,6 +88,21 @@ class AlreadyStored(RuntimeError):
     """分享清单中的内容已全部入库；按去重命中处理。"""
 
 
+class ShareUnavailable(NeedsManual):
+    """分享已不可用（过期、取消、违规），无法转存；消息是 115 给出的原因。"""
+
+
+class TransferRejected(RuntimeError):
+    """115 明确拒绝了转存请求，且暂存目录为空：确定没有发生转存，可以安全地重新发送。
+
+    permanent 表示分享本身已不可用，重试也不会成功。
+    """
+
+    def __init__(self, reason: str, *, permanent: bool = False) -> None:
+        super().__init__(reason)
+        self.permanent = permanent
+
+
 # --------------------------------------------------------------------------- #
 # 贯穿全程的上下文
 # --------------------------------------------------------------------------- #

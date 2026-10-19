@@ -17,6 +17,8 @@ from .contracts import PipelineContext
 from .media import pairs_label, planned_pairs
 
 ACTIONS = {"approve": "建议批准", "reject": "建议忽略", "review": "需要你看一下"}
+# 每次请 AI 措辞的条数：输出随条数线性增长，太多会超时
+PHRASE_BATCH = 8
 
 
 def version_key(ctx: PipelineContext) -> tuple | None:
@@ -83,6 +85,9 @@ def facts(ctx: PipelineContext, *, stored: dict, versions: dict, subscribed: boo
         "fallback": bool(meta.get("parse", {}).get("fallback")), "tmdb_matched": meta.get("tmdb", {}).get("matched"),
         "subscribed": subscribed,
     }
+    share = meta.get("share") or {}
+    if share.get("status") == "unavailable":
+        out["share_unavailable"] = share.get("note") or "分享无法访问"
     if episodic:
         pairs = sorted(set(planned_pairs(ctx)))
         seasons = sorted({season for season, _ in pairs}) or [p.season if p.season is not None else 1]
@@ -98,6 +103,8 @@ def facts(ctx: PipelineContext, *, stored: dict, versions: dict, subscribed: boo
 
 
 def action(f: dict, threshold: float) -> str:
+    if f.get("share_unavailable"):
+        return "reject"  # 过期或取消的分享转存时会被 115 拒绝
     if f["fallback"] or "no_title" in f["caps"] or "tmdb_unmatched" in f["caps"] or f["confidence"] < threshold:
         return "review"
     if f.get("episodes") and not f.get("new_episodes"):
@@ -121,6 +128,8 @@ def rule_text(f: dict, act: str) -> str:
         if f.get("in_library"):
             return "库里已有这部电影，看看是否要换成这个版本"
         return f"置信度 {f['confidence']:.0%}，低于阈值"
+    if act == "reject" and f.get("share_unavailable"):
+        return f"{f['share_unavailable']}，无法转存"
     parts = []
     # 只有第 1 季时沿用「E01-E03」，涉及其他季或多季时写明季号
     with_season = f.get("seasons", [1]) != [1]
@@ -183,5 +192,5 @@ async def phrase(client, model: str, entries: list[dict]) -> dict[str, str]:
         client, model=model, purpose="advice",
         messages=[{"role": "system", "content": _PROMPT},
                   {"role": "user", "content": json.dumps(entries, ensure_ascii=False)}],
-        schema=_SCHEMA, name="inbox_advice", validate=validate)
+        schema=_SCHEMA, name="inbox_advice", validate=validate, timeout=60)
     return result

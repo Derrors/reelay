@@ -64,6 +64,9 @@ class Base(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {"REELAY_LLM_RETRY_DELAY": "0"}, clear=True)
         self.env.start()
+        # 凭证中心默认读仓库 data/ 下的凭证文件：开发机上可能有真实 cookie，测试里分享读取不能访问 115
+        self.no_115 = patch("reelay.plugins.share_probe.get_store", return_value=types.SimpleNamespace(has_cookie=False))
+        self.no_115.start()
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.temp.name) / "t.db")
         self.registry = discover()
@@ -82,6 +85,7 @@ class Base(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.store.close()
         self.temp.cleanup()
+        self.no_115.stop()
         self.env.stop()
 
     async def pending(self, msg_id="1", text=None, source="@bot"):

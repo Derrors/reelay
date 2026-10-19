@@ -23,6 +23,7 @@ log = logging.getLogger("reelay.plugin.failure_explainer")
 
 ACTIONS = {
     "relogin": "在「115 连接」重新扫码登录",
+    "share_gone": "分享已失效，等来源重新分享",
     "reconcile": "核验转存",
     "check_drive": "到网盘确认结果后手动处理",
     "reorganize": "重新整理",
@@ -58,6 +59,8 @@ def facts(ctx: PipelineContext, error: str | None, retries: int) -> dict:
 def action(f: dict) -> str:
     if f["auth_failure"]:
         return "relogin"
+    if "分享不可用" in (f["error"] or ""):
+        return "share_gone"
     if f["state"] == TaskState.NEED_MANUAL.value:
         if f["storage_phase"] == "receiving" and f["manifest_files"]:
             return "reconcile"
@@ -76,6 +79,7 @@ def rule_text(f: dict, act: str) -> str:
     error = re.sub(r"^转存(前校验未通过，需人工处理|准备失败)：", "", f["error"] or "")
     return {
         "relogin": "115 登录已失效，转存与整理已暂停",
+        "share_gone": error[:80],
         "reconcile": "转存请求已发出但结果不明，系统不会自动重发",
         "check_drive": "旧版本中断的转存没有核验清单，无法自动确认是否已转存",
         "reorganize": f"文件已转存，整理没有完成：{(f['organize_error'] or '')[:60]}",

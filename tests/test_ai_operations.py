@@ -224,6 +224,15 @@ class TestFailureExplainer(Base):
         self.assertIn("自动重试 4 次后仍失败", (await self.run_on(ctx))["text"])
         self.assertEqual(len(self.notices()), 1)
 
+    async def test_expired_shares_are_explained_as_gone(self):
+        ctx = tv_ctx()
+        ctx.state = TaskState.FAILED
+        ctx.ns("task")["no_auto_retry"] = True
+        self.store.save_task(ctx, error="分享不可用，无法转存：链接已过期")
+        explanation = await self.run_on(ctx)
+        self.assertEqual((explanation["action"], explanation["text"]), ("share_gone", "分享不可用，无法转存：链接已过期"))
+        self.assertIn("建议：分享已失效", self.notices()[0])
+
     async def test_ai_phrases_the_reason_but_not_the_action(self):
         ctx = tv_ctx()
         ctx.state = TaskState.FAILED

@@ -110,8 +110,9 @@ export interface ITaskSummary {
 
 /** 收件箱卡片：/api/inbox 一次返回展示所需字段（不含分享链接）。 */
 export interface IShareProbe {
-  /** ok 已确定季与集；issue 转存时需人工；unavailable 分享失效；incomplete 内容过多未读完；error 读取出错待重试。 */
-  status: 'ok' | 'issue' | 'unavailable' | 'incomplete' | 'error' | null;
+  /** ok 已确定季与集；available 分享有效（消息写了集数，不需要读取季集）；issue 转存时需人工；unavailable 分享失效；
+   *  incomplete 内容过多未读完；error 读取出错待重试。 */
+  status: 'ok' | 'available' | 'issue' | 'unavailable' | 'incomplete' | 'error' | null;
   note: string | null;
   videos: number | null;
   from_share: boolean;

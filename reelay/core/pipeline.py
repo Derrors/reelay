@@ -25,7 +25,9 @@ from .contracts import (
     NeedsManual,
     PipelineContext,
     RawMessage,
+    ShareUnavailable,
     TaskState,
+    TransferRejected,
     TransferUncertain,
 )
 from .registry import Registry
@@ -422,6 +424,9 @@ class Pipeline:
                 ctx.log(f"执行前去重命中：{exc}")
                 self.store.save_task(ctx)
                 return
+            except ShareUnavailable as exc:
+                await self._fail(ctx, f"分享不可用，无法转存：{exc}", retry_from=TaskState.QUEUED, auto_retry=False)
+                return
             except NeedsManual as exc:
                 # 确定性校验失败：重试不会改变结果，不自动重试，修正后由人工重试。
                 await self._fail(ctx, f"转存前校验未通过，需人工处理：{exc}", retry_from=TaskState.QUEUED,
@@ -462,7 +467,10 @@ class Pipeline:
                 try:
                     with self._scope(ctx):
                         receipt = await storage.save(ctx)
-                except Exception:
+                except TransferRejected:
+                    raise
+                except Exception as error:
+                    ctx.log(f"转存请求没有确认结果（{type(error).__name__}），改为只读核验，不重发")
                     with self._scope(ctx):
                         receipt = await storage.reconcile(ctx)
             elif ns["phase"] == "receiving":
@@ -472,6 +480,9 @@ class Pipeline:
                 raise TransferUncertain("转存检查点状态异常，需人工核验")
             if receipt.get("storage_verified") is not True or not receipt.get("landed"):
                 raise TransferUncertain("转存回执未确认全部文件落地")
+        except TransferRejected as rejected:
+            await self._transfer_rejected(ctx, storage, rejected)
+            return
         except Exception as exc:
             ctx.state = TaskState.NEED_MANUAL
             ctx.log(f"转存结果待核验，不自动重发：{exc}")
@@ -574,6 +585,24 @@ class Pipeline:
                 log.warning("清理未使用的暂存目录失败：%s", exc)
         self.store.save_task(ctx)
         return False
+
+    async def _transfer_rejected(self, ctx: PipelineContext, storage, exc: TransferRejected) -> None:
+        """115 明确拒绝且暂存目录为空：没有发生转存。分享已不可用时清掉暂存目录、不再重试；
+        其他原因（如请求过于频繁）回到发送前，退避后重新发送。"""
+        ns = ctx.ns("storage")
+        if not exc.permanent:
+            ns["phase"] = "ready"
+            await self._fail(ctx, f"115 拒绝转存：{exc}，稍后重试", retry_from=TaskState.QUEUED)
+            return
+        if hasattr(storage, "discard"):
+            try:
+                with self._scope(ctx):
+                    await storage.discard(ctx)
+            except Exception as error:  # noqa: BLE001 - 空暂存目录残留不影响结果
+                log.warning("清理未使用的暂存目录失败：%s", error)
+        for key in ("manifest", "phase", "identity", "content_keys"):
+            ns.pop(key, None)
+        await self._fail(ctx, f"分享不可用，无法转存：{exc}", retry_from=TaskState.QUEUED, auto_retry=False)
 
     async def _fail(self, ctx: PipelineContext, message: str, *, retry_from: TaskState,
                     auto_retry: bool = True) -> None:

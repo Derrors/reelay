@@ -259,11 +259,22 @@ class ManagementService:
                 entries.append({"id": task_id, "facts": facts, "action": act, "fingerprint": fp})
         if not entries:
             return {}
+        # 分批并发：一次写 30 条理由要输出约 2000 token，实测要 80 秒以上；某一批失败只影响这一批。
+        semaphore = asyncio.Semaphore(3)
+
+        async def batch(chunk: list[dict]) -> dict[str, str]:
+            async with semaphore:
+                try:
+                    return await inbox.phrase(client, model, [{k: e[k] for k in ("id", "facts", "action")} for e in chunk])
+                except ai.AIError:
+                    return {}
+
+        size = inbox.PHRASE_BATCH
         with self.ai_scope():
-            try:
-                texts = await inbox.phrase(client, model, [{k: e[k] for k in ("id", "facts", "action")} for e in entries])
-            except ai.AIError:
-                return {}
+            results = await asyncio.gather(*(batch(entries[i:i + size]) for i in range(0, len(entries), size)))
+        texts = {task_id: text for result in results for task_id, text in result.items()}
+        if not texts:
+            return {}
         pending = {row["task_id"] for row in self.store.list_by_state(TaskState.PENDING_APPROVAL, 5000)}
         for task_id in set(context["cache"]) - pending:
             self.store.state_delete("inbox_advice", task_id)  # 已处理任务的缓存顺手清掉
