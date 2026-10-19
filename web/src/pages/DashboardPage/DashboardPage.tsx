@@ -131,6 +131,16 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
+      {dashboard?.alerts?.map((alert) => (
+        <div key={alert.key} role="alert" className="mt-6 flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/5 p-4 text-sm">
+          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
+          <div className="min-w-0">
+            <p className="font-medium text-foreground">{alert.text}</p>
+            <p className="mt-1 text-xs text-muted-foreground">自 {new Date(alert.since * 1000).toLocaleString()} 起</p>
+          </div>
+        </div>
+      ))}
+
       {!dashboard ? (
         <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {[1, 2, 3, 4].map((item) => <Skeleton key={item} className="h-[116px] rounded-xl" />)}

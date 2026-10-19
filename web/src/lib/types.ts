@@ -51,7 +51,16 @@ export interface IDashboard {
   connections: Record<string, IConnection>;
   runtime: Record<string, IRuntimeHealth>;
   deliveries: Record<string, number>;
+  /** 进行中的系统告警（如 115 凭证失效暂停转存、消息源断开）。 */
+  alerts?: IAlert[];
   config_revision: string;
+}
+
+export interface IAlert {
+  key: string;
+  text: string;
+  since: number;
+  updated_at: number;
 }
 
 export interface IParsedResource {
