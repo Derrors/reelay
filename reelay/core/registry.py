@@ -3,13 +3,26 @@
 「加功能不改内核」的落点：任何 Provider / Hook / EventListener 用 ``@register``
 声明，放进 ``reelay/plugins/`` 目录即被自动发现并注册；删文件或配置关掉即卸载。
 内核只认接口、不认具体实现。
+
+内置包之外还会加载：
+
+- ``REELAY_PLUGIN_DIRS``（``os.pathsep`` 分隔）中的 ``*.py`` 文件或包目录，
+  容器部署挂载目录即可加扩展，无需重建镜像；
+- 已安装发行包声明的 ``reelay.plugins`` entry point。
+
+外部扩展导入失败只记录到 ``Registry.load_errors``，不影响内置能力。
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import importlib.util
 import logging
+import os
 import pkgutil
+import sys
+from pathlib import Path
 from typing import Any, Callable
 
 log = logging.getLogger("reelay.registry")
@@ -25,6 +38,8 @@ class Registry:
         self.hooks: dict[str, list[Any]] = {}
         # EventListener 按事件名分组
         self.listeners: dict[str, list[Any]] = {}
+        # 外部扩展的导入错误：[{"source": 路径或 entry point, "error": 摘要}]
+        self.load_errors: list[dict[str, str]] = []
 
     # -- 注册入口（供 @register 调用）------------------------------------ #
     def add_provider(self, kind: str, instance: Any) -> None:
@@ -62,9 +77,14 @@ class Registry:
     def extension_name(instance: Any) -> str:
         return getattr(instance, "name", instance.__class__.__name__)
 
-    def _enabled(self, instances: list, config: dict | None) -> list:
+    @staticmethod
+    def is_enabled(instance: Any, config: dict | None) -> bool:
+        """未显式配置时按扩展声明的 ``default_enabled``（默认 True）。"""
         toggles = (config or {}).get("plugins", {})
-        return [obj for obj in instances if toggles.get(self.extension_name(obj), True)]
+        return toggles.get(Registry.extension_name(instance), getattr(instance, "default_enabled", True))
+
+    def _enabled(self, instances: list, config: dict | None) -> list:
+        return [obj for obj in instances if self.is_enabled(obj, config)]
 
     def validate_config(self, cfg: dict) -> None:
         try:
@@ -82,6 +102,9 @@ class Registry:
         for obj in objects:
             for field in getattr(obj, 'ui_fields', []):
                 validate_declared_field(cfg, field)
+            # 扩展自己的复杂配置（数组、对象）由扩展校验；只校验已启用的扩展。
+            if hasattr(obj, 'validate_config') and self.is_enabled(obj, cfg):
+                obj.validate_config(cfg)
         extensions = {self.extension_name(obj) for groups in (self.hooks, self.listeners)
                       for items in groups.values() for obj in items}
         if set(cfg["plugins"]) - extensions:
@@ -99,7 +122,7 @@ class Registry:
                 'name': name, 'kind': kind, 'slot': slot,
                 'label': getattr(obj, 'ui_label', name),
                 'description': getattr(obj, 'ui_description', (obj.__doc__ or '').strip().split('\n')[0]),
-                'enabled': config.get('plugins', {}).get(name, True),
+                'enabled': self.is_enabled(obj, config),
                 'order': getattr(obj, 'order', None),
                 'fields': getattr(obj, 'ui_fields', []),
                 'config_section': getattr(obj, 'ui_section', None),
@@ -111,6 +134,7 @@ class Registry:
                           for kind, entries in self.providers.items()},
             'hooks': [describe(obj, 'hook', slot) for slot, entries in self.hooks.items() for obj in entries],
             'events': [describe(obj, 'event', slot) for slot, entries in self.listeners.items() for obj in entries],
+            'load_errors': list(self.load_errors),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -123,6 +147,8 @@ class Registry:
 
 # 装饰器只记录类；客户端在 discover 时按当时的运行环境实例化。
 _DECLARATIONS: list[tuple[str, dict[str, Any], type]] = []
+# 外部扩展的模块名：只有它们的构造失败会被隔离。
+_EXTERNAL_MODULES: set[str] = set()
 
 
 def register(kind: str, **kw: Any) -> Callable[[type], type]:
@@ -141,9 +167,20 @@ def register(kind: str, **kw: Any) -> Callable[[type], type]:
     return deco
 
 
-def _instantiate(registry: Registry) -> None:
+def _instantiate(registry: Registry, errors: list[dict[str, str]] | None = None) -> None:
     for kind, kw, cls in _DECLARATIONS:
-        obj = cls()
+        try:
+            obj = cls()
+        except Exception as exc:  # noqa: BLE001
+            # 内置扩展构造失败是缺陷，照常抛出；外部扩展失败隔离。
+            if not any(cls.__module__ == name or cls.__module__.startswith(name + ".")
+                       for name in _EXTERNAL_MODULES):
+                raise
+            log.exception("外部扩展实例化失败：%s", cls.__name__)
+            if errors is not None:
+                errors.append({"source": f"{cls.__module__}.{cls.__name__}",
+                               "error": f"{type(exc).__name__}: {exc}"[:300]})
+            continue
         # 允许装饰器参数覆盖/补齐类属性
         for k, v in kw.items():
             if k not in ("ptype",):
@@ -156,8 +193,51 @@ def _instantiate(registry: Registry) -> None:
             registry.add_listener(obj)
 
 
+def _load_external(errors: list[dict[str, str]]) -> None:
+    """导入外部扩展目录与 entry point；同一文件在进程内只执行一次。"""
+    for directory in filter(None, os.getenv("REELAY_PLUGIN_DIRS", "").split(os.pathsep)):
+        root = Path(directory).expanduser()
+        if not root.is_dir():
+            errors.append({"source": str(root), "error": "扩展目录不存在"})
+            continue
+        for path in sorted(root.iterdir()):
+            if path.name.startswith(("_", ".")):
+                continue
+            target = path / "__init__.py" if path.is_dir() else path
+            if not target.is_file() or target.suffix != ".py":
+                continue
+            digest = hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:8]
+            module_name = f"reelay_ext_{digest}_{path.stem}"
+            if module_name in sys.modules:
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    module_name, target,
+                    submodule_search_locations=[str(path)] if path.is_dir() else None)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                _EXTERNAL_MODULES.add(module_name)
+                spec.loader.exec_module(module)
+            except Exception as exc:  # noqa: BLE001 - 外部扩展失败隔离
+                sys.modules.pop(module_name, None)
+                log.exception("外部扩展加载失败：%s", path)
+                errors.append({"source": str(path), "error": f"{type(exc).__name__}: {exc}"[:300]})
+    try:
+        from importlib.metadata import entry_points
+        points = entry_points(group="reelay.plugins")
+    except Exception:  # noqa: BLE001
+        points = []
+    for point in points:
+        try:
+            _EXTERNAL_MODULES.add(point.module)
+            point.load()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("entry point 扩展加载失败：%s", point.name)
+            errors.append({"source": f"entry_point:{point.name}", "error": f"{type(exc).__name__}: {exc}"[:300]})
+
+
 def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins")) -> Registry:
-    """导入指定包下所有模块，触发 ``@register``，再统一实例化。"""
+    """导入内置包与外部扩展，触发 ``@register``，再统一实例化。"""
     for pkg_name in packages:
         try:
             pkg = importlib.import_module(pkg_name)
@@ -167,6 +247,9 @@ def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins"))
             if mod.name.startswith("_"):
                 continue
             importlib.import_module(f"{pkg_name}.{mod.name}")
+    errors: list[dict[str, str]] = []
+    _load_external(errors)
     registry = Registry()
-    _instantiate(registry)
+    _instantiate(registry, errors)
+    registry.load_errors = errors
     return registry

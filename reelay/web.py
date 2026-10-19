@@ -12,23 +12,22 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException, Query, Request
+    from fastapi import Depends, FastAPI, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, StreamingResponse
+    from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - 仅在未装 web 依赖时触发
     raise RuntimeError('Web 管理服务未安装，请执行 pip install -e ".[web]"') from exc
 
 from .core.config import load_config, load_env
-from .core.contracts import TaskState
 from .core.pipeline import Pipeline
 from .core.registry import discover
 from .core.service import ConflictError, ManagementService, NotFoundError
 from .core.store import Store
 from .core.worker import Worker
 from .realtime import EventBus, event_stream
-from .web_extras import register_extras, auth_enabled
+from .web_extras import api_guard, is_authenticated, register_extras
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -111,7 +110,9 @@ def create_app(
                     await worker_task
             store.close()
 
-    app = FastAPI(title="Reelay Management API", version="0.2.0", lifespan=lifespan)
+    # 鉴权挂在应用级依赖上：新增路由默认受保护，公开接口在 web_extras.PUBLIC_PATHS 显式列出。
+    app = FastAPI(title="Reelay Management API", version="0.2.0", lifespan=lifespan,
+                  dependencies=[Depends(api_guard)])
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:28641", "http://127.0.0.1:28641"],
@@ -126,9 +127,39 @@ def create_app(
                     service=service, registry=registry)
 
     @app.get("/api/health")
-    async def health():
+    async def health(request: Request):
+        # 容器健康检查无需登录；运行细节（含错误摘要）只给已登录用户。
+        if not is_authenticated(request):
+            return {"ok": True, "service": "reelay"}
         return {"ok": True, "service": "reelay", "runtime": store.health_status(),
                 "deliveries": store.delivery_counts()}
+
+    strm_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
+    @app.get("/api/strm/p115/{pickcode}")
+    async def strm_redirect(pickcode: str, request: Request, sig: str = Query(default="")):
+        """STRM 播放跳转：校验签名后换取 115 直链并 302（直链与 User-Agent 绑定）。"""
+        import asyncio
+        import time
+        from .core.auth115 import get_store
+        from .core.strm import verify
+        if not verify(pickcode, sig):
+            raise HTTPException(status_code=403, detail="签名无效")
+        agent = request.headers.get("user-agent", "")
+        cached = strm_cache.get((pickcode, agent))
+        if cached and cached[0] > time.time():
+            return RedirectResponse(cached[1], status_code=302)
+        client = get_store().cookie_client()
+        if client is None:
+            raise HTTPException(status_code=503, detail="115 cookie 未配置")
+        try:
+            url = str(await asyncio.to_thread(client.download_url, pickcode, user_agent=agent))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"获取 115 直链失败：{type(exc).__name__}") from exc
+        if len(strm_cache) > 512:
+            strm_cache.clear()
+        strm_cache[(pickcode, agent)] = (time.time() + 600, url)
+        return RedirectResponse(url, status_code=302)
 
     @app.get("/api/dashboard")
     async def dashboard():
@@ -138,14 +169,9 @@ def create_app(
     async def events(request: Request):
         """SSE：状态变化时推送 {type:'state', changed:[...]}。
 
-        鉴权与其他接口一致（HttpOnly Cookie 自动随 EventSource 发送）；
+        鉴权由应用级依赖完成（HttpOnly Cookie 自动随 EventSource 发送，会话必须有效）；
         nginx/反代需关闭该路径缓冲（X-Accel-Buffering: no）。
         """
-        if auth_enabled():
-            from .web_extras import _COOKIE
-            token = request.cookies.get(_COOKIE)
-            if token is None:
-                raise HTTPException(status_code=401, detail="需要登录")
         headers = {
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",

@@ -14,10 +14,10 @@ import os
 from typing import Any
 
 from ..core.auth115 import get_store
-from ..core.contracts import PipelineContext, TransferUncertain
+from ..core.contracts import AlreadyStored, NeedsManual, PipelineContext, TransferUncertain
 from ..core.io import run_blocking
 from ..core.registry import register
-from ..core.media import episode_of
+from ..core.media import episode_of, is_extra
 
 VIDEO_EXT = {'.mp4', '.mkv', '.ts', '.avi', '.mov', '.flv', '.wmv', '.webm',
              '.m2ts', '.mpg', '.mpeg', '.rmvb', '.iso'}
@@ -27,24 +27,60 @@ def _is_video(name: str) -> bool:
     return any((name or '').lower().endswith(ext) for ext in VIDEO_EXT)
 
 
-def _episode_of(name: str) -> int | None:
-    return episode_of(name)[1]
+# 电影分享中小于最大文件该比例的视频视为花絮/样片。
+MOVIE_EXTRA_RATIO = 0.15
 
 
-def _select_video_items(video_items: list[dict], parsed) -> list[dict]:
-    if not parsed.episodes:
-        return video_items
-    wanted = set(parsed.episodes)
-    season = parsed.season if parsed.season is not None else 1
-    matched = []
-    for item in video_items:
-        detected_season, ep = episode_of(item.get('name', ''))
-        if ep in wanted and detected_season in (None, season):
-            matched.append(item)
-    missing = wanted - {episode_of(item.get('name', ''))[1] for item in matched}
-    if missing:
-        raise RuntimeError(f'分享内未找到待转存集数 {sorted(missing)}')
-    return matched
+def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: str = 'share') -> dict:
+    """确定本次转存的文件。分享清单是集数的事实来源，消息/LLM 给出的集数只作提示。
+
+    返回 ``{'files', 'episodes', 'season'}``；无法确定时抛 NeedsManual（转存前停止），
+    内容全部已入库时抛 AlreadyStored。``stored`` 为已入库的 ``[季, 集]``。
+    """
+    videos = [x for x in video_items if not is_extra(x.get('name', ''))]
+    if not videos:
+        raise NeedsManual('分享内未找到正片视频文件')
+    episodic = parsed.media_type in ('tv', 'anime') or bool(parsed.episodes)
+    if not episodic:
+        sizes = [x.get('size') for x in videos]
+        if all(type(size) is int and size > 0 for size in sizes):
+            largest = max(sizes)
+            videos = [x for x in videos if x['size'] >= largest * MOVIE_EXTRA_RATIO]
+        if len(videos) > 1:
+            names = '、'.join(x.get('name', '') for x in videos[:5])
+            raise NeedsManual(f'电影分享包含 {len(videos)} 个正片候选，需人工选择：{names}')
+        return {'files': videos, 'episodes': [], 'season': None}
+
+    detected = [(x, *episode_of(x.get('name', ''))) for x in videos]
+    unknown = [x.get('name', '') for x, _, ep in detected if ep is None]
+    if unknown:
+        raise NeedsManual(f'无法从文件名识别集号：{"、".join(unknown[:5])}')
+    season = parsed.season
+    if season is None:
+        seasons = {s for _, s, _ in detected if s is not None}
+        if len(seasons) > 1:
+            raise NeedsManual(f'分享包含多季 {sorted(seasons)}，需先指定季号')
+        season = seasons.pop() if seasons else 1
+    by_episode: dict[int, dict] = {}
+    for item, detected_season, ep in detected:
+        if detected_season not in (None, season):
+            continue
+        if ep in by_episode:
+            raise NeedsManual(f'分享内第 {ep} 集有多个文件，需人工选择')
+        by_episode[ep] = item
+    if not by_episode:
+        raise NeedsManual(f'分享内没有第 {season} 季的视频')
+    if scope == 'message' and parsed.episodes:
+        missing = set(parsed.episodes) - set(by_episode)
+        if missing:
+            raise NeedsManual(f'分享内未找到消息声明的集数 {sorted(missing)}')
+        by_episode = {ep: by_episode[ep] for ep in parsed.episodes}
+    stored_episodes = {ep for stored_season, ep in stored if stored_season == season}
+    wanted = sorted(set(by_episode) - stored_episodes)
+    if not wanted:
+        raise AlreadyStored(f'分享内第 {season} 季的 {len(by_episode)} 集均已入库')
+    files = [{**by_episode[ep], 'season': season, 'episode': ep} for ep in wanted]
+    return {'files': files, 'episodes': wanted, 'season': season}
 
 
 def _file_record(item: dict) -> dict:
@@ -76,25 +112,17 @@ class P115Storage:
     name = 'p115'
 
     def __init__(self) -> None:
-        # 测试可直接注入伪 client（self._client = fake）；生产路径通过
-        # _cookie_client() 从凭证中心懒加载 cookie 客户端（分享枚举/转存
-        # 只能走 cookie；建目录等写操作走凭证中心的混合鉴权）。
-        self._client = None
-        self._init_error = None
+        # 读写都经过凭证中心：分享枚举/转存只能走 cookie，建目录走混合鉴权。
+        # 测试替换 ``_auth`` 为伪凭证中心，与生产走同一条代码路径。
         self._dry_run = os.getenv('REELAY_DRY_RUN', '').lower() in {'1', 'true', 'yes'}
         self._auth = get_store()
 
     def _cookie_client(self):
-        if self._client is not None:
-            return self._client
-        if self._dry_run:
-            return None
-        return self._auth.cookie_client()
+        return None if self._dry_run else self._auth.cookie_client()
 
     @property
     def live(self) -> bool:
-        return not self._dry_run and (self._client is not None
-                                      or self._auth.has_cookie)
+        return not self._dry_run and self._auth.has_cookie
 
     def _require_client(self) -> None:
         if self._cookie_client() is None:
@@ -103,13 +131,34 @@ class P115Storage:
     async def prepare(self, ctx: PipelineContext) -> dict[str, Any]:
         if self._dry_run:
             p = ctx.parsed
-            files = [{'id': f'dry-{ctx.task_id}-{ep}', 'name': f'E{ep:02d}.mp4',
-                      'size': 1, 'sha1': None, 'is_dir': False}
-                     for ep in p.episodes or [1]]
+            episodic = p.media_type in ('tv', 'anime') or bool(p.episodes)
+            names = ([f'S{p.season if p.season is not None else 1:02d}E{ep:02d}.mp4' for ep in p.episodes or [1]]
+                     if episodic else ['movie.mp4'])
+            listing = [{'id': f'dry-{ctx.task_id}-{i}', 'name': name, 'size': 1, 'sha1': None, 'is_dir': False}
+                       for i, name in enumerate(names)]
+            selection = self._select(ctx, listing)
             return {'dry_run': True, 'to_cid': int(ctx.save_dir_cid),
-                    'staging_cid': f'dry-stage-{ctx.task_id}', 'files': files}
+                    'staging_cid': f'dry-stage-{ctx.task_id}', **selection}
         self._require_client()
         return await run_blocking(self._prepare_sync, ctx)
+
+    @staticmethod
+    def _select(ctx: PipelineContext, listing: list[dict]) -> dict:
+        return _select_video_items(listing, ctx.parsed,
+                                   stored=ctx.ns('storage').get('stored_episodes') or [],
+                                   scope=ctx.source_rule.get('episodes_from', 'share'))
+
+    async def discard(self, ctx: PipelineContext) -> None:
+        """去重跳过时删除尚未使用的空暂存目录；非空绝不删除。"""
+        stage = (ctx.ns('storage').get('manifest') or {}).get('staging_cid')
+        if self._dry_run or not isinstance(stage, int):
+            return
+        await run_blocking(self._discard_sync, stage)
+
+    def _discard_sync(self, stage: int) -> None:
+        from p115client import P115FileSystem
+        if not list(P115FileSystem(self._cookie_client()).iterdir(stage)):
+            self._auth.delete([stage])
 
     async def save(self, ctx: PipelineContext) -> dict[str, Any]:
         manifest = ctx.ns('storage')['manifest']
@@ -130,11 +179,10 @@ class P115Storage:
         p = ctx.parsed
         client = self._cookie_client()
         share_fs = P115ShareFileSystem(client, p.share_code, p.receive_code)
-        files = _select_video_items(self._collect_share_videos(share_fs), p)
-        if not files:
-            raise RuntimeError('分享内未找到视频文件')
+        selection = self._select(ctx, self._collect_share_videos(share_fs))
+        files = selection['files']
         if len({x['name'] for x in files}) != len(files):
-            raise RuntimeError('分享内视频文件重名，需人工选择后再转存')
+            raise NeedsManual('分享内视频文件重名，需人工选择后再转存')
         fs = P115FileSystem(client)
         parent = int(ctx.save_dir_cid)
         name = f'.reelay-{ctx.task_id}'
@@ -144,36 +192,8 @@ class P115Storage:
                 raise RuntimeError('暂存目录名称冲突，需人工处理')
             stage = matches[0]
         else:
-            stage = self._mkdir(parent, name)
-        return {'to_cid': parent, 'staging_cid': int(stage['id']), 'files': files}
-
-    def _mkdir(self, parent: int, name: str) -> dict:
-        """建暂存目录。
-
-        生产走凭证中心混合鉴权（OAuth 优先、cookie 回退）；测试注入伪
-        client 时沿用伪 client 的建目录实现，保持故障注入测试可控。
-        """
-        if self._client is not None:
-            return self._mkdir_on_fake(parent, name)
-        return self._auth.mkdir(parent, name)
-
-    def _mkdir_on_fake(self, parent: int, name: str) -> dict:
-        import logging
-        from p115client import P115FileSystem
-        client = self._client
-        try:
-            resp = client.fs_mkdir({"cname": name, "pid": int(parent)})
-            if isinstance(resp, dict) and resp.get("state", True) is not False:
-                fid = (resp.get("file_id") or resp.get("cid")
-                       or (resp.get("data") or {}).get("category_id"))
-                if fid:
-                    return {"id": int(fid), "name": name}
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger("reelay.storage").warning(
-                "webapi 建目录异常，回退 app 接口：%s", exc)
-        made = P115FileSystem(client).mkdir(parent, name=name)
-        return {"id": int(made["id"] if isinstance(made, dict) else made),
-                "name": name}
+            stage = self._auth.mkdir(parent, name)
+        return {'to_cid': parent, 'staging_cid': int(stage['id']), **selection}
 
     def _receive_sync(self, ctx: PipelineContext) -> dict[str, Any]:
         from p115client import P115FileSystem, P115ShareFileSystem
@@ -212,7 +232,7 @@ class P115Storage:
             for item in share_fs.iterdir(cid):
                 if item.get('is_directory') or item.get('is_dir'):
                     if depth >= max_depth:
-                        raise RuntimeError('分享目录过深，不能完整核验视频清单')
+                        raise NeedsManual('分享目录过深，不能完整核验视频清单')
                     walk(item['id'], depth + 1)
                 elif _is_video(item.get('name', '')):
                     out.append(_file_record(item))

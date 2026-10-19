@@ -1,8 +1,13 @@
 """运行时共享上下文。
 
 Hook / EventListener 的 ``run(ctx)`` 签名里只有单条任务的 ctx，拿不到全局配置。
-Pipeline 用 ContextVar 注入当前任务的配置，协程和 to_thread 互相隔离。
+Pipeline 用 ContextVar 注入当前任务的配置和内核服务，协程和 to_thread 互相隔离。
 set_config 仅保留给独立插件调用的兼容入口，不用于应用之间共享配置。
+
+扩展通过 ``services()`` 使用内核能力，而不是直接持有 Store：
+
+- ``services().notify(text)``：给所有通知渠道发一条系统通知（经 Outbox 持久化投递）；
+- ``services().state(name)``：按扩展名称隔离的持久化 KV。
 """
 
 from __future__ import annotations
@@ -13,16 +18,62 @@ from contextvars import ContextVar
 
 _CONFIG: dict[str, Any] = {}
 _SCOPED: ContextVar[dict[str, Any] | None] = ContextVar("reelay_config", default=None)
+_SERVICES: ContextVar["Services | None"] = ContextVar("reelay_services", default=None)
+
+
+class PluginState:
+    """单个扩展的持久化状态；值必须可 JSON 序列化。"""
+
+    def __init__(self, store, plugin: str) -> None:
+        self._store, self._plugin = store, plugin
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._store.state_get(self._plugin, key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._store.state_set(self._plugin, key, value)
+
+    def delete(self, key: str) -> None:
+        self._store.state_delete(self._plugin, key)
+
+    def items(self) -> dict[str, Any]:
+        return self._store.state_items(self._plugin)
+
+
+class Services:
+    """内核暴露给扩展的最小能力集。"""
+
+    def __init__(self, store, notify_targets) -> None:
+        self.store = store
+        self._targets = notify_targets
+
+    def notify(self, text: str, *, key: str = "plugin") -> None:
+        targets = self._targets()
+        if targets:
+            self.store.stage_notice(key, text, targets)
+
+    def state(self, plugin: str) -> PluginState:
+        return PluginState(self.store, plugin)
 
 
 @contextmanager
-def scope(cfg: dict[str, Any]):
+def scope(cfg: dict[str, Any], services: Services | None = None):
     """配置属于当前协程/应用；to_thread 也会继承它。"""
     token = _SCOPED.set(cfg)
+    service_token = _SERVICES.set(services) if services is not None else None
     try:
         yield
     finally:
+        if service_token is not None:
+            _SERVICES.reset(service_token)
         _SCOPED.reset(token)
+
+
+def services() -> Services:
+    current = _SERVICES.get()
+    if current is None:
+        raise RuntimeError("当前不在 Pipeline 作用域内，无法使用内核服务")
+    return current
 
 
 def set_config(cfg: dict[str, Any]) -> None:

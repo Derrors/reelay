@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 import threading
 import time
 from pathlib import Path
@@ -81,7 +82,24 @@ CREATE TABLE IF NOT EXISTS runtime_health (
     payload TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS alerts (
+    key TEXT PRIMARY KEY,                -- 告警类别，如 p115_auth / source
+    active INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    since REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plugin_state (
+    plugin TEXT NOT NULL,                -- 扩展名称，状态按扩展隔离
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (plugin, key)
+);
 """
+
+# 系统通知（告警、审批汇总、日报）没有对应任务，投递行使用固定的伪任务 ID。
+SYSTEM_TASK = "system"
 
 
 class Store:
@@ -97,7 +115,14 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._init_pragmas()
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)")}
+        if "not_before" not in columns:
+            # 失败退避的下次执行时间；Worker 只领取到期任务，不在消费者里睡眠。
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN not_before REAL NOT NULL DEFAULT 0")
 
     def _init_pragmas(self) -> None:
         cur = self._conn
@@ -323,7 +348,7 @@ class Store:
             self._worker_owned = False
 
     def set_state(self, task_id: str, state: TaskState, *, error: str | None = None,
-                  expected: TaskState | None = None) -> bool:
+                  expected: TaskState | None = None, not_before: float = 0) -> bool:
         """原子更新状态列与快照，避免 Worker 从 snapshot 读到旧状态。"""
         with self._lock, self._conn:
             self._conn.execute("BEGIN IMMEDIATE")
@@ -337,12 +362,13 @@ class Store:
             snapshot = json.loads(row["snapshot"])
             snapshot["state"] = state.value
             self._conn.execute(
-                "UPDATE tasks SET state=?, snapshot=?, error=?, updated_at=? WHERE task_id=?",
+                "UPDATE tasks SET state=?, snapshot=?, error=?, updated_at=?, not_before=? WHERE task_id=?",
                 (
                     state.value,
                     json.dumps(snapshot, ensure_ascii=False),
                     error,
                     time.time(),
+                    not_before,
                     task_id,
                 ),
             )
@@ -368,11 +394,15 @@ class Store:
             return None
         return _load_ctx(json.loads(row["snapshot"]))
 
-    def list_by_state(self, state: TaskState, limit: int = 50) -> list[sqlite3.Row]:
+    def list_by_state(self, state: TaskState, limit: int = 50, *,
+                      due_only: bool = False) -> list[sqlite3.Row]:
+        """due_only=True 时跳过仍在退避期内的任务。"""
+        due = " AND not_before<=?" if due_only else ""
+        params = (state.value, time.time(), limit) if due_only else (state.value, limit)
         return self._conn.execute(
-            "SELECT task_id, state, source, title, error, retries, updated_at "
-            "FROM tasks WHERE state=? ORDER BY updated_at ASC LIMIT ?",
-            (state.value, limit),
+            "SELECT task_id, state, source, title, error, retries, updated_at, created_at "
+            f"FROM tasks WHERE state=?{due} ORDER BY updated_at ASC LIMIT ?",
+            params,
         ).fetchall()
 
     def list_tasks(
@@ -431,7 +461,7 @@ class Store:
                 raise ValueError("任务状态已变化，请刷新后重试")
             self._write_task(ctx, error=error)
             if reset_retries:
-                self._conn.execute("UPDATE tasks SET retries=0 WHERE task_id=?", (ctx.task_id,))
+                self._conn.execute("UPDATE tasks SET retries=0, not_before=0 WHERE task_id=?", (ctx.task_id,))
 
     def delete_task(self, task_id: str) -> bool:
         """仅用于删除误入的任务记录；不删除 115 文件。"""
@@ -507,25 +537,162 @@ class Store:
     def episode_key(title: str, season: int | None, ep: int) -> str:
         return f"{title}|S{season if season is not None else 1:02d}|E{ep:02d}"
 
-    def missing_episodes(self, parsed: ParsedResource, cid: str | None = None, provider: str = "p115") -> list[int]:
-        """内容级去重：返回 parsed 中「尚未入库」的集数，支持追更增量。
+    def stored_episode_pairs(self, title: str, cid: str, provider: str = "p115") -> list[list[int]]:
+        """某剧在目标目录已入库的 [季, 集]；分享清单据此排除已入库的集。"""
+        prefix = f"{_target_prefix(cid, provider)}:{title}|"
+        pairs = set()
+        for row in self._conn.execute(
+                "SELECT key, task_id FROM dedup WHERE kind=? AND substr(key, 1, ?)=?",
+                (DEDUP_EPISODE, len(prefix), prefix)):
+            parsed = _episode_pair(row["key"][len(prefix):])
+            if parsed:
+                pairs.add(parsed)
+        if provider == "p115":  # 旧版全局键：仅当原任务能确认同一目标目录时生效
+            legacy = f"{title}|"
+            for row in self._conn.execute(
+                    "SELECT key, task_id FROM dedup WHERE kind=? AND substr(key, 1, ?)=?",
+                    (DEDUP_EPISODE, len(legacy), legacy)):
+                parsed = _episode_pair(row["key"][len(legacy):])
+                ctx = self.get_task(row["task_id"]) if parsed and row["task_id"] else None
+                if ctx and ctx.save_dir_cid == cid:
+                    season, ep = parsed
+                    pairs.add((season or 1, ep))
+        return [list(pair) for pair in sorted(pairs)]
 
-        - 非剧集或无集数信息：返回空表（交给资源级判断）
-        - 剧集：只保留 episode_key 未命中的集
-        """
-        if not parsed.title or not parsed.episodes:
-            return []
-        missing = []
-        for ep in parsed.episodes:
-            k = self.episode_key(parsed.title, parsed.season, ep)
-            if cid is not None:
-                k = f"{_target_prefix(cid, provider)}:{k}"
-            legacy_key = f"{parsed.title}|S{parsed.season or 0:02d}|E{ep:02d}"
-            if not self.seen(DEDUP_EPISODE, k) and not (
-                provider == "p115" and cid is not None and self._legacy_seen(DEDUP_EPISODE, legacy_key, cid)
-            ):
-                missing.append(ep)
-        return missing
+    def stored_series(self) -> dict[tuple[str, int], set[int]]:
+        """按 (标题, 季) 汇总所有目标目录中已入库的集，供追更检查使用。"""
+        series: dict[tuple[str, int], set[int]] = {}
+        for row in self._conn.execute("SELECT key FROM dedup WHERE kind=?", (DEDUP_EPISODE,)):
+            key = row["key"]
+            head, sep, tail = key.partition(":")
+            body = tail if sep and head.isdecimal() else key
+            title, _, rest = body.rpartition("|S")
+            pair = _episode_pair("S" + rest) if title else None
+            if pair:
+                season, ep = pair
+                series.setdefault((title, season or 1), set()).add(ep)
+        return series
+
+    def source_watermark(self, source: str) -> int | None:
+        """某来源已接收的最大消息 ID；重连后从这里补拉，首次监听返回 None。"""
+        row = self._conn.execute(
+            "SELECT MAX(CAST(msg_id AS INTEGER)) m FROM tasks WHERE lower(source)=lower(?) "
+            "AND msg_id GLOB '[0-9]*' AND msg_id NOT GLOB '*[^0-9]*'", (source,)
+        ).fetchone()
+        return int(row["m"]) if row and row["m"] is not None else None
+
+    def summary_since(self, since: float) -> dict[str, Any]:
+        """日报数据：时间窗口内新收与完成的任务，以及当前待处理积压。"""
+        received = {r["state"]: r["c"] for r in self._conn.execute(
+            "SELECT state, COUNT(*) c FROM tasks WHERE created_at>=? GROUP BY state", (since,))}
+        done = [dict(r) for r in self._conn.execute(
+            "SELECT task_id, title, source FROM tasks WHERE state=? AND updated_at>=? "
+            "ORDER BY updated_at DESC LIMIT 20", (TaskState.DONE.value, since))]
+        current = self.counts_by_state()
+        return {
+            "since": since,
+            "received": sum(received.values()),
+            "received_by_state": received,
+            "done": done,
+            "done_count": self._conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE state=? AND updated_at>=?",
+                (TaskState.DONE.value, since)).fetchone()[0],
+            "pending_approval": current.get(TaskState.PENDING_APPROVAL.value, 0),
+            "need_manual": current.get(TaskState.NEED_MANUAL.value, 0),
+            "failed": current.get(TaskState.FAILED.value, 0),
+        }
+
+    # ------------------------------------------------------------------ #
+    # 系统通知与告警（与任务状态同样走 Outbox，进程退出也不会丢）
+    # ------------------------------------------------------------------ #
+    def _stage_notice(self, key: str, text: str, targets: list[str], event: str) -> None:
+        now = time.time()
+        snapshot = json.dumps({"key": key, "text": text}, ensure_ascii=False)
+        for target in targets:
+            self._conn.execute(
+                """INSERT INTO outbox (delivery_key, task_id, kind, event, target, snapshot, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (f"notice:{key}:{target}:{time.time_ns()}", SYSTEM_TASK, "notice", event,
+                 target, snapshot, now, now),
+            )
+
+    def stage_notice(self, key: str, text: str, targets: list[str], *, event: str = "notice") -> None:
+        with self._lock, self._conn:
+            self._stage_notice(key, text, targets, event)
+
+    def raise_alert(self, key: str, text: str, targets: list[str]) -> bool:
+        """告警只在状态由正常变为异常时通知一次；持续异常只更新文案。"""
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute("SELECT active FROM alerts WHERE key=?", (key,)).fetchone()
+            if row and row["active"]:
+                self._conn.execute("UPDATE alerts SET text=?, updated_at=? WHERE key=?", (text, now, key))
+                return False
+            self._conn.execute(
+                "INSERT INTO alerts VALUES (?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                "active=1, text=excluded.text, since=excluded.since, updated_at=excluded.updated_at",
+                (key, 1, text, now, now))
+            self._stage_notice(key, f"⚠️ {text}", targets, "alert")
+            return True
+
+    def clear_alert(self, key: str, text: str, targets: list[str]) -> bool:
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute("SELECT active FROM alerts WHERE key=?", (key,)).fetchone()
+            if not row or not row["active"]:
+                return False
+            self._conn.execute("UPDATE alerts SET active=0, text=?, updated_at=? WHERE key=?", (text, now, key))
+            self._stage_notice(key, f"✅ {text}", targets, "recovered")
+            return True
+
+    def active_alerts(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._conn.execute(
+            "SELECT key, text, since, updated_at FROM alerts WHERE active=1 ORDER BY since")]
+
+    def stage_system_event(self, ctx: PipelineContext) -> None:
+        """系统事件（如日报）只写投递意图，不在任务表里出现。"""
+        snapshot = json.dumps(_dump_ctx(ctx), ensure_ascii=False)
+        now = time.time()
+        with self._lock, self._conn:
+            for key, delivery in ctx.meta.get("deliveries", {}).items():
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO outbox
+                    (delivery_key, task_id, kind, event, target, snapshot, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (f"{ctx.task_id}:{key}", ctx.task_id, delivery["kind"], delivery["event"],
+                     delivery["target"], snapshot, now, now))
+
+    # ------------------------------------------------------------------ #
+    # 扩展私有状态（按扩展名称隔离的小型 KV）
+    # ------------------------------------------------------------------ #
+    def state_get(self, plugin: str, key: str, default: Any = None) -> Any:
+        row = self._conn.execute(
+            "SELECT value FROM plugin_state WHERE plugin=? AND key=?", (plugin, key)).fetchone()
+        return json.loads(row["value"]) if row else default
+
+    def state_set(self, plugin: str, key: str, value: Any) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO plugin_state VALUES (?,?,?,?) ON CONFLICT(plugin, key) DO UPDATE SET "
+                "value=excluded.value, updated_at=excluded.updated_at",
+                (plugin, key, json.dumps(value, ensure_ascii=False), time.time()))
+
+    def state_delete(self, plugin: str, key: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM plugin_state WHERE plugin=? AND key=?", (plugin, key))
+
+    def state_items(self, plugin: str) -> dict[str, Any]:
+        return {r["key"]: json.loads(r["value"]) for r in self._conn.execute(
+            "SELECT key, value FROM plugin_state WHERE plugin=? ORDER BY key", (plugin,))}
+
+
+def _episode_pair(text: str) -> tuple[int, int] | None:
+    """解析 episode_key 的 ``S01|E02`` 尾部。"""
+    import re
+    match = re.fullmatch(r"S(\d+)\|E(\d+)", text)
+    return (int(match.group(1)), int(match.group(2))) if match else None
 
 
 # --------------------------------------------------------------------------- #
@@ -548,15 +715,8 @@ def _dump_ctx(ctx: PipelineContext) -> dict[str, Any]:
             "received_at": ctx.raw.received_at,
             "extra": ctx.raw.extra,
         },
-        "parsed": (
-            None if p is None else {
-                "is_media": p.is_media, "is_ad": p.is_ad, "confidence": p.confidence,
-                "media_type": p.media_type, "title": p.title, "year": p.year,
-                "season": p.season, "episodes": p.episodes, "genres": p.genres, "resolution": p.resolution,
-                "size": p.size, "share_code": p.share_code, "receive_code": p.receive_code,
-                "reason": p.reason, "raw_fields": p.raw_fields,
-            }
-        ),
+        # 完整序列化：Worker 每个阶段都从快照重建，漏字段会让下游 Hook 读不到上游结果。
+        "parsed": None if p is None else asdict(p),
         "decision": ctx.decision.value if ctx.decision else None,
         "save_dir_alias": ctx.save_dir_alias,
         "save_dir_cid": ctx.save_dir_cid,

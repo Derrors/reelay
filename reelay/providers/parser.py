@@ -5,13 +5,20 @@
 - ``RegexParser``（name="regex"）：纯规则兜底，也可给格式稳定的老源单独用。
 
 两者都把「候选链接 -> share_code/receive_code」的最终校验交给确定性代码（parse_115_url）。
+
+LLM 调用前先做确定性预过滤（无 115 链接、命中黑名单、缺 must_have 的消息必然被跳过，
+不必花 token）；相同正文命中进程内缓存；超时/限流/5xx 先退避重试，仍失败才降级。
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
 import re
+import time
+from collections import OrderedDict
 from typing import Any
 
 from ..core.contracts import ParsedResource, PipelineContext
@@ -107,6 +114,65 @@ def _regex_parse(ctx: PipelineContext) -> ParsedResource:
     )
 
 
+def prefilter_reason(ctx: PipelineContext, share_code: str | None) -> str | None:
+    """与 DefaultDecision 的硬过滤一致；命中则无论 LLM 怎么判都会被跳过。"""
+    if not share_code:
+        return "无 115 链接"
+    filters = (ctx.source_rule or {}).get("filters", {}) or {}
+    text = ctx.raw.text or ""
+    must = filters.get("must_have") or []
+    if must and not any(keyword in content for keyword in must for content in [text, *ctx.raw.urls]):
+        return "未命中 must_have"
+    if any(keyword in text for keyword in filters.get("block_keywords") or []):
+        return "命中黑名单关键词"
+    return None
+
+
+_TRANSIENT_ERRORS = {"APITimeoutError", "APIConnectionError", "RateLimitError",
+                     "InternalServerError", "TimeoutError", "ConnectionError"}
+
+
+def is_transient(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    return (type(exc).__name__ in _TRANSIENT_ERRORS or isinstance(exc, (asyncio.TimeoutError, ConnectionError))
+            or (type(status) is int and (status == 429 or status >= 500)))
+
+
+async def create_with_retry(client, **request: Any):
+    """只对瞬时错误退避重试；参数错误、拒绝等立即抛出交给调用方降级。"""
+    retries = max(0, int(os.getenv("REELAY_LLM_RETRIES", "2")))
+    delay = max(0.0, float(os.getenv("REELAY_LLM_RETRY_DELAY", "2")))
+    for attempt in range(retries + 1):
+        try:
+            return await client.chat.completions.create(**request)
+        except Exception as exc:
+            if attempt >= retries or not is_transient(exc):
+                raise
+            await asyncio.sleep(delay * 2 ** attempt)
+
+
+class _ResultCache:
+    """校验通过的 LLM 输出按正文哈希缓存；多源转发同一条、重复广告不再重复调用。"""
+
+    def __init__(self, size: int = 512, ttl: float = 24 * 3600) -> None:
+        self.size, self.ttl = size, ttl
+        self._items: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+
+    def get(self, key: str) -> dict | None:
+        item = self._items.get(key)
+        if not item or time.monotonic() - item[0] > self.ttl:
+            self._items.pop(key, None)
+            return None
+        self._items.move_to_end(key)
+        return json.loads(json.dumps(item[1]))
+
+    def put(self, key: str, value: dict) -> None:
+        self._items[key] = (time.monotonic(), json.loads(json.dumps(value)))
+        self._items.move_to_end(key)
+        while len(self._items) > self.size:
+            self._items.popitem(last=False)
+
+
 @register(kind="provider", ptype="parser")
 class RegexParser:
     name = "regex"
@@ -142,6 +208,7 @@ class LLMParser:
     def __init__(self) -> None:
         self._client = None
         self._model = os.getenv("REELAY_LLM_MODEL", "gpt-4o-mini")
+        self._cache = _ResultCache()
         if os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}:
             return
         try:
@@ -155,32 +222,68 @@ class LLMParser:
         except Exception:
             self._client = None
 
-    async def parse(self, ctx: PipelineContext) -> ParsedResource:
-        # 链接始终用确定性代码抽，不依赖 LLM
-        share_url, share_code, recv = parse_115_url(ctx.raw.text, ctx.raw.urls)
+    def _cache_key(self, ctx: PipelineContext, response: dict) -> str:
+        payload = json.dumps([self._model, response.get("type"), _SYSTEM_PROMPT,
+                              ctx.raw.text, ctx.raw.urls], ensure_ascii=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-        ctx.ns("parse").clear()
-        if self._client is None:
-            return self._fallback(ctx, "unavailable")
-
-        try:
-            resp = await self._client.chat.completions.create(
+    async def _complete(self, ctx: PipelineContext, response: dict) -> dict[str, Any]:
+        """非法输出重试一次（JSON schema 偶发不守约），瞬时错误由 create_with_retry 退避。"""
+        attempts = 0
+        while True:
+            attempts += 1
+            resp = await create_with_retry(
+                self._client,
                 model=self._model,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": json.dumps({"text": ctx.raw.text, "urls": ctx.raw.urls}, ensure_ascii=False)},
                 ],
-                response_format=response_format(MEDIA_SCHEMA, "media_resource", ctx.source_rule),
+                response_format=response,
                 temperature=0,
                 timeout=30,
             )
             message = resp.choices[0].message
             if getattr(message, "refusal", None):
+                raise PermissionError("refused")
+            try:
+                data = validate_resource(json.loads(message.content or "{}"), complete=True)
+            except ValueError:
+                if attempts >= 2:
+                    raise
+                continue
+            ctx.ns("parse")["attempts"] = attempts
+            return data
+
+    async def parse(self, ctx: PipelineContext) -> ParsedResource:
+        # 链接始终用确定性代码抽，不依赖 LLM
+        share_url, share_code, recv = parse_115_url(ctx.raw.text, ctx.raw.urls)
+
+        ctx.ns("parse").clear()
+        bypass_cache = bool(ctx.meta.pop("parse_request", {}).get("bypass_cache"))
+        reason = prefilter_reason(ctx, share_code)
+        if reason:
+            ctx.ns("parse")["prefilter"] = reason
+            resource = _regex_parse(ctx)
+            resource.reason = f"预过滤：{reason}，未调用 LLM"
+            return resource
+        if self._client is None:
+            return self._fallback(ctx, "unavailable")
+
+        response = response_format(MEDIA_SCHEMA, "media_resource", ctx.source_rule)
+        key = self._cache_key(ctx, response)
+        data = None if bypass_cache else self._cache.get(key)
+        if data is not None:
+            ctx.ns("parse")["cache"] = "hit"
+        else:
+            try:
+                data = await self._complete(ctx, response)
+            except PermissionError:
                 return self._fallback(ctx, "refused")
-            data: dict[str, Any] = validate_resource(json.loads(message.content or "{}"), complete=True)
-        except Exception as exc:
-            # 不持久化 SDK 异常正文（可能带网关凭证或请求头）。
-            return self._fallback(ctx, type(exc).__name__)
+            except Exception as exc:
+                # 不持久化 SDK 异常正文（可能带网关凭证或请求头）。
+                return self._fallback(ctx, type(exc).__name__)
+            self._cache.put(key, data)
 
         return ParsedResource(
             is_media=data["is_media"],

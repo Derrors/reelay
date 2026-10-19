@@ -80,6 +80,14 @@ class TransferUncertain(RuntimeError):
     """网盘写请求的结果不能确认；只允许核验，不能自动再次发送。"""
 
 
+class NeedsManual(RuntimeError):
+    """确定性校验不通过（如分享内集号无法识别），重试不会改变结果，需人工修正。"""
+
+
+class AlreadyStored(RuntimeError):
+    """分享清单中的内容已全部入库；按去重命中处理。"""
+
+
 # --------------------------------------------------------------------------- #
 # 贯穿全程的上下文
 # --------------------------------------------------------------------------- #
@@ -197,6 +205,8 @@ class StorageProvider(Protocol):
         """只读核验中断或结果未知的转存，绝不能再次发送转存请求。"""
         ...
 
+    # 可选：``discard(ctx)`` 清理 prepare 建立、但因去重而未使用的空暂存目录。
+
 
 @runtime_checkable
 class NotifyProvider(Protocol):
@@ -251,4 +261,5 @@ EVENTS = (
     "on_rejected",      # 判为广告 / 噪声
     "on_saved",         # 转存完成
     "on_failed",        # 失败
+    "on_daily",         # 每日一次的系统事件（ctx.meta["system"] 带汇总数据），供日报/巡检类扩展订阅
 )

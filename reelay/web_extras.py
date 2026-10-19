@@ -14,12 +14,19 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, Header, HTTPException, Query, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-# 会话保存在内存即可：单实例个人工具，重启后要求重新登录。
-_SESSIONS: set[str] = set()
+# 会话保存在内存即可：单实例个人工具，重启后要求重新登录。token -> 过期时间
+_SESSIONS: dict[str, float] = {}
+# 登录失败记录：客户端地址 -> 最近失败时间；窗口内失败过多则拒绝尝试。
+_FAILURES: dict[str, list[float]] = {}
+LOGIN_WINDOW = 300
+LOGIN_MAX_FAILURES = 5
+# 设置密码后仍可匿名访问的接口：登录相关、容器健康检查，以及自带签名的 STRM 跳转。
+PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/status", "/api/health"}
+PUBLIC_PREFIXES = ("/api/strm/",)
 
 def _parse_size_gb(value: Any) -> float:
     """把 '1.46 GB' / '800 MB' / 字节数换算成 GB。"""
@@ -47,6 +54,40 @@ def auth_enabled() -> bool:
     return bool(_password())
 
 
+def _session_valid(token: str | None) -> bool:
+    if not token:
+        return False
+    expires = _SESSIONS.get(token)
+    if expires is None:
+        return False
+    if expires < time.time():
+        _SESSIONS.pop(token, None)
+        return False
+    return True
+
+
+def is_authenticated(request: Request) -> bool:
+    if not auth_enabled():
+        return True
+    auth = request.headers.get("authorization", "")
+    bearer = auth[7:] if auth.startswith("Bearer ") else None
+    return _session_valid(request.cookies.get(_COOKIE)) or _session_valid(bearer)
+
+
+async def require_auth(request: Request) -> bool:
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="未登录")
+    return True
+
+
+async def api_guard(request: Request) -> None:
+    """应用级依赖：除公开接口外，所有 /api/* 路由都要求登录（含 SSE）。"""
+    path = request.url.path
+    if not path.startswith("/api/") or path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        return
+    await require_auth(request)
+
+
 class LoginPayload(BaseModel):
     password: str
 
@@ -62,14 +103,25 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # 1) 鉴权
     # ------------------------------------------------------------------ #
     @app.post("/api/auth/login")
-    async def login(payload: LoginPayload):
+    async def login(payload: LoginPayload, request: Request):
         pw = _password()
         if not pw:
             return {"ok": True, "auth_required": False}
-        if not hmac.compare_digest(payload.password, pw):
+        client = request.client.host if request.client else "unknown"
+        now = time.time()
+        recent = [at for at in _FAILURES.get(client, []) if now - at < LOGIN_WINDOW]
+        if len(recent) >= LOGIN_MAX_FAILURES:
+            wait = int(LOGIN_WINDOW - (now - recent[0])) + 1
+            raise HTTPException(status_code=429, detail=f"尝试过于频繁，请 {wait} 秒后再试")
+        if not hmac.compare_digest(payload.password.encode(), pw.encode()):
+            _FAILURES[client] = [*recent, now]
             raise HTTPException(status_code=401, detail="密码错误")
+        _FAILURES.pop(client, None)
+        for token, expires in list(_SESSIONS.items()):
+            if expires < now:
+                _SESSIONS.pop(token, None)
         token = secrets.token_urlsafe(32)
-        _SESSIONS.add(token)
+        _SESSIONS[token] = now + _SESSION_TTL
         resp = JSONResponse({"ok": True, "auth_required": True})
         resp.set_cookie(_COOKIE, token, httponly=True, samesite="lax",
                         max_age=_SESSION_TTL, path="/")
@@ -79,7 +131,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     async def logout(request: Request):
         token = request.cookies.get(_COOKIE)
         if token:
-            _SESSIONS.discard(token)
+            _SESSIONS.pop(token, None)
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(_COOKIE, path="/")
         return resp
@@ -88,21 +140,11 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     async def auth_status():
         return {"auth_required": auth_enabled()}
 
-    async def require_auth(request: Request):
-        if not auth_enabled():
-            return True
-        token = request.cookies.get(_COOKIE)
-        auth = request.headers.get("authorization", "")
-        bearer = auth[7:] if auth.startswith("Bearer ") else None
-        if (token and token in _SESSIONS) or (bearer and bearer in _SESSIONS):
-            return True
-        raise HTTPException(status_code=401, detail="未登录")
-
-    @app.get('/api/extensions', dependencies=[Depends(require_auth)])
+    @app.get('/api/extensions')
     async def extensions_catalog():
         return registry.catalog(service.get_config())
 
-    @app.post('/api/config/validate', dependencies=[Depends(require_auth)])
+    @app.post('/api/config/validate')
     async def validate_config_payload(request: Request):
         from .core.config import normalize_config
         try:
@@ -113,7 +155,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         except (ValueError, TypeError, AttributeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-    @app.post('/api/extensions/organizer/preview', dependencies=[Depends(require_auth)])
+    @app.post('/api/extensions/organizer/preview')
     async def organizer_template_preview(request: Request):
         from .core.naming_template import validate_template, render_path
         payload = await request.json()
@@ -129,7 +171,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-    @app.post('/api/extensions/dir-router/preview', dependencies=[Depends(require_auth)])
+    @app.post('/api/extensions/dir-router/preview')
     async def dir_router_preview(request: Request):
         from .core.category_strategy import classify, validate_strategy
         payload = await request.json()
@@ -142,7 +184,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         except (ValueError, TypeError, AttributeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-    @app.patch('/api/config/sections', dependencies=[Depends(require_auth)])
+    @app.patch('/api/config/sections')
     async def save_config_sections(request: Request):
         from .core.config import config_revision
         from copy import deepcopy
@@ -180,11 +222,11 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     class CookiePayload(BaseModel):
         cookies: str
 
-    @app.get("/api/auth115/status", dependencies=[Depends(require_auth)])
+    @app.get("/api/auth115/status")
     async def auth115_status():
         return get_store().status()
 
-    @app.post("/api/auth115/ping", dependencies=[Depends(require_auth)])
+    @app.post("/api/auth115/ping")
     async def auth115_ping():
         store = get_store()
         # 在线程中执行，避免阻塞事件循环
@@ -195,7 +237,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         )
         return {"cookie": cookie_state, "oauth": oauth_state, "status": store.status()}
 
-    @app.put("/api/auth115/cookie", dependencies=[Depends(require_auth)])
+    @app.put("/api/auth115/cookie")
     async def auth115_set_cookie(payload: CookiePayload):
         cookies = (payload.cookies or "").strip()
         if not cookies:
@@ -210,14 +252,14 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
             raise HTTPException(status_code=409, detail="cookie 已保存，但探活提示已失效，请重新获取")
         return {"ok": True, "state": state}
 
-    @app.post("/api/auth115/cookie/qr", dependencies=[Depends(require_auth)])
+    @app.post("/api/auth115/cookie/qr")
     async def auth115_cookie_qr_start():
         try:
             return await asyncio.to_thread(get_store().cookie_qr_start)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"申请 Cookie 登录二维码失败：{exc}")
 
-    @app.get("/api/auth115/cookie/qr", dependencies=[Depends(require_auth)])
+    @app.get("/api/auth115/cookie/qr")
     async def auth115_cookie_qr_status(uid: str = Query(...)):
         try:
             return await asyncio.to_thread(get_store().cookie_qr_status, uid)
@@ -226,7 +268,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"查询 Cookie 扫码状态失败：{exc}")
 
-    @app.get("/api/auth115/cookie/qr/image", dependencies=[Depends(require_auth)])
+    @app.get("/api/auth115/cookie/qr/image")
     async def auth115_cookie_qr_image(uid: str = Query(...)):
         from fastapi import Response
         store = get_store()
@@ -251,7 +293,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         return Response(content=png, media_type="image/svg+xml",
                         headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/auth115/oauth/qr", dependencies=[Depends(require_auth)])
+    @app.post("/api/auth115/oauth/qr")
     async def auth115_qr_start():
         store = get_store()
         try:
@@ -259,7 +301,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"申请授权二维码失败：{exc}")
 
-    @app.get("/api/auth115/oauth/qr", dependencies=[Depends(require_auth)])
+    @app.get("/api/auth115/oauth/qr")
     async def auth115_qr_status(uid: str = Query(...)):
         store = get_store()
         try:
@@ -269,7 +311,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"查询扫码状态失败：{exc}")
 
-    @app.get("/api/auth115/oauth/qr/image", dependencies=[Depends(require_auth)])
+    @app.get("/api/auth115/oauth/qr/image")
     async def auth115_qr_image(uid: str = Query(...)):
         """返回授权二维码 PNG：后端向 115 拉取，避免前端跨域与外链跳转。"""
         import asyncio
@@ -293,7 +335,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         return Response(content=png, media_type="image/png",
                         headers={"Cache-Control": "no-store"})
 
-    @app.delete("/api/auth115/oauth", dependencies=[Depends(require_auth)])
+    @app.delete("/api/auth115/oauth")
     async def auth115_oauth_clear():
         get_store().clear_oauth()
         return {"ok": True}
@@ -304,7 +346,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     def _log_path() -> Path:
         return Path(os.getenv("REELAY_LOG_FILE", str(project_root / "data" / "reelay.log")))
 
-    @app.get("/api/logs", dependencies=[Depends(require_auth)])
+    @app.get("/api/logs")
     async def get_logs(limit: int = Query(default=400, ge=1, le=5000),
                        q: str | None = None):
         path = _log_path()
@@ -325,7 +367,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # ------------------------------------------------------------------ #
     # 4) 115 网盘浏览（只读）
     # ------------------------------------------------------------------ #
-    @app.get("/api/storage/dirs", dependencies=[Depends(require_auth)])
+    @app.get("/api/storage/dirs")
     async def storage_dirs(cid: str = Query(default='0', pattern=r'^[0-9]+$'),
                            offset: int = Query(default=0, ge=0),
                            limit: int = Query(default=100, ge=1, le=1000)):
@@ -339,40 +381,39 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # ------------------------------------------------------------------ #
     # 5) 源管理：列出 + 立即解析测试（不入库、不转存）
     # ------------------------------------------------------------------ #
-    @app.get("/api/sources", dependencies=[Depends(require_auth)])
+    @app.get("/api/sources")
     async def list_sources():
         return {"sources": service.get_config().get("sources", []),
                 "save_dirs": service.get_config().get("save_dirs", {})}
 
-    @app.post("/api/sources/test-parse", dependencies=[Depends(require_auth)])
+    @app.post("/api/sources/test-parse")
     async def test_parse(payload: ParseTestPayload):
-        import asyncio
+        """与真实管线一致：合并默认规则 → 解析 → after_parse 扩展 → 确定性置信度 → 决策；不落库。"""
+        from reelay.core import confidence
         from reelay.core.contracts import RawMessage, PipelineContext
+        pipeline = service.pipeline
         cfg = service.get_config()
-        source_rule = None
-        for s in cfg.get("sources", []):
-            if payload.source and s.get("bot", "").lower() == payload.source.lower():
-                source_rule = s
-                break
-        source_rule = source_rule or {"approval_mode": "manual",
-                                      "save_to": cfg.get("defaults", {}).get("save_to")}
         raw = RawMessage(source=payload.source or "@test", msg_id="web-preview",
                          text=payload.text, urls=payload.urls)
         ctx = PipelineContext(raw=raw)
-        ctx.source_rule = source_rule
-        parser = registry.get_provider(
-            "parser", source_rule.get("parser", cfg.get("defaults", {}).get("parser", "llm")))
-        parsed = await parser.parse(ctx)
-        decider = registry.get_provider("decision",
-                                        source_rule.get("decision", "default"))
-        decision = await decider.decide(ctx)
-        return {"parsed": parsed.__dict__ if parsed else None,
-                "decision": getattr(decision, "value", str(decision))}
+        ctx.source_rule = pipeline._rule_for(raw.source)
+        ctx.ns("runtime").update(config=cfg)
+        parser = registry.get_provider("parser", ctx.source_rule.get("parser", cfg["defaults"]["parser"]))
+        with pipeline._scope(ctx):
+            ctx.parsed = await parser.parse(ctx)
+        await pipeline._run_hooks("after_parse", ctx)
+        confidence.apply(ctx)
+        decider = registry.get_provider("decision", ctx.source_rule.get("decision", cfg["defaults"]["decision"]))
+        with pipeline._scope(ctx):
+            decision = await decider.decide(ctx)
+        return {"parsed": ctx.parsed.__dict__ if ctx.parsed else None,
+                "decision": getattr(decision, "value", str(decision)),
+                "confidence": ctx.meta.get("confidence"), "trail": ctx.trail}
 
     # ------------------------------------------------------------------ #
     # 6) 任务高级检索：片名/剧集聚合 + 体积 + 支持批量操作的扩展筛选
     # ------------------------------------------------------------------ #
-    @app.get("/api/tasks/advanced", dependencies=[Depends(require_auth)])
+    @app.get("/api/tasks/advanced")
     async def advanced_tasks(q: str | None = None, media_type: str | None = None,
                              limit: int = Query(default=200, ge=1, le=1000)):
         import sqlite3
@@ -388,7 +429,6 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
             f"WHERE {' AND '.join(where)} ORDER BY updated_at DESC LIMIT ?",
             (*args, limit)).fetchall()
         groups: dict[str, dict] = {}
-        total_bytes = 0
         for r in rows:
             snap = json.loads(r["snapshot"]); p = snap.get("parsed") or {}
             key = p.get("title") or "(未识别)"
@@ -409,7 +449,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # ------------------------------------------------------------------ #
     # 4b) 115 文件详情（核对已转存文件：名称/大小/sha1/父目录）
     # ------------------------------------------------------------------ #
-    @app.get("/api/storage/file", dependencies=[Depends(require_auth)])
+    @app.get("/api/storage/file")
     async def storage_file(fid: int):
         from p115client import P115FileSystem
         client = get_store().cookie_client()
@@ -428,7 +468,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         task_ids: list[str] = Field(default_factory=list)
         action: str = ""  # approve | reject | retry
 
-    @app.post("/api/tasks/batch", dependencies=[Depends(require_auth)])
+    @app.post("/api/tasks/batch")
     async def batch_actions(payload: BatchPayload | None = None):
         payload = payload or BatchPayload()
         if payload.action not in ("approve", "reject", "retry"):
@@ -452,7 +492,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # ------------------------------------------------------------------ #
     # 7) 统计聚合（供图表）
     # ------------------------------------------------------------------ #
-    @app.get("/api/stats", dependencies=[Depends(require_auth)])
+    @app.get("/api/stats")
     async def stats(days: int = Query(default=30, ge=1, le=365)):
         rows = store.dashboard() if hasattr(store, "dashboard") else {}
         # 任务按天/状态聚合由 SQL 直接统计

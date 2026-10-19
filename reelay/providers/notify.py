@@ -2,7 +2,8 @@
 
 - ``identified`` 事件：识别成功后，若配置开启 forward，立即按模板转发到目标；
 - ``pending_approval`` 事件：推确认卡片；callback_data 只带 task_id；
-- ``saved`` 事件：发送转存完成通知，不重复执行资源转发。
+- ``saved`` 事件：发送转存完成通知，不重复执行资源转发；
+- ``notice(text)``：系统通知（故障告警与恢复、审批汇总、日报），不绑定任务。
 
 未配置真实发送器时写日志，便于 dry-run 与测试观察。
 """
@@ -74,6 +75,13 @@ class ConsoleNotify:
                 await self._sender(text=text)
             else:
                 log.warning("[%s] %s", event, text.replace("\n", " / "))
+
+
+    async def notice(self, text: str) -> None:
+        if self._sender:
+            await self._sender(text=text)
+        else:
+            log.info("[系统通知] %s", text.replace("\n", " / "))
 
 
 def _render(tpl: str, ctx: PipelineContext) -> str:

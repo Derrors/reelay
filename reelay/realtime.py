@@ -118,13 +118,14 @@ class EventBus:
         except Exception:
             rows = []
         recent = tuple((r["task_id"], r["state"], round(float(r["updated_at"]), 1)) for r in rows)
+        alerts = tuple((a["key"], a["updated_at"]) for a in store.active_alerts())
 
         signature = (
             tuple(sorted(counts.items())),
             tuple(sorted(deliveries.items())),
             worker.get("status"), bool(worker.get("stale")),
             source.get("status"), bool(source.get("stale")),
-            recent,
+            recent, alerts,
         )
 
         changed: list[str] = []
@@ -132,13 +133,13 @@ class EventBus:
             changed = ["counts", "deliveries", "runtime", "tasks"]
             return changed, signature
 
-        prev_counts, prev_deliveries, pw, pws, ps, pss, prev_recent = self._last_signature
-        cur_counts, cur_deliveries, cw, cws, cs, css, cur_recent = signature
+        prev_counts, prev_deliveries, pw, pws, ps, pss, prev_recent, prev_alerts = self._last_signature
+        cur_counts, cur_deliveries, cw, cws, cs, css, cur_recent, cur_alerts = signature
         if cur_counts != prev_counts:
             changed.append("counts")
         if cur_deliveries != prev_deliveries:
             changed.append("deliveries")
-        if (cw, cws, cs, css) != (pw, pws, ps, pss):
+        if (cw, cws, cs, css, cur_alerts) != (pw, pws, ps, pss, prev_alerts):
             changed.append("runtime")
         if cur_recent != prev_recent:
             changed.append("tasks")

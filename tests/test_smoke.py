@@ -11,7 +11,6 @@ from reelay.core.config import load_config
 from reelay.core.contracts import (
     ApprovalMode, Decision, ParsedResource, PipelineContext, RawMessage, TaskState,
 )
-from reelay.core.pipeline import Pipeline
 from reelay.core.registry import discover
 from reelay.core.store import Store, DEDUP_MESSAGE, DEDUP_SHARE, DEDUP_EPISODE
 
@@ -40,14 +39,14 @@ class TestStore(unittest.TestCase):
         s.mark(DEDUP_MESSAGE, "")
         self.assertFalse(s.seen(DEDUP_MESSAGE, ""))
 
-    def test_missing_episodes_incremental(self):
-        """追更：已入库 1-8 集，来了 1-10 集，应只返回 9、10。"""
+    def test_stored_episode_pairs_are_scoped_to_title_and_directory(self):
+        """追更：只返回同一目标目录、同一剧名已入库的 [季, 集]。"""
         s = self.store
-        p_old = ParsedResource(title="剧A", season=1, episodes=list(range(1, 9)))
-        for ep in p_old.episodes:
-            s.mark(DEDUP_EPISODE, Store.episode_key("剧A", 1, ep))
-        p_new = ParsedResource(title="剧A", season=1, episodes=list(range(1, 11)))
-        self.assertEqual(s.missing_episodes(p_new), [9, 10])
+        for ep in range(1, 9):
+            s.mark(DEDUP_EPISODE, "1:" + Store.episode_key("剧A", 1, ep))
+        s.mark(DEDUP_EPISODE, "2:" + Store.episode_key("剧A", 1, 9))
+        s.mark(DEDUP_EPISODE, "1:" + Store.episode_key("剧AB", 1, 9))
+        self.assertEqual(s.stored_episode_pairs("剧A", "1"), [[1, ep] for ep in range(1, 9)])
 
     def test_state_update_keeps_snapshot_consistent(self):
         s = self.store
@@ -253,28 +252,76 @@ class TestOrganizerPlan(unittest.TestCase):
 
 
 class TestStorageEpisodeSelection(unittest.TestCase):
-    def test_selects_only_missing_episodes(self):
-        from reelay.providers.storage import _select_video_items
-        parsed = ParsedResource(media_type="tv", episodes=[9, 10])
-        items = [
-            {"id": "1", "name": "Show.S01E08.mkv"},
-            {"id": "2", "name": "Show.S01E09.mkv"},
-            {"id": "3", "name": "Show.S01E10.mkv"},
-        ]
-        selected = _select_video_items(items, parsed)
-        self.assertEqual([item["id"] for item in selected], ["2", "3"])
+    ITEMS = [
+        {"id": "1", "name": "Show.S01E08.mkv"},
+        {"id": "2", "name": "Show.S01E09.mkv"},
+        {"id": "3", "name": "Show.S01E10.mkv"},
+    ]
 
-    def test_incremental_share_requires_all_missing_episodes(self):
+    def test_share_listing_is_source_of_truth_and_skips_stored(self):
+        from reelay.providers.storage import _select_video_items
+        parsed = ParsedResource(media_type="tv", episodes=[10])  # 消息只提示最新一集
+        selected = _select_video_items(self.ITEMS, parsed, stored=[[1, 8]])
+        self.assertEqual([item["id"] for item in selected["files"]], ["2", "3"])
+        self.assertEqual((selected["episodes"], selected["season"]), ([9, 10], 1))
+
+    def test_empty_llm_episodes_still_select_from_filenames(self):
+        from reelay.providers.storage import _select_video_items
+        selected = _select_video_items(self.ITEMS, ParsedResource(media_type="tv"))
+        self.assertEqual(selected["episodes"], [8, 9, 10])
+
+    def test_message_scope_restricts_to_declared_episodes(self):
         from reelay.providers.storage import _select_video_items
         parsed = ParsedResource(media_type="tv", episodes=[9, 10])
-        with self.assertRaises(RuntimeError):
-            _select_video_items([{"id": "2", "name": "Show.S01E09.mkv"}], parsed)
+        selected = _select_video_items(self.ITEMS, parsed, scope="message")
+        self.assertEqual([item["id"] for item in selected["files"]], ["2", "3"])
+
+    def test_message_scope_requires_all_declared_episodes(self):
+        from reelay.core.contracts import NeedsManual
+        from reelay.providers.storage import _select_video_items
+        parsed = ParsedResource(media_type="tv", episodes=[9, 10])
+        with self.assertRaises(NeedsManual):
+            _select_video_items([{"id": "2", "name": "Show.S01E09.mkv"}], parsed, scope="message")
 
     def test_ambiguous_incremental_share_fails_closed(self):
+        from reelay.core.contracts import NeedsManual
         from reelay.providers.storage import _select_video_items
         parsed = ParsedResource(media_type="tv", episodes=[9])
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(NeedsManual):
             _select_video_items([{"id": "1", "name": "video.mkv"}], parsed)
+
+    def test_all_stored_raises_already_stored(self):
+        from reelay.core.contracts import AlreadyStored
+        from reelay.providers.storage import _select_video_items
+        with self.assertRaises(AlreadyStored):
+            _select_video_items(self.ITEMS, ParsedResource(media_type="tv"), stored=[[1, 8], [1, 9], [1, 10]])
+
+    def test_extras_are_dropped_before_episode_detection(self):
+        from reelay.providers.storage import _select_video_items
+        items = [*self.ITEMS[:1], {"id": "9", "name": "预告片.mp4"}, {"id": "8", "name": "Show.Sample.mkv"}]
+        selected = _select_video_items(items, ParsedResource(media_type="tv"))
+        self.assertEqual([item["id"] for item in selected["files"]], ["1"])
+
+    def test_movie_drops_small_extras_and_rejects_multiple_mains(self):
+        from reelay.core.contracts import NeedsManual
+        from reelay.providers.storage import _select_video_items
+        movie = ParsedResource(media_type="movie")
+        items = [{"id": "m", "name": "Film.2160p.mkv", "size": 20_000},
+                 {"id": "f", "name": "Featurette.mkv", "size": 900},
+                 {"id": "x", "name": "Bonus.mkv", "size": 1_000}]
+        self.assertEqual([x["id"] for x in _select_video_items(items, movie)["files"]], ["m"])
+        with self.assertRaises(NeedsManual):
+            _select_video_items([{"id": "a", "name": "Film.CD1.mkv", "size": 9_000},
+                                 {"id": "b", "name": "Film.CD2.mkv", "size": 8_000}], movie)
+
+    def test_multi_season_share_needs_explicit_season(self):
+        from reelay.core.contracts import NeedsManual
+        from reelay.providers.storage import _select_video_items
+        items = [{"id": "1", "name": "S01E01.mkv"}, {"id": "2", "name": "S02E01.mkv"}]
+        with self.assertRaises(NeedsManual):
+            _select_video_items(items, ParsedResource(media_type="tv"))
+        selected = _select_video_items(items, ParsedResource(media_type="tv", season=2))
+        self.assertEqual([x["id"] for x in selected["files"]], ["2"])
 
 
 class TestTelegramUserbotGuard(unittest.TestCase):

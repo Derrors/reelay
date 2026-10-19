@@ -102,14 +102,23 @@ async def _run_dry() -> int:
 
 
 async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) -> None:
-    """监听来源、目标清单都跟随有效配置；切换来源先关闭旧会话。"""
+    """监听来源、目标清单都跟随有效配置；切换来源先关闭旧会话。
+
+    断开超过 REELAY_SOURCE_ALERT_SEC（默认 120 秒）告警一次，恢复后发送恢复通知；
+    监听意外停止时先落告警再退出，由容器重启拉起，告警经 Outbox 在新进程中送达。
+    """
+    import time
+    alert_after = max(1, int(os.getenv("REELAY_SOURCE_ALERT_SEC", "120")))
     while True:
         name = pipeline.cfg["providers"]["source"]
         source = pipeline.reg.get_provider("source", name)
         if hasattr(source, "configure"):
             source.configure([item["bot"] for item in pipeline.cfg["sources"]])
+        if hasattr(source, "bind_watermark"):
+            source.bind_watermark(pipeline.store.source_watermark)
         listener = asyncio.create_task(source.listen(emit))
         status, error = "stopped", None
+        down_since = time.monotonic()
         try:
             while pipeline.cfg["providers"]["source"] == name:
                 if listener.done():
@@ -119,9 +128,21 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                     source.configure([item["bot"] for item in pipeline.cfg["sources"]])
                 health = source.health() if hasattr(source, "health") else {"status": "unobserved"}
                 pipeline.store.heartbeat("source", provider=name, config_revision=pipeline.revision, **health)
+                if health.get("status") in ("connected", "unobserved"):
+                    down_since = None
+                    pipeline.store.clear_alert("source", f"消息源 {name} 已恢复连接", pipeline.notify_targets())
+                elif down_since is None:
+                    down_since = time.monotonic()
+                elif time.monotonic() - down_since >= alert_after:
+                    pipeline.store.raise_alert(
+                        "source", f"消息源 {name} 已断开超过 {alert_after // 60 or 1} 分钟，期间消息将在重连后补拉",
+                        pipeline.notify_targets())
                 await asyncio.sleep(poll_interval)
         except Exception as exc:
             status, error = "failed", type(exc).__name__
+            pipeline.store.raise_alert(
+                "source", f"消息源 {name} 意外停止（{error}），进程将退出并由容器重启",
+                pipeline.notify_targets())
             raise
         finally:
             listener.cancel()

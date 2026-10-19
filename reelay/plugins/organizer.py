@@ -7,7 +7,12 @@ StorageProvider(转存) → **after_save(本 Hook：建目录 + 改名 + 移动)
 稳妥要点（方案「整理有副作用，务必稳妥」）：
 - 集数/季/标题来自 AI 解析，可能出错 → 关键字段不全时**不硬整理**，标 need_manual；
 - 每一步先在 ctx 记「整理计划」，Pipeline 持久化后才执行；
-- 重名冲突策略：保留两份文件并转人工，不标记完成。
+- 重名冲突策略（organize.conflict）：
+  - manual（默认）：保留两份文件并转人工，不标记完成；
+  - skip：保留库中已有文件，删除本次新转存的文件（进 115 回收站）；
+  - suffix：新文件改名为「名称 (2).ext」并存；
+  - upgrade（洗版）：按画质等级、再按文件大小比较，新文件更好则删除旧文件（进回收站）
+    后入库，否则同 skip。删除前先记入扩展状态，中断后重放不会重复删除或误判。
 
 命名模板取自 config.organize.naming（遵循 Jellyfin/Emby 通用 SxxEyy 规范）。
 dry-run 只生成整理计划；真实模式缺客户端则失败。
@@ -20,9 +25,10 @@ import os
 import re
 
 from ..core.auth115 import get_store
+from ..core.config import DEFAULT_NAMING
 from ..core.contracts import PipelineContext
 from ..core.io import run_blocking
-from ..core.media import episode_of as _episode_of
+from ..core.media import episode_of as _episode_of, resolution_rank
 from ..core.registry import register
 from ..core import runtime
 
@@ -51,20 +57,13 @@ class Organizer:
     order = 20
 
     def __init__(self) -> None:
-        # 测试可注入伪 client（self._client = fake）；生产不再自建 cookie
-        # 客户端——读操作走凭证中心 cookie 客户端，写操作（建目录/改名/
-        # 移动/删除）走混合鉴权（OAuth 优先、cookie 回退）。
-        self._client = None
+        # 读（列目录/读属性）走凭证中心的 cookie 客户端；写（建目录/改名/移动/删除）
+        # 走混合鉴权（OAuth 优先、cookie 回退）。测试替换 ``_auth`` 为伪凭证中心。
         self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
         self._auth = get_store()
 
     def _read_client(self):
-        """列目录/读属性使用的客户端：注入伪 client 优先，否则用 cookie。"""
-        if self._client is not None:
-            return self._client
-        if self._dry_run:
-            return None
-        return self._auth.cookie_client()
+        return None if self._dry_run else self._auth.cookie_client()
 
     async def prepare(self, ctx: PipelineContext) -> None:
         """Pipeline 在执行前持久化此计划；恢复沿同一组文件 ID 续跑。"""
@@ -130,18 +129,37 @@ class Organizer:
             if list(fs.iterdir(stage)):
                 log.info("暂存目录非空，保留：%s", stage)
                 return
-            if self._client is not None:
-                # 测试注入的伪 client
-                if hasattr(self._client, "fs_delete"):
-                    self._client.fs_delete([stage])
-                else:
-                    return
-            else:
-                self._auth.delete([stage])
+            self._auth.delete([stage])
             ctx.log("已清理空暂存目录")
         except Exception as exc:  # noqa: BLE001
             # 清理失败不影响已完成的整理结果
             log.warning("清理暂存目录失败（已忽略）：%s", exc)
+
+    def _resolve_conflict(self, strategy, fs, target_cid, item, source_id, existing, quality, state):
+        """按策略处理同名不同 ID 的文件，返回 (动作, 本次文件的最终名称)。"""
+        name = item["target_name"]
+        if strategy == "suffix":
+            stem, dot, ext = name.rpartition(".")
+            stem, ext = (stem, f".{ext}") if dot else (name, "")
+            taken = {x.get("name"): int(x["id"]) for x in fs.iterdir(target_cid)}
+            for index in range(2, 100):
+                candidate = f"{stem} ({index}){ext}"
+                if taken.get(candidate) in (None, source_id):
+                    return "suffix", candidate
+            raise FileExistsError(f"同名文件过多，保留源文件：{name}")
+        if strategy in ("skip", "upgrade"):
+            existing_id = int(existing["id"])
+            recorded = state.get(f"file:{existing_id}") or {}
+            current = (recorded.get("rank") or resolution_rank(existing.get("name")),
+                       existing.get("size") or recorded.get("size") or 0)
+            if strategy == "upgrade" and quality > current:
+                state.set(f"replaced:{existing_id}", {"by": source_id, "name": name})
+                self._auth.delete([existing_id])
+                return "upgrade", name
+            state.set(f"skipped:{source_id}", {"kept": existing_id, "name": name})
+            self._auth.delete([source_id])
+            return "skip", name
+        raise FileExistsError(f"目标已有其他同名文件，保留源文件：{name}")
 
     # ------------------------------------------------------------------ #
     def _validate(self, p) -> str | None:
@@ -172,10 +190,10 @@ class Organizer:
                 season = detected_season if detected_season is not None else (p.season if p.season is not None else 1)
                 if p.season is not None and season != p.season:
                     raise ValueError(f"文件季号与识别结果不一致：{f.get('name', '')}")
-                template = naming.get("tv", "{{ title }} ({{ year|default('', true) }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}")
+                template = naming.get("tv", DEFAULT_NAMING["tv"])
             else:
                 season, episode = p.season or 1, None
-                template = naming.get("movie", "{{ title }} ({{ year|default('', true) }})/{{ title }} ({{ year|default('', true) }}){% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}")
+                template = naming.get("movie", DEFAULT_NAMING["movie"])
             rel = render_path(template, {
                 "title": title, "year": p.year, "season": season, "episode": episode,
                 "ep": episode, "resolution": _safe(p.resolution) if p.resolution else "",
@@ -198,41 +216,11 @@ class Organizer:
     def _apply_sync(self, ctx: PipelineContext, p, plan: list[dict]) -> None:
         from p115client import P115FileSystem
 
-        # 读（列目录/读属性）走 cookie 客户端；测试注入伪 client 时全部走伪 client。
-        read_client = self._read_client()
-        fs = P115FileSystem(read_client)
-        fake_mode = self._client is not None
+        fs = P115FileSystem(self._read_client())
+        auth = self._auth
 
         def do_mkdir(parent: int, name: str) -> int:
-            if fake_mode:
-                # 测试桩：有 webapi 风格接口就用，否则回退 fs.mkdir
-                if hasattr(read_client, "fs_mkdir"):
-                    resp = read_client.fs_mkdir({"cname": name, "pid": int(parent)})
-                    if isinstance(resp, dict):
-                        fid = resp.get("file_id") or (resp.get("data") or {}).get("category_id")
-                        if fid:
-                            return int(fid)
-                made = fs.mkdir(parent, name=name)
-                return int(made["id"] if isinstance(made, dict) else made)
-            return int(self._auth.mkdir(int(parent), name)["id"])
-
-        def do_rename(fid: int, name: str) -> None:
-            if fake_mode:
-                if hasattr(read_client, "fs_rename"):
-                    read_client.fs_rename((fid, name))
-                else:
-                    fs.rename(fid, name=name)
-            else:
-                self._auth.rename(int(fid), name)
-
-        def do_move(fid: int, pid: int) -> None:
-            if fake_mode:
-                if hasattr(read_client, "fs_move"):
-                    read_client.fs_move(fid, pid=pid)
-                else:
-                    fs.move(fid, to_dir=pid)
-            else:
-                self._auth.move(int(fid), int(pid))
+            return int(auth.mkdir(int(parent), name)["id"])
 
         base_cid = int(ctx.save_dir_cid or 0)
         dir_cache: dict[str, int] = {}
@@ -264,22 +252,39 @@ class Organizer:
             dir_cache[rel_dir] = pid
             return pid
 
+        strategy = runtime.get("organize.conflict", "manual")
+        state = runtime.services().state(self.name)
+        conflicts = ctx.ns("organize").setdefault("conflicts", [])
+        new_rank = resolution_rank(p.resolution)
+
         for item in plan:
             source_id = int(item["src_id"])
+            if state.get(f"skipped:{source_id}"):
+                continue  # 冲突时已按策略删除了本次的新文件
             target_cid = ensure_dir(item["target_dir"])
-            existing = [x for x in fs.iterdir(target_cid) if x.get("name") == item["target_name"]]
-            if any(int(x["id"]) != source_id for x in existing):
-                raise FileExistsError(f"目标已有其他同名文件，保留源文件：{item['target_name']}")
             current = fs.get_attr(source_id, refresh=True)
             if item.get("size") is not None and current.get("size") != item["size"]:
                 raise ValueError("落地文件大小已变化，停止整理")
             if item.get("sha1") and (current.get("sha1") or '').upper() != item["sha1"].upper():
                 raise ValueError("落地文件内容已变化，停止整理")
+            target_name = item["target_name"]
+            others = [x for x in fs.iterdir(target_cid)
+                      if x.get("name") == target_name and int(x["id"]) != source_id]
+            if others:
+                quality = (resolution_rank(item.get("src_name")) or new_rank, current.get("size") or 0)
+                action, target_name = self._resolve_conflict(
+                    strategy, fs, target_cid, item, source_id, others[0], quality, state)
+                conflicts.append({"target": f"{item['target_dir']}/{item['target_name']}",
+                                  "action": action, "existing_id": str(others[0]["id"])})
+                if action == "skip":
+                    continue
             # 根据真实文件 ID 的当前位置续跑；已改名或已移动的步骤无需重做。
-            if current["name"] != item["target_name"]:
-                do_rename(source_id, item["target_name"])
+            if current["name"] != target_name:
+                auth.rename(source_id, target_name)
             if int(current["parent_id"]) != target_cid:
-                do_move(source_id, target_cid)
+                auth.move(source_id, target_cid)
+            state.set(f"file:{source_id}", {"rank": resolution_rank(item.get("src_name")) or new_rank,
+                                            "size": current.get("size"), "name": item.get("src_name")})
             final = fs.get_attr(source_id, refresh=True)
-            if int(final["parent_id"]) != target_cid or final["name"] != item["target_name"]:
+            if int(final["parent_id"]) != target_cid or final["name"] != target_name:
                 raise RuntimeError("整理读回核验不通过，保留计划供后续重试")

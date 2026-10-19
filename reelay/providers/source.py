@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import time
 from typing import Any, Awaitable, Callable
 
 from ..core.contracts import RawMessage
@@ -17,6 +19,7 @@ from ..core.registry import register
 
 
 EmitFn = Callable[[RawMessage], Awaitable[None]]
+log = logging.getLogger("reelay.source")
 
 
 # --------------------------------------------------------------------------- #
@@ -77,9 +80,15 @@ class TelegramUserbotSource:
         self._api_id = os.getenv("REELAY_TG_API_ID")
         self._api_hash = os.getenv("REELAY_TG_API_HASH")
         self._session = os.getenv("REELAY_TG_SESSION", "data/userbot.session")
+        self._watermark: Callable[[str], int | None] | None = None
+        self.backfilled = 0
 
     def configure(self, targets: list[str]) -> None:
         self._targets = [target.strip().lower() for target in targets]
+
+    def bind_watermark(self, lookup: Callable[[str], int | None]) -> None:
+        """注入「来源 → 已接收最大消息 ID」查询；未注入则不补拉。"""
+        self._watermark = lookup
 
     def matches(self, event: Any) -> bool:
         identities = {_peer_name(event).lower(), str(getattr(event, "sender_id", "")),
@@ -132,20 +141,56 @@ class TelegramUserbotSource:
                 )
             self._authorized = True
             ready.set()
+            try:
+                await self.backfill(emit)
+            except Exception as exc:  # noqa: BLE001 - 补拉失败不影响实时监听
+                log.warning("历史消息补拉失败：%s", exc)
             await self._client.run_until_disconnected()
         finally:
             ready.set()
             await self.close()
 
 
+    async def backfill(self, emit: EmitFn) -> int:
+        """补拉每个来源水位之后的消息。首次监听（无水位）不导入历史。"""
+        limit = int(os.getenv("REELAY_TG_BACKFILL_LIMIT", "200"))
+        max_age = float(os.getenv("REELAY_TG_BACKFILL_MAX_DAYS", "7")) * 86400
+        if not self._watermark or limit <= 0:
+            return 0
+        total = 0
+        for target in list(self._targets):
+            ref = int(target) if target.lstrip("-").isdigit() else target
+            entity = await self._client.get_entity(ref)
+            source = _entity_name(entity)
+            mark = self._watermark(source)
+            if mark is None:
+                continue
+            count = 0
+            async for msg in self._client.iter_messages(entity, min_id=mark, reverse=True, limit=limit):
+                if getattr(msg, "action", None):
+                    continue  # 服务消息（置顶、入群等）
+                date = getattr(msg, "date", None)
+                if date is not None and time.time() - date.timestamp() > max_age:
+                    continue  # 太旧的分享大多已失效
+                await emit(RawMessage(source=source, msg_id=str(msg.id), text=msg.raw_text or "",
+                                      urls=_extract_urls(msg), extra={"backfill": True}))
+                count += 1
+            if count:
+                log.info("补拉 %s 水位 %s 之后的 %d 条消息", source, mark, count)
+            total += count
+        self.backfilled += total
+        return total
+
+
+def _entity_name(entity: Any) -> str:
+    """与实时事件的来源标识一致：有用户名用 @username，否则用数字 ID。"""
+    uname = getattr(entity, "username", None)
+    return f"@{uname}" if uname else str(getattr(entity, "id", "unknown"))
+
+
 def _extract_urls(msg: Any) -> list[str]:
     """从消息 entity 里取超链接真实 URL（"点击跳转"这种藏在 text_link 里）。"""
     urls: list[str] = []
-    try:
-        for _, url in (msg.get_entities_text() or []):
-            pass
-    except Exception:
-        pass
     try:
         from telethon.tl.types import MessageEntityTextUrl
         for ent in (msg.entities or []):
@@ -161,8 +206,6 @@ def _extract_urls(msg: Any) -> list[str]:
 
 def _peer_name(event: Any) -> str:
     try:
-        chat = event.chat
-        uname = getattr(chat, "username", None)
-        return f"@{uname}" if uname else str(getattr(chat, "id", "unknown"))
+        return _entity_name(event.chat) if event.chat is not None else "unknown"
     except Exception:
         return "unknown"

@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from reelay.core.auth115 import CredentialStore
 from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
 from reelay.core.pipeline import Pipeline
 from reelay.core.registry import Registry, discover
@@ -46,7 +47,7 @@ class Cloud:
         with self.lock:
             self.next_id += 1
             fid = self.next_id
-            self.items[fid] = {**item, 'id': fid, 'parent_id': pid}
+            self.items[fid] = {**item, 'id': fid, 'parent_id': pid, 'pickcode': f'pc{fid}'}
             return dict(self.items[fid])
 
     def add_share(self, code, *names):
@@ -86,22 +87,10 @@ class Cloud:
                     return dict(cloud.items[id_or_path])
 
             def rename(self, id_or_path, /, name):
-                if cloud.before_mutation:
-                    cloud.before_mutation('rename', id_or_path)
-                with cloud.lock:
-                    cloud.calls.append(('rename', id_or_path, name))
-                    cloud.items[id_or_path]['name'] = name
+                cloud.fs_rename((id_or_path, name))
 
             def move(self, id_or_path, /, to_dir=''):
-                if cloud.before_mutation:
-                    cloud.before_mutation('move', id_or_path)
-                with cloud.lock:
-                    cloud.calls.append(('move', id_or_path, to_dir))
-                    if not cloud.ignore_move:
-                        cloud.items[id_or_path]['parent_id'] = to_dir
-                    if cloud.fail_move_after_effect:
-                        cloud.fail_move_after_effect = False
-                        raise TimeoutError('移动成功，但响应中断')
+                cloud.fs_move(id_or_path, pid=to_dir)
 
         class ShareFS:
             def __init__(self, client, share_code, receive_code=None):
@@ -134,8 +123,59 @@ class Cloud:
         module.P115ShareFileSystem = ShareFS
         return module
 
+    # 与凭证中心 cookie 写路径使用的 webapi 方法签名一致。
+    def fs_mkdir(self, payload):
+        pid = payload['pid']
+        if not isinstance(pid, int):
+            raise AssertionError('mkdir 必须传入父目录 ID')
+        made = self.add(Cloud.directory(0, pid, payload['cname']), pid)
+        return {'state': True, 'file_id': made['id']}
+
+    def fs_rename(self, pair):
+        fid, name = pair
+        if self.before_mutation:
+            self.before_mutation('rename', fid)
+        with self.lock:
+            self.calls.append(('rename', fid, name))
+            self.items[fid]['name'] = name
+        return {'state': True}
+
+    def fs_move(self, fid, pid=0):
+        if self.before_mutation:
+            self.before_mutation('move', fid)
+        with self.lock:
+            self.calls.append(('move', fid, pid))
+            if not self.ignore_move:
+                self.items[fid]['parent_id'] = pid
+            if self.fail_move_after_effect:
+                self.fail_move_after_effect = False
+                raise TimeoutError('移动成功，但响应中断')
+        return {'state': True}
+
+    def fs_delete(self, ids):
+        with self.lock:
+            self.calls.append(('delete', list(ids)))
+            for fid in ids:
+                self.items.pop(int(fid), None)
+        return {'state': True}
+
     def receives(self):
         return [x for x in self.calls if x[0] == 'receive']
+
+
+class CloudCredentials(CredentialStore):
+    """真实凭证中心的 cookie 读写路径，只把 SDK 客户端换成内存网盘。"""
+
+    def __init__(self, cloud, path):
+        super().__init__(path)
+        self._cloud = cloud
+
+    @property
+    def has_cookie(self):
+        return True
+
+    def cookie_client(self):
+        return self._cloud
 
 
 class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
@@ -148,10 +188,11 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tempdir.name) / 'tasks.db'
         self.store = Store(self.db_path)
+        self.credentials = CloudCredentials(self.cloud, Path(self.tempdir.name) / 'credentials.json')
         self.storage = P115Storage()
-        self.storage._client = self.cloud
+        self.storage._auth = self.credentials
         self.organizer = Organizer()
-        self.organizer._client = self.cloud
+        self.organizer._auth = self.credentials
         self.reg = Registry()
         self.reg.add_provider('storage', self.storage)
         self.reg.add_hook(self.organizer)
@@ -235,14 +276,137 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute(b)).state, TaskState.SKIPPED)
         self.assertEqual(len(self.cloud.receives()), 1)
 
-    async def test_queued_update_only_receives_new_episodes(self):
+    async def test_share_listing_decides_episodes_and_later_update_is_skipped(self):
         self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
         a, b = self.task(episodes=(1,)), self.task(episodes=(1, 2))
+        done_a = await self.execute(a)
+        self.assertEqual(done_a.parsed.episodes, [1, 2])
+        self.assertEqual((await self.execute(b)).state, TaskState.SKIPPED)
+        self.assertEqual([x[3] for x in self.cloud.receives()], [['500', '501']])
+
+    async def test_message_scope_only_receives_new_declared_episodes(self):
+        self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
+        a, b = self.task(episodes=(1,)), self.task(episodes=(1, 2))
+        for ctx in (a, b):
+            ctx.source_rule = {'episodes_from': 'message'}
+            self.store.save_task(ctx)
         await self.execute(a)
         done = await self.execute(b)
         self.assertEqual(done.parsed.episodes, [2])
         self.assertEqual([x[3] for x in self.cloud.receives()], [['500'], ['501']])
         self.assertEqual(done.state, TaskState.DONE)
+
+    async def test_unresolvable_episode_stops_before_transfer_without_auto_retry(self):
+        self.cloud.add_share('share', 'video.mkv')
+        failed = await self.execute(self.task())
+        self.assertEqual(failed.state, TaskState.FAILED)
+        self.assertTrue(failed.ns('task')['no_auto_retry'])
+        self.assertEqual(self.cloud.receives(), [])
+        self.assertEqual(self.store._conn.execute('SELECT COUNT(*) FROM resource_claims').fetchone()[0], 0)
+
+    async def test_waiting_task_rechecks_episodes_stored_meanwhile(self):
+        self.cloud.add_share('a', 'S01E01.mkv', 'S01E02.mkv')
+        self.cloud.add_share('b', 'S01E02.mkv', 'S01E03.mkv')
+        a, b = self.task('a', episodes=()), self.task('b', episodes=())
+        # a 先占住 E02：b 拿到清单后无法占位，释放全部占位重新排队（不持有任何键等待）。
+        self.store.claim_resource(self.store.get_task(a.task_id), 'p115:1:a',
+                                  content_keys=['p115:1:episode:' + Store.episode_key('剧集', 1, 2)])
+        waiting = await self.execute(b)
+        self.assertEqual(waiting.state, TaskState.QUEUED)
+        self.assertEqual(waiting.ns('storage')['manifest']['episodes'], [2, 3])
+        self.assertEqual(self.store._conn.execute(
+            'SELECT COUNT(*) FROM resource_claims WHERE task_id=?', (b.task_id,)).fetchone()[0], 0)
+        await self.execute(a)
+        done_b = await self.execute(b)
+        self.assertEqual(done_b.state, TaskState.DONE)
+        self.assertEqual(done_b.parsed.episodes, [3])
+        self.assertEqual([x[1] for x in self.cloud.receives()], ['a', 'b'])
+        self.assertEqual(len(self.cloud.receives()[1][3]), 1)
+
+    async def test_same_share_link_with_new_episodes_is_not_share_deduped(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        await self.execute(self.task())
+        self.cloud.shares['share'].append({'id': '600', 'parent_id': 0, 'name': 'S01E02.mkv',
+                                           'size': 200, 'sha1': 'F' * 40, 'is_dir': False})
+        done = await self.execute(self.task())
+        self.assertEqual((done.state, done.parsed.episodes), (TaskState.DONE, [2]))
+        self.assertEqual([x[3] for x in self.cloud.receives()], [['500'], ['600']])
+
+    def existing_library_file(self, name='剧集 - S01E01.mkv', size=10):
+        show = self.cloud.add(Cloud.directory(0, 1, '剧集 (2026)'), 1)
+        season = self.cloud.add(Cloud.directory(0, show['id'], 'Season 01'), show['id'])
+        return self.cloud.add({'name': name, 'size': size, 'is_dir': False}, season['id']), season['id']
+
+    def use_conflict(self, strategy):
+        self.cfg = {**self.cfg, 'organize': {'conflict': strategy}}
+        self.pipeline = Pipeline(self.reg, self.store, self.cfg)
+
+    async def test_conflict_manual_keeps_both_files_for_review(self):
+        self.cloud.add_share('share', 'Show.S01E01.2160p.mkv')
+        existing, _ = self.existing_library_file()
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.NEED_MANUAL)
+        self.assertIn(existing['id'], self.cloud.items)
+
+    async def test_conflict_suffix_keeps_both_files(self):
+        self.use_conflict('suffix')
+        self.cloud.add_share('share', 'Show.S01E01.2160p.mkv')
+        existing, season = self.existing_library_file()
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        names = sorted(x['name'] for x in self.cloud.children(season))
+        self.assertEqual(names, ['剧集 - S01E01 (2).mkv', '剧集 - S01E01.mkv'])
+        self.assertEqual(done.ns('organize')['conflicts'][0]['action'], 'suffix')
+
+    async def test_conflict_skip_discards_new_copy_and_finishes(self):
+        self.use_conflict('skip')
+        self.cloud.add_share('share', 'Show.S01E01.2160p.mkv')
+        existing, season = self.existing_library_file()
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual([x['id'] for x in self.cloud.children(season)], [existing['id']])
+        self.assertIn(('delete', [int(done.ns('storage')['landed'][0]['id'])]), self.cloud.calls)
+
+    async def test_conflict_upgrade_replaces_lower_quality_file(self):
+        self.use_conflict('upgrade')
+        self.cloud.add_share('share', 'Show.S01E01.2160p.mkv')
+        existing, season = self.existing_library_file(size=500)
+        self.store.state_set('organizer', f"file:{existing['id']}", {'rank': 3, 'size': 500})  # 曾入库 1080p
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertNotIn(existing['id'], self.cloud.items)
+        landed = int(done.ns('storage')['landed'][0]['id'])
+        self.assertEqual([x['id'] for x in self.cloud.children(season)], [landed])
+        self.assertEqual(done.ns('organize')['conflicts'][0]['action'], 'upgrade')
+
+    async def test_conflict_upgrade_keeps_better_existing_file(self):
+        self.use_conflict('upgrade')
+        self.cloud.add_share('share', 'Show.S01E01.720p.mkv')
+        existing, season = self.existing_library_file(name='剧集 - S01E01.mkv', size=10**9)
+        self.store.state_set('organizer', f"file:{existing['id']}", {'rank': 4})
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual([x['id'] for x in self.cloud.children(season)], [existing['id']])
+
+    async def test_strm_files_point_to_signed_redirect(self):
+        from reelay.core.strm import sign
+        from reelay.plugins.strm import StrmGenerator
+        strm = StrmGenerator()
+        strm._auth = self.credentials
+        self.reg.add_hook(strm)
+        output = Path(self.tempdir.name) / 'strm'
+        self.cfg = {**self.cfg, 'plugins': {'strm': True},
+                    'strm': {'output_dir': str(output), 'base_url': 'http://nas:28080/'}}
+        self.pipeline = Pipeline(self.reg, self.store, self.cfg)
+        self.cloud.add_share('share', 'Show.S01E01.mkv')
+        with patch.dict(os.environ, {'REELAY_STRM_SECRET': 'secret'}):
+            done = await self.execute(self.task())
+            landed = int(done.ns('storage')['landed'][0]['id'])
+            expected = f'http://nas:28080/api/strm/p115/pc{landed}?sig={sign(f"pc{landed}")}'
+        self.assertEqual(done.state, TaskState.DONE)
+        target = output / '默认' / '剧集 (2026)' / 'Season 01' / '剧集 - S01E01.strm'
+        self.assertEqual(target.read_text(encoding='utf-8').strip(), expected)
+        self.assertEqual(done.ns('strm')['files'], ['默认/剧集 (2026)/Season 01/剧集 - S01E01.strm'])
 
     async def test_dedup_is_scoped_to_target_directory(self):
         self.cloud.add_share('share', 'S01E01.mkv')
@@ -575,7 +739,7 @@ class TestPersistenceBoundaries(unittest.TestCase):
     def test_episode_selection_distinguishes_seasons_including_specials(self):
         items = [{'id': 'one', 'name': 'S01E01.mkv'}, {'id': 'special', 'name': 'S00E01.mkv'}]
         p = ParsedResource(episodes=[1], season=0)
-        self.assertEqual(_select_video_items(items, p), [items[1]])
+        self.assertEqual([x['id'] for x in _select_video_items(items, p)['files']], ['special'])
         self.assertEqual(Store.episode_key('Show', None, 1), Store.episode_key('Show', 1, 1))
 
 

@@ -1,5 +1,4 @@
 """配置块、注册目录、目录浏览错误与长ID回归。全部写入临时目录。"""
-import json
 import os
 import unittest
 from types import SimpleNamespace
@@ -7,7 +6,6 @@ from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 from tests import test_web_api as web_tests
-from reelay.core.registry import Registry
 from reelay.core.config import normalize_config
 from reelay.web_storage import browse_dirs, StorageBrowseError
 
@@ -50,7 +48,7 @@ class TestConfigBlocks(unittest.TestCase):
             ui_fields=[{'path':'audit.level','label':'级别','type':'string','choices':['info','error']}])
         registry.add_listener(listener)
         res = self.client.get('/api/extensions')
-        self.assertEqual(res.json()['events'][0]['name'], 'test_audit')
+        self.assertIn('test_audit', [event['name'] for event in res.json()['events']])
         config = self.client.get('/api/config').json()
         response = self.client.patch('/api/config/sections', json={'revision':config['revision'], 'sections': {'plugins':{'test_audit':False},'audit':{'level':'info'}}})
         self.assertEqual(response.status_code,200,response.text)

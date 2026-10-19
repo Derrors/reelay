@@ -70,6 +70,7 @@ class ManagementService:
             "done": counts.get(TaskState.DONE.value, 0),
             "connections": connections,
             "runtime": health,
+            "alerts": self.store.active_alerts(),
             "deliveries": self.store.delivery_counts(),
             "config_revision": self.pipeline.revision,
             "simulation": dry_run,
@@ -155,6 +156,7 @@ class ManagementService:
             raise ConflictError("任务重试阶段无效，请核验检查点")
         ctx.state = next_state
         ctx.ns("task")["generation"] = ctx.ns("task").get("generation", 0) + 1
+        ctx.ns("task").pop("no_auto_retry", None)  # 人工已介入，之后的失败可再自动重试
         ctx.log("管理端请求重试")
         self._update(ctx, expected=TaskState.FAILED, reset_retries=True)
 
@@ -174,6 +176,7 @@ class ManagementService:
         ctx.meta.pop("parse", None)
         ctx.meta.pop("preference", None)
         ctx.meta.pop("storage", None)  # 无远端写检查点，显式重新解析可重新选择 Provider。
+        ctx.meta["parse_request"] = {"bypass_cache": True}  # 人工要求重新解析，不复用缓存结果
         ctx.state = TaskState.RECEIVED
         ctx.ns("task")["retry_from"] = TaskState.RECEIVED.value
         ctx.log("由管理端请求重新解析")

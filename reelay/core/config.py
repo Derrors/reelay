@@ -10,22 +10,29 @@ import re
 from pathlib import Path
 from typing import Any
 
+# 目录名带 [tmdbid=xxx]（Jellyfin/Emby 均可识别）：匹配到 TMDB 时刮削不再依赖标题猜测。
+DEFAULT_NAMING = {
+    "movie": "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/"
+             "{{ title }}{% if year %} ({{ year }}){% endif %}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}",
+    "tv": "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/"
+          "Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}",
+}
+CONFLICT_STRATEGIES = {"manual", "skip", "suffix", "upgrade"}
+
 _DEFAULT_CONFIG: dict[str, Any] = {
     "save_dirs": {"电影": "0", "剧集": "0", "动漫": "0", "默认": "0"},
     "forward": {"enabled": False, "target": "", "template": "{title} ({year}) {resolution}\n{link}"},
-    "organize": {"naming": {
-        "movie": "{{ title }} ({{ year|default('', true) }})/{{ title }} ({{ year|default('', true) }}){% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}",
-        "tv": "{{ title }} ({{ year|default('', true) }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}",
-    }},
+    "organize": {"naming": dict(DEFAULT_NAMING), "conflict": "manual"},
     "dir_router": {},
     "providers": {"source": "telegram", "notify": ["console"]},
     "plugins": {},
     "defaults": {"approval_mode": "manual", "parser": "llm", "decision": "default",
                  "storage": "p115", "save_to": "默认", "confidence_threshold": 0.5,
-                 "llm_response_format": "json_schema"},
+                 "llm_response_format": "json_schema", "episodes_from": "share"},
     "sources": [],
     "routing": [],
-    "approval": {"timeout_hours": 24, "on_timeout": "remind"},
+    "approval": {"timeout_hours": 24, "on_timeout": "remind", "reminder": "digest", "max_reminders": 3},
+    "schedule": {"daily_hour": 9},
 }
 
 
@@ -60,7 +67,8 @@ def normalize_config(data: Any) -> dict[str, Any]:
     # 目录列表是完整映射；不偷偷补回已删除的 CID=0 占位目录。
     if "save_dirs" in data:
         cfg["save_dirs"] = copy.deepcopy(data["save_dirs"])
-    for key in ("save_dirs", "defaults", "forward", "providers", "plugins", "organize", "dir_router", "approval"):
+    for key in ("save_dirs", "defaults", "forward", "providers", "plugins", "organize", "dir_router",
+                "approval", "schedule"):
         if not isinstance(cfg[key], dict):
             raise ValueError(f"{key} 必须是对象")
     dirs = cfg["save_dirs"]
@@ -127,6 +135,15 @@ def normalize_config(data: Any) -> dict[str, Any]:
         raise ValueError("approval.timeout_hours 必须大于零")
     if type(approval.get("on_timeout")) is not str or approval["on_timeout"] not in {"remind", "skip"}:
         raise ValueError("approval.on_timeout 必须为 remind 或 skip")
+    if approval.get("reminder") not in {"digest", "card"}:
+        raise ValueError("approval.reminder 必须为 digest（汇总）或 card（逐条卡片）")
+    if type(approval.get("max_reminders")) is not int or not 0 <= approval["max_reminders"] <= 100:
+        raise ValueError("approval.max_reminders 必须是 0 到 100 的整数（0 表示不限）")
+    hour = cfg["schedule"].get("daily_hour")
+    if type(hour) is not int or not 0 <= hour <= 23:
+        raise ValueError("schedule.daily_hour 必须是 0 到 23 的整数")
+    if cfg["organize"].get("conflict") not in CONFLICT_STRATEGIES:
+        raise ValueError("organize.conflict 必须为 manual、skip、suffix 或 upgrade")
     naming = cfg["organize"].get("naming")
     if not isinstance(naming, dict) or any(type(v) is not str or not v for v in naming.values()):
         raise ValueError("organize.naming 必须包含非空模板")
@@ -153,6 +170,8 @@ def _validate_rule(rule: dict, dirs: dict, label: str) -> None:
     fmt = rule.get("llm_response_format")
     if type(fmt) is not str or fmt not in {"json_schema", "json_object"}:
         raise ValueError(f"{label}.llm_response_format 必须为 json_schema 或 json_object")
+    if rule.get("episodes_from") not in {"share", "message"}:
+        raise ValueError(f"{label}.episodes_from 必须为 share（以分享文件为准）或 message（只转存消息声明的集）")
     threshold = rule.get("confidence_threshold")
     if type(threshold) not in (int, float) or not math.isfinite(threshold) or not 0 <= threshold <= 1:
         raise ValueError(f"{label}.confidence_threshold 必须在 0 到 1 之间")
