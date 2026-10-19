@@ -205,10 +205,16 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
             </div>
           </div>
 
-          {detail.error || organizeError ? (
+          {detail.error || organizeError || detail.explanation ? (
             <div className="flex gap-2.5 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">
               <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-              <span className="break-words">{organizeError || detail.error}</span>
+              <div className="min-w-0 space-y-1">
+                <p className="break-words">{detail.explanation?.text ?? (organizeError || detail.error)}</p>
+                {detail.explanation ? <p className="font-medium">建议：{detail.explanation.label}</p> : null}
+                {detail.explanation && (organizeError || detail.error) ? (
+                  <p className="break-words text-xs text-destructive/80">原始错误：{organizeError || detail.error}</p>
+                ) : null}
+              </div>
             </div>
           ) : null}
 

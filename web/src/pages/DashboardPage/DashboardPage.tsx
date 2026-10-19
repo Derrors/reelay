@@ -19,6 +19,7 @@ import { Realtime } from '@/lib/realtime';
 import { connectionLabels, modeLabels, TONE_CLASS, type Tone } from '@/lib/status';
 import type { IDashboard, IInboxItem, ITaskSummary } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { AiSuggestions } from './AiSuggestions';
 
 interface Snapshot {
   dashboard: IDashboard;
@@ -245,6 +246,8 @@ export default function DashboardPage() {
         </div>
 
         <div className="min-w-0 space-y-5">
+          <AiSuggestions />
+
           <Panel title="运行状态" icon={Activity}>
             {!d ? <Skeleton className="h-48" /> : (
               <>

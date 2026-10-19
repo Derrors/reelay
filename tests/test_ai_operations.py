@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from reelay.control.assistant import Assistant
 from reelay.control.bot import ControlBot
@@ -234,6 +239,49 @@ class TestFailureExplainer(Base):
         ctx.ns("task")["generation"] = 1
         self.store.save_task(ctx, error="无法从文件名识别集号：a.mp4")
         self.assertEqual((await self.run_on(ctx))["source"], "rule")
+
+
+class TestAiRoutes(unittest.TestCase):
+    """HTTP 层：新接口已注册、参数与错误码正确（不访问网络，未配置 AI）。"""
+
+    def setUp(self):
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:  # pragma: no cover
+            self.skipTest("未安装 web 可选依赖")
+        from reelay.web import create_app
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.env = patch.dict(os.environ, {}, clear=True)
+        self.env.start()
+        self.loader = patch("reelay.web.load_env")
+        self.loader.start()
+        (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
+                                          encoding="utf-8")
+        self.client = TestClient(create_app(db_path=str(root / "t.db"), config_path=str(root / "config.yaml")))
+        self.client.__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+        self.loader.stop()
+        self.env.stop()
+        self.temp.cleanup()
+
+    def test_routes_answer_without_ai(self):
+        for path in ("/api/insights", "/api/ai/usage", "/api/subscriptions", "/api/sources/quality",
+                     "/api/library/query?media_type=anime", "/api/library/missing"):
+            self.assertEqual(self.client.get(path).status_code, 200, path)
+        self.assertEqual(self.client.get("/api/library/query?min_resolution=8k").status_code, 422)
+        self.assertEqual(self.client.post("/api/ai/compile-rules", json={"text": "国产剧"}).status_code, 409)
+        self.assertEqual(self.client.post("/api/sources/draft", json={"bot": "@x", "samples": ["a"]}).status_code, 409)
+        self.assertEqual(self.client.post("/api/inbox/advice", json={"task_ids": ["x"]}).json(), {"items": {}})
+        added = self.client.post("/api/subscriptions", json={"title": "剧", "season": 2})
+        self.assertEqual(added.json()["subscription"], {"title": "剧", "season": 2})
+        self.assertEqual(self.client.post("/api/subscriptions", json={"title": "剧", "season": 2}).status_code, 409)
+        self.assertEqual(self.client.post("/api/subscriptions/remove", json={"title": "剧", "season": 2}).status_code, 200)
+        self.assertEqual(self.client.post("/api/subscriptions/from-task/missing").status_code, 404)
+        self.assertEqual(self.client.post("/api/insights/auto-approve", json={"source": "@new"}).json()["config"]["sources"],
+                         [{"bot": "@new", "approval_mode": "auto"}])
 
 
 class TestDailyNarrative(Base):

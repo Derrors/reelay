@@ -1,5 +1,5 @@
 import {
-  ChartColumn, ChevronRight, Clapperboard, FolderCog, FolderTree, Inbox, LayoutDashboard, LibraryBig,
+  BellRing, ChartColumn, ChevronRight, Clapperboard, FolderCog, FolderTree, Inbox, LayoutDashboard, LibraryBig,
   ListChecks, LogOut, Menu, Puzzle, ScanSearch, ScrollText, Settings2, Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -30,6 +30,7 @@ const PRIMARY: NavEntry[] = [
 ];
 const MEDIA: NavEntry[] = [
   { path: '/library', label: '媒体库', icon: LibraryBig },
+  { path: '/subscriptions', label: '追剧订阅', icon: BellRing },
   { path: '/stats', label: '统计', icon: ChartColumn },
 ];
 const SYSTEM: NavEntry[] = [

@@ -175,7 +175,7 @@ class TestVersionsAndAdvice(Base):
         base = {"fallback": False, "caps": [], "confidence": 1.0, "version": "1080p", "subscribed": False,
                 "episodes": [3], "stored_episodes": [1, 2], "new_episodes": [3]}
         self.assertEqual(inbox.action(base, 0.5), "approve")
-        self.assertEqual(inbox.rule_text(base, "approve"), "已入库 E01-E02；这是 E03 的 1080p 版")
+        self.assertEqual(inbox.rule_text(base, "approve"), "已入库 E01-E02；这是 E03（1080p）")
         self.assertEqual(inbox.action({**base, "new_episodes": []}, 0.5), "reject")
         self.assertEqual(inbox.action({**base, "caps": ["tmdb_unmatched"]}, 0.5), "review")
         self.assertEqual(inbox.action({**base, "versions": {"count": 2, "best": False}}, 0.5), "reject")

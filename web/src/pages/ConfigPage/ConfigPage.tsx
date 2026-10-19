@@ -157,6 +157,24 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
     }
   };
 
+  /** 保存 AI 起草、用户确认过的配置块（一句话生成规则）；页面没有未保存的修改时才可调用。 */
+  const applySections = async (sections: Record<string, unknown>, revision: string) => {
+    if (!data) return false;
+    setBusy(true);
+    try {
+      const r = await api.saveSections(sections, revision);
+      setData({ ...data, config: r.config, revision: r.revision });
+      setConfig(r.config);
+      setErrors([]);
+      return true;
+    } catch (e) {
+      toast.error(message(e, '保存失败'));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** 插件开关即时保存，只提交 plugins，不带上页面上其他未保存的修改。 */
   const toggleExtension = async (x: IExtension, enabled: boolean) => {
     if (!data || busy) return;
@@ -242,6 +260,7 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
                 <BasicTab
                   config={config} catalog={catalog} update={update} setField={setField} dirNames={dirNames}
                   rememberDir={(id, name) => setDirNames(prev => ({ ...prev, [id]: name }))}
+                  dirty={dirty} applySections={applySections}
                 />
               </TabsContent>
               <TabsContent value="sources">

@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { approvalLabels } from '@/lib/status';
 import { cn } from '@/lib/utils';
 import { Field, RadioCards, SwitchRow } from './fields';
+import { RuleComposer } from './RuleComposer';
 import { APPROVAL_HINTS, APPROVAL_OPTIONS, obj, providerLabel, rows, text, type Catalog, type Obj } from './shared';
 
 const FORWARD_TOKENS: Array<[string, string]> = [
@@ -25,6 +26,10 @@ interface BasicTabProps {
   /** 目录编号 → 名称；null 表示读取失败，缺省表示读取中。 */
   dirNames: Record<string, string | null>;
   rememberDir: (id: string, name: string) => void;
+  /** 页面上是否有未保存的修改。 */
+  dirty: boolean;
+  /** 直接保存 AI 起草、用户确认过的配置块；成功返回 true。 */
+  applySections: (sections: Record<string, unknown>, revision: string) => Promise<boolean>;
 }
 
 function Tag({ children, muted }: { children: React.ReactNode; muted?: boolean }) {
@@ -36,7 +41,7 @@ function Tag({ children, muted }: { children: React.ReactNode; muted?: boolean }
   );
 }
 
-export function BasicTab({ config, catalog, update, setField, dirNames, rememberDir }: BasicTabProps) {
+export function BasicTab({ config, catalog, update, setField, dirNames, rememberDir, dirty, applySections }: BasicTabProps) {
   const dirs = obj(config.save_dirs);
   const defaults = obj(config.defaults);
   const forward = obj(config.forward);
@@ -160,6 +165,8 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
           {addError ? <p className="mt-2 text-xs text-destructive">{addError}</p> : null}
         </div>
       </Panel>
+
+      <RuleComposer config={config} dirty={dirty} onApply={applySections} />
 
       <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
         <Panel icon={ShieldCheck} title="默认处理方式" description="监听来源没有单独设置时，按这里的规则处理新资源。" bodyClassName="p-4 sm:p-5">

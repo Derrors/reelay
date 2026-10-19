@@ -1,6 +1,9 @@
-import { AlertTriangle, Check, CheckCheck, FolderTree, Inbox, Search, ShieldCheck, Sparkles, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle, BellPlus, Check, CheckCheck, FolderTree, Inbox, Lightbulb, Search, ShieldCheck, Sparkles, Wand2, X,
+} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { ai } from '@/api/ai';
 import { api } from '@/api/client';
 import { extras } from '@/api/extras';
 import { EmptyState } from '@/components/app/EmptyState';
@@ -15,9 +18,28 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { fullTime, relativeTime } from '@/lib/format';
 import { Realtime } from '@/lib/realtime';
-import { CONFIDENCE_CAP_LABELS, type Tone } from '@/lib/status';
-import type { IInboxItem, IShareProbe } from '@/lib/types';
+import { CONFIDENCE_CAP_LABELS, TONE_CLASS, type Tone } from '@/lib/status';
+import type { AdviceAction, IAdvice, IInboxItem, IShareProbe } from '@/lib/types';
 import { cn } from '@/lib/utils';
+
+const ADVICE_TONE: Record<AdviceAction, Tone> = { approve: 'success', reject: 'neutral', review: 'warning' };
+
+/** 建议动作与理由：动作由规则根据事实决定，AI 只负责把理由写通顺。 */
+function AdviceLine({ advice }: { advice: IAdvice }) {
+  const tone = TONE_CLASS[ADVICE_TONE[advice.action]];
+  return (
+    <div className={cn('mt-2 flex items-start gap-2 rounded-lg px-2.5 py-1.5 text-xs leading-5', tone.soft)}>
+      <Lightbulb className={cn('mt-0.5 size-3.5 shrink-0', tone.text)} />
+      <span className="min-w-0">
+        <b className={cn('font-medium', tone.text)}>{advice.label}</b>
+        <span className="text-foreground/80">：{advice.text}</span>
+        {advice.source === 'ai' ? <span className="ml-1.5 text-[10px] text-muted-foreground" title="由 AI 按同样的事实措辞">AI</span> : null}
+      </span>
+    </div>
+  );
+}
+
+const episodic = (item: IInboxItem) => item.media_type === 'tv' || item.media_type === 'anime' || item.episodes.length > 0;
 
 type Tab = 'pending_approval' | 'need_manual';
 type Sort = 'newest' | 'oldest' | 'confidence';
@@ -79,13 +101,16 @@ interface CardProps {
   onToggle: () => void;
   onOpen: () => void;
   onAct: (action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string) => void;
+  onSubscribe: () => void;
 }
 
-function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onAct }: CardProps) {
+function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onAct, onSubscribe }: CardProps) {
   const [dir, setDir] = useState('');  // 空值 = 按自动分类存放
   const manual = item.state === 'need_manual';
   const autoTarget = item.auto_path ?? item.auto_dir ?? '按分类';
   const share = shareBadge(item.share);
+  const suggested = item.advice?.action;
+  const canSubscribe = !manual && episodic(item) && item.tmdb_matched === true && !item.subscribed;
   return (
     <article className={cn(
       'group relative flex gap-4 rounded-xl border border-card-border bg-card p-4 shadow-xs transition-shadow hover:shadow-md',
@@ -114,12 +139,25 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
         </div>
         <MediaMeta mediaType={item.media_type} season={item.season} episodes={item.episodes} pairs={item.episode_pairs}
           resolution={item.resolution} size={item.size} className="mt-0.5" />
+        {item.release_tags?.length ? (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {item.release_tags.map((tag) => (
+              <span key={tag} className="rounded bg-muted px-1.5 text-[11px] leading-[18px] text-muted-foreground">{tag}</span>
+            ))}
+          </div>
+        ) : null}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span className="min-w-0 truncate">{item.source} · <span title={fullTime(item.created_at)}>{relativeTime(item.created_at)}</span></span>
           {!manual ? <ConfidenceBar value={item.confidence} /> : null}
         </div>
-        {!manual && (item.fallback || item.confidence_caps.length || share) ? (
+        {!manual && (item.fallback || item.confidence_caps.length || share || item.version || item.subscribed) ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
+            {item.version ? (
+              <ToneBadge tone={item.version.best ? 'success' : 'neutral'}>
+                {item.version.best ? `推荐版本 · 共 ${item.version.count} 个版本` : `另有更合适的版本（共 ${item.version.count} 个）`}
+              </ToneBadge>
+            ) : null}
+            {item.subscribed ? <ToneBadge tone="info">已订阅</ToneBadge> : null}
             {share ? <span title={share.title}><ToneBadge tone={share.tone}>{share.label}</ToneBadge></span> : null}
             {item.fallback ? <ToneBadge tone="warning">AI 识别降级</ToneBadge> : null}
             {item.confidence_caps.filter((c) => c !== 'parse_fallback').map((cap) => (
@@ -130,11 +168,23 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
         {manual ? (
           <div className="mt-2 flex gap-2 rounded-lg bg-destructive/5 px-2.5 py-2 text-xs leading-5 text-destructive">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-            <span className="line-clamp-3 break-words">{item.organize_error || item.error || '需要人工确认处理结果'}</span>
+            {item.explanation ? (
+              <span className="min-w-0 break-words">
+                {item.explanation.text}
+                <span className="mt-0.5 block font-medium">建议：{item.explanation.label}</span>
+              </span>
+            ) : (
+              <span className="line-clamp-3 break-words">{item.organize_error || item.error || '需要人工确认处理结果'}</span>
+            )}
           </div>
-        ) : item.preview ? (
-          <p className="mt-2 line-clamp-2 whitespace-pre-line border-l-2 border-border pl-2 text-xs leading-5 text-muted-foreground">{item.preview}</p>
-        ) : null}
+        ) : (
+          <>
+            {item.advice ? <AdviceLine advice={item.advice} /> : null}
+            {item.preview ? (
+              <p className="mt-2 line-clamp-2 whitespace-pre-line border-l-2 border-border pl-2 text-xs leading-5 text-muted-foreground">{item.preview}</p>
+            ) : null}
+          </>
+        )}
 
         <div className="mt-auto flex items-center justify-end gap-2 pt-3">
           {!manual ? (
@@ -146,11 +196,19 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
                   placeholder={`自动 · ${autoTarget}`}
                   options={dirs.map((d) => ({ value: d, label: dirPaths[d] ? `${d}（${dirPaths[d]}）` : d }))} />
               ) : null}
+              {canSubscribe ? (
+                <Button size="sm" variant="ghost" disabled={busy} onClick={onSubscribe} title="订阅这部剧这一季，之后的新集自动转存"
+                  aria-label="追这部剧" className="shrink-0 px-2 text-muted-foreground hover:text-primary">
+                  <BellPlus /><span className="max-lg:hidden">追这部剧</span>
+                </Button>
+              ) : null}
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAct('reject')} aria-label="忽略"
-                className="shrink-0 px-2 text-muted-foreground hover:text-destructive sm:px-3">
+                className={cn('shrink-0 px-2 text-muted-foreground hover:text-destructive sm:px-3',
+                  suggested === 'reject' && 'bg-muted text-foreground')}>
                 <X /><span className="max-sm:hidden">忽略</span>
               </Button>
-              <Button size="sm" disabled={busy} onClick={() => onAct('approve', dir || undefined)} className="shrink-0"><Check />转存</Button>
+              <Button size="sm" disabled={busy} onClick={() => onAct('approve', dir || undefined)}
+                variant={suggested === 'reject' ? 'outline' : 'default'} className="shrink-0"><Check />转存</Button>
             </>
           ) : (
             <>
@@ -200,6 +258,23 @@ export default function InboxPage() {
     return () => { active = false; realtime.stop(); };
   }, [apply, load]);
 
+  // 规则理由先显示，再请求 AI 按同样的事实措辞（服务端按事实缓存；事实变化时理由也会变，再请求一次）。
+  const phrased = useRef(new Set<string>());
+  useEffect(() => {
+    const ids = (data.pending_approval ?? [])
+      .filter((i) => i.advice?.source === 'rule' && !phrased.current.has(`${i.task_id}:${i.advice.text}`))
+      .slice(0, 30);
+    if (!ids.length) return;
+    ids.forEach((i) => phrased.current.add(`${i.task_id}:${i.advice!.text}`));
+    ai.advice(ids.map((i) => i.task_id)).then(({ items: phrasedItems }) => {
+      if (!Object.keys(phrasedItems).length) return;
+      setData((prev) => ({
+        ...prev,
+        pending_approval: (prev.pending_approval ?? []).map((i) => (phrasedItems[i.task_id] ? { ...i, advice: phrasedItems[i.task_id] } : i)),
+      }));
+    }).catch(() => undefined);  // 只影响措辞，规则理由照常显示
+  }, [data.pending_approval]);
+
   const items = useMemo(() => {
     const list = [...(data[tab] ?? [])];
     const q = query.trim().toLowerCase();
@@ -229,8 +304,7 @@ export default function InboxPage() {
     }
   };
 
-  const batch = async (action: 'approve' | 'reject') => {
-    const ids = [...selected];
+  const batch = async (action: 'approve' | 'reject', ids: string[] = [...selected]) => {
     if (!ids.length) return;
     setBusy(new Set(ids));
     try {
@@ -243,6 +317,35 @@ export default function InboxPage() {
       toast.error(err instanceof Error ? err.message : '批量操作失败');
     } finally {
       setBusy(new Set());
+    }
+  };
+
+  /** 所选条目里建议批准的批准、建议忽略的忽略；「需要你看一下」的留着。 */
+  const followAdvice = async () => {
+    const chosen = (data.pending_approval ?? []).filter((i) => selected.has(i.task_id));
+    const approve = chosen.filter((i) => i.advice?.action === 'approve').map((i) => i.task_id);
+    const reject = chosen.filter((i) => i.advice?.action === 'reject').map((i) => i.task_id);
+    if (!approve.length && !reject.length) { toast.info('所选条目都需要你看一下，没有可直接处理的'); return; }
+    if (approve.length) await batch('approve', approve);
+    if (reject.length) await batch('reject', reject);
+  };
+
+  const subscribe = async (item: IInboxItem) => {
+    setBusy((prev) => new Set(prev).add(item.task_id));
+    try {
+      const { subscription, pending } = await ai.subscribeFromTask(item.task_id);
+      const label = `《${subscription.title}》第 ${subscription.season} 季`;
+      setData((prev) => ({ ...prev, pending_approval: (prev.pending_approval ?? []).map((i) => (
+        pending.includes(i.task_id) ? { ...i, subscribed: true } : i)) }));
+      toast.success(`已订阅${label}，之后的新集会自动转存`, pending.length ? {
+        description: `待审批里还有 ${pending.length} 条属于这部剧`,
+        action: { label: `一并转存 ${pending.length} 条`, onClick: () => { void batch('approve', pending); } },
+        duration: 10000,
+      } : undefined);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '订阅失败');
+    } finally {
+      setBusy((prev) => { const next = new Set(prev); next.delete(item.task_id); return next; });
     }
   };
 
@@ -300,6 +403,12 @@ export default function InboxPage() {
               <Select value={batchDir} onValueChange={setBatchDir} placeholder="各自按分类存放" aria-label="批量保存目录"
                 options={dirs.map((d) => ({ value: d, label: `改存到「${d}」` }))} className="hidden w-40 md:block" />
             ) : null}
+            {(data.pending_approval ?? []).some((i) => i.advice) ? (
+              <Button size="sm" variant="outline" disabled={!selected.size || busy.size > 0} onClick={() => void followAdvice()}
+                title="所选条目按各自的建议批准或忽略；需要你看一下的保留">
+                <Wand2 />按建议<span className="max-sm:hidden">处理</span>
+              </Button>
+            ) : null}
             <Button size="sm" variant="outline" disabled={!selected.size || busy.size > 0} onClick={() => void batch('reject')}>
               <X />忽略<span className="max-sm:hidden">所选</span>
             </Button>
@@ -337,6 +446,7 @@ export default function InboxPage() {
               })}
               onOpen={() => setOpenId(item.task_id)}
               onAct={(action, dir) => void act(item, action, dir)}
+              onSubscribe={() => void subscribe(item)}
             />
           ))}
         </div>

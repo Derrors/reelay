@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { ChevronDown, Plus, Radio, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ChevronDown, Plus, Radio, SlidersHorizontal, Sparkles, Trash2, TrendingUp } from 'lucide-react';
+import { ai, percent, type ISourceInsight } from '@/api/ai';
 import { EmptyState } from '@/components/app/EmptyState';
 import { Panel } from '@/components/app/Panel';
 import { Select, type SelectOption } from '@/components/app/Select';
@@ -8,7 +9,8 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { approvalLabels, approvalShortLabels } from '@/lib/status';
 import { cn } from '@/lib/utils';
-import { Field, LinesField } from './fields';
+import { Field, LinesField, Notice } from './fields';
+import { SourceWizard } from './SourceWizard';
 import {
   APPROVAL_OPTIONS, SLOT_LABELS, obj, providerLabel, prune, rows, strings, text, type Catalog, type Obj,
 } from './shared';
@@ -27,12 +29,14 @@ interface SourceCardProps {
   aliases: string[];
   catalog: Catalog | null;
   open: boolean;
+  /** 人工裁决统计与「改为自动转存」建议。 */
+  insight?: ISourceInsight;
   onToggle: () => void;
   onChange: (patch: Obj) => void;
   onRemove: () => void;
 }
 
-function SourceCard({ index, source, defaults, aliases, catalog, open, onToggle, onChange, onRemove }: SourceCardProps) {
+function SourceCard({ index, source, defaults, aliases, catalog, open, insight, onToggle, onChange, onRemove }: SourceCardProps) {
   const name = text(source.bot).trim();
   const filters = obj(source.filters);
   const mode = text(source.approval_mode || defaults.approval_mode);
@@ -64,6 +68,12 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, onToggle,
       )}
       bodyClassName="p-4 sm:p-5"
     >
+      {insight?.suggest_auto && mode === 'manual' ? (
+        <Notice tone="success" icon={TrendingUp} title="可以考虑改为自动转存" className="mb-4"
+          action={<Button size="sm" variant="outline" className="bg-card" onClick={() => onChange({ approval_mode: 'auto' })}>改为自动转存</Button>}>
+          {insight.reason}。切换后仍要通过过滤规则、置信度、TMDB 匹配与分享清单校验，拿不准的照样交给你。
+        </Notice>
+      ) : null}
       <div className="grid gap-4 md:grid-cols-3">
         <Field label="Bot 或频道">
           <Input
@@ -89,6 +99,12 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, onToggle,
         </Field>
       </div>
 
+      {insight?.decisions ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          最近 {insight.decisions} 次确认：批准 {percent(insight.approve_rate)}，修正识别 {insight.corrected} 次
+          {insight.advised ? `，按建议处理 ${insight.followed}/${insight.advised}` : ''}
+        </p>
+      ) : null}
       <div className="mt-4 border-t border-border/70 pt-3">
         <button
           type="button" onClick={onToggle} aria-expanded={open}
@@ -149,6 +165,21 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
   const defaults = obj(config.defaults);
   const aliases = Object.keys(obj(config.save_dirs));
   const [open, setOpen] = useState<Set<number>>(new Set());
+  const [wizard, setWizard] = useState(false);
+  const [insights, setInsights] = useState<Record<string, ISourceInsight>>({});
+  useEffect(() => {
+    let active = true;
+    ai.insights()
+      .then((r) => { if (active) setInsights(Object.fromEntries(r.sources.map((x) => [x.source.toLowerCase(), x]))); })
+      .catch(() => undefined);  // 只影响提示
+    return () => { active = false; };
+  }, []);
+  const addDraft = (draft: Obj) => {
+    const name = text(draft.bot).trim().toLowerCase();
+    const kept = sources.filter((s) => text(s.bot).trim().toLowerCase() !== name);
+    update('sources', [...kept, draft]);
+  };
+  const wizardDialog = <SourceWizard open={wizard} onOpenChange={setWizard} onAdd={addDraft} />;
 
   const add = () => {
     const index = sources.length;
@@ -175,7 +206,13 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
         icon={Radio}
         title="还没有监听来源"
         description="添加要盯的 Telegram 资源 Bot 或频道，Reelay 只会处理来自这些来源的消息。"
-        action={<Button onClick={add}><Plus />添加来源</Button>}
+        action={(
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button variant="outline" onClick={() => setWizard(true)}><Sparkles />用样例消息接入</Button>
+            <Button onClick={add}><Plus />添加来源</Button>
+            {wizardDialog}
+          </div>
+        )}
         className="bg-card"
       />
     );
@@ -187,8 +224,14 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
         <p className="text-[13px] leading-6 text-muted-foreground">
           共 <b className="font-semibold tabular-nums text-foreground">{sources.length}</b> 个来源。每个来源可以单独设置确认方式与保存位置，未设置的项沿用「基础」中的默认规则。
         </p>
-        <Button className="shrink-0 self-start sm:self-auto" onClick={add}><Plus />添加来源</Button>
+        <div className="flex shrink-0 gap-2 self-start sm:self-auto">
+          <Button variant="outline" onClick={() => setWizard(true)} title="贴几条样例消息，AI 起草这个来源的规则并试跑">
+            <Sparkles />用样例消息接入
+          </Button>
+          <Button onClick={add}><Plus />添加来源</Button>
+        </div>
       </div>
+      {wizardDialog}
       {sources.map((source, i) => (
         <SourceCard
           key={i}
@@ -198,6 +241,7 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
           aliases={aliases}
           catalog={catalog}
           open={open.has(i)}
+          insight={insights[text(source.bot).trim().toLowerCase()]}
           onToggle={() => toggle(i)}
           onChange={patch => update('sources', sources.map((s, n) => (n === i ? prune({ ...s, ...patch }) : s)))}
           onRemove={() => remove(i)}

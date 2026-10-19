@@ -16,6 +16,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { STATE_META } from '@/lib/status';
 import type { TaskState } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { AiUsagePanel, SourceQualityPanel } from './AiPanels';
 
 /* ---------------- 图表配色：只取主题变量 ---------------- */
 
@@ -533,6 +534,8 @@ export default function StatsPage() {
           <TopTitles titles={data.top_titles ?? []} />
           <Distribution view={view} stats={data} />
         </div>
+        <SourceQualityPanel days={range} />
+        <AiUsagePanel days={range} />
       </div>
     );
   }

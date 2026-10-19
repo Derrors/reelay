@@ -16,6 +16,7 @@ const SourcesPage = lazy(() => import('@/pages/SourcesPage/SourcesPage'));
 const OrganizePage = lazy(() => import('@/pages/OrganizePage/OrganizePage'));
 const StoragePage = lazy(() => import('@/pages/StoragePage/StoragePage'));
 const LogsPage = lazy(() => import('@/pages/LogsPage/LogsPage'));
+const SubscriptionsPage = lazy(() => import('@/pages/SubscriptionsPage/SubscriptionsPage'));
 
 export default function App() {
   const [needAuth, setNeedAuth] = useState<boolean | null>(null);
@@ -50,6 +51,7 @@ export default function App() {
         <Route path="sources" element={<SourcesPage />} />
         <Route path="stats" element={<StatsPage />} />
         <Route path="library" element={<LibraryPage />} />
+        <Route path="subscriptions" element={<SubscriptionsPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
     </Routes>

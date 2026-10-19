@@ -150,6 +150,56 @@ export interface IInboxItem {
   storage_phase: string | null;
   has_landed: boolean;
   organize_error: string | null;
+  /** 以下只在待确认（pending_approval）里返回。 */
+  release?: IRelease;
+  /** 版本信息的中文标签，如 ["简体中字", "内封字幕", "杜比视界"]。 */
+  release_tags?: string[];
+  /** 同一集（或同一部电影）有多个待确认版本时的择优结果；只有一个版本时为 null。 */
+  version?: IVersionPick | null;
+  /** 是否属于已订阅的剧。 */
+  subscribed?: boolean;
+  /** 审批建议；关闭建议（ai.advice=false）时为 null。 */
+  advice?: IAdvice | null;
+  /** 待人工任务的失败解释（失败解释扩展写入）。 */
+  explanation?: IExplanation | null;
+}
+
+export interface IRelease {
+  subtitles: string[];
+  subtitle_format: string | null;
+  audio: string[];
+  hdr: string[];
+  source: string | null;
+  codec: string | null;
+  packaging: string | null;
+  group: string | null;
+}
+
+export interface IVersionPick {
+  count: number;
+  best: boolean;
+  best_task_id: string;
+}
+
+export type AdviceAction = 'approve' | 'reject' | 'review';
+
+export interface IAdvice {
+  action: AdviceAction;
+  /** 「建议批准」「建议忽略」「需要你看一下」。 */
+  label: string;
+  text: string;
+  /** rule：规则写的理由；ai：AI 按同样的事实措辞。 */
+  source: 'rule' | 'ai';
+}
+
+export interface IExplanation {
+  action: string;
+  /** 建议的操作，如「核验转存」「修正片名或季集后重新整理」。 */
+  label: string;
+  text: string;
+  source: 'rule' | 'ai';
+  state: TaskState;
+  at: number;
 }
 
 export interface ITaskContext {
@@ -177,6 +227,8 @@ export interface ITaskDetail extends ITaskSummary {
   context: ITaskContext;
   auto_dir?: string | null;
   auto_path?: string | null;
+  /** 失败或待人工任务的原因与建议操作。 */
+  explanation?: IExplanation | null;
 }
 
 export interface IExtensionField {

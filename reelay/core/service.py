@@ -449,8 +449,7 @@ class ManagementService:
             suggest = (mode == "manual" and decisions >= rule["min_decisions"]
                        and approve_rate >= rule["approve_rate"] and correct_rate <= rule["max_correct_rate"])
             if suggest:
-                reason = (f"最近 {decisions} 次确认中批准 {item['approved']} 次（{approve_rate:.0%}），"
-                          f"修正识别 {item['corrected']} 次，可以考虑改为自动转存")
+                reason = f"最近 {decisions} 次确认中批准 {item['approved']} 次（{approve_rate:.0%}），修正识别 {item['corrected']} 次"
             elif mode != "manual":
                 reason = "已是自动转存"
             elif decisions < rule["min_decisions"]:

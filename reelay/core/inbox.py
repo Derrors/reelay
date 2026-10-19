@@ -61,7 +61,7 @@ def _episodes_text(episodes: list[int]) -> str:
 def version_label(p) -> str:
     parts = [p.resolution] if p.resolution else []
     parts += release.describe(p.release)[:3]
-    return " ".join(parts)
+    return " · ".join(parts)
 
 
 def facts(ctx: PipelineContext, *, stored: dict, versions: dict, subscribed: bool, movie_titles: set) -> dict[str, Any]:
@@ -121,10 +121,11 @@ def rule_text(f: dict, act: str) -> str:
         else:
             parts.append(f"同一集还有 {f['versions']['count'] - 1} 个版本，另一个更符合偏好")
     else:
+        version = f"（{f['version']}）" if f["version"] else ""
         if f.get("new_episodes"):
-            parts.append(f"这是 {_episodes_text(f['new_episodes'])}" + (f" 的 {f['version']} 版" if f["version"] else ""))
+            parts.append(f"这是 {_episodes_text(f['new_episodes'])}{version}")
         else:
-            parts.append("库里还没有" + (f"，这是 {f['version']} 版" if f["version"] else ""))
+            parts.append(f"库里还没有{version}")
         if f.get("versions"):
             parts.append(f"同一集 {f['versions']['count']} 个版本中最符合偏好")
         if f["subscribed"]:
