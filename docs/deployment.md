@@ -24,7 +24,7 @@ docker compose ps
 
 ## 外部扩展
 
-`deploy/plugins` 以只读方式挂载到 `/app/plugins`，放入的 `*.py` 文件或包目录在启动时被发现，按 `@register` 声明挂到 Provider/Hook/Event 扩展点，修改后 `docker compose restart` 即可，无需重建镜像。扩展以 Reelay 进程权限运行，只放入你信任的代码。导入失败不影响内置能力，错误显示在管理台「插件与扩展」。
+`deploy/plugins` 以只读方式挂载到 `/app/plugins`，放入的 `*.py` 文件或包目录在启动时被发现，按 `@register` 声明挂到 Provider/Hook/Event 扩展点，修改后 `docker compose restart` 即可，无需重建镜像。扩展以 Reelay 进程权限运行，只放入你信任的代码。导入失败不影响内置能力，错误显示在管理台「插件」页。
 
 个人账号监听与控制 Bot 使用不同的 session 文件。Compose 固定把 session 和业务数据库放在 `/app/data`，把配置放在 `/app/config/config.yaml`，覆盖 `.env` 中的这些路径。控制 Bot 尚未配置时，审批与故障通知写控制台，任务仍可在 Web 审批；日志输出不是 Telegram 消息投递成功。
 

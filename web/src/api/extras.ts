@@ -1,6 +1,6 @@
 // ===== 控制台增强 API：鉴权 / 日志 / 115 浏览 / 源测试 / 统计 =====
 import type { IParsedResource } from '@/lib/types';
-import { apiUrl } from './client';
+import { ApiError, apiUrl } from './client';
 
 function authHeaders(): Record<string, string> {
   return {}; // cookie 由浏览器自动携带
@@ -9,10 +9,9 @@ function authHeaders(): Record<string, string> {
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(apiUrl(path), {
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...init?.headers, ...authHeaders() },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...init?.headers, ...authHeaders() },
   });
-  if (r.status === 401) throw new Error('登录已失效，请重新登录控制台');
   if (!r.ok) {
     let msg = `请求失败（${r.status}）`;
     try {
@@ -20,11 +19,20 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       if (typeof detail === 'string') msg = detail;
       else if (Array.isArray(detail)) msg = detail.map((x: { msg?: string }) => x.msg ?? '输入无效').join('；');
     } catch { /* 非JSON响应沿用状态码 */ }
-    throw new Error(msg);
+    // 登录接口的 401 是“密码错误”，保留后端文案；其他接口的 401 表示会话失效
+    if (r.status === 401 && path !== 'auth/login') msg = '登录已失效，请重新登录控制台';
+    throw new ApiError(msg, r.status);
   }
   return r.json() as Promise<T>;
 }
 
+/** 识别测试：与真实管线一致的解析、置信度与决策；非影视消息的 confidence 只有 note。 */
+export interface ITestParseResp {
+  parsed: IParsedResource | null;
+  decision: string;
+  confidence: { score: number; checks?: Record<string, boolean>; caps?: string[]; note?: string } | null;
+  trail: string[];
+}
 export interface IAuthStatus { auth_required: boolean; authenticated?: boolean }
 export interface ILogResp { lines: string[]; path: string; exists: boolean }
 export interface IDirItem { id: string; name: string; pid?: string | null }
@@ -104,7 +112,7 @@ export const extras = {
   dirs: (cid: string, offset = 0) => req<{ items: IDirItem[]; path: IDirItem[]; next_offset: number | null; via: string }>(`storage/dirs?cid=${encodeURIComponent(cid)}&offset=${offset}`),
   sources: () => req<ISourcesResp>('sources'),
   testParse: (text: string, urls: string[], source?: string) =>
-    req<{ parsed: IParsedResource | null; decision: string }>('sources/test-parse', {
+    req<ITestParseResp>('sources/test-parse', {
       method: 'POST', body: JSON.stringify({ text, urls, source }),
     }),
   stats: (days = 30) => req<IStatsResp>(`stats?days=${days}`),
@@ -115,15 +123,16 @@ export const extras = {
     return req<IAdvancedResp>(`tasks/advanced?${p.toString()}`);
   },
   storageFile: (fid: number | string) => req<IStorageFile>(`storage/file?fid=${fid}`),
-  batch: (taskIds: string[], action: 'approve' | 'reject' | 'retry') =>
+  batch: (taskIds: string[], action: 'approve' | 'reject' | 'retry', saveDirAlias?: string) =>
     req<{ done: number; failed: Array<{ task_id: string; error: string }> }>('tasks/batch', {
-      method: 'POST', body: JSON.stringify({ task_ids: taskIds, action }),
+      method: 'POST', body: JSON.stringify({ task_ids: taskIds, action, save_dir_alias: saveDirAlias || null }),
     }),
 };
 
 export interface ITitleGroup {
   title: string; media_type: string | null; year: number | null;
   episodes: number[]; tasks: number; bytes: number;
+  poster_path: string | null; save_dir_alias: string | null; files: string[]; updated_at: number;
 }
 export interface IAdvancedResp {
   groups: ITitleGroup[]; total_done: number; estimated_gb: number;
@@ -132,17 +141,3 @@ export interface IStorageFile {
   id: string; name: string; size: number | null; sha1: string | null;
   parent_id: number | null; is_dir?: boolean; pickcode?: string | null;
 }
-
-Object.assign(extras, {
-  advancedTasks: (q?: string, mediaType?: string) => {
-    const p = new URLSearchParams();
-    if (q) p.set('q', q);
-    if (mediaType) p.set('media_type', mediaType);
-    return req<IAdvancedResp>(`tasks/advanced?${p.toString()}`);
-  },
-  storageFile: (fid: number | string) => req<IStorageFile>(`storage/file?fid=${fid}`),
-  batch: (taskIds: string[], action: 'approve' | 'reject' | 'retry') =>
-    req<{ done: number; failed: Array<{ task_id: string; error: string }> }>('tasks/batch', {
-      method: 'POST', body: JSON.stringify({ task_ids: taskIds, action }),
-    }),
-});

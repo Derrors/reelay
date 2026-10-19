@@ -1,445 +1,545 @@
-import { useEffect, useMemo, useState } from 'react';
-import {
-  HardDrive, CheckCircle2, Loader2, TrendingUp, Crown, Trophy,
-  type LucideIcon,
-} from 'lucide-react';
+import type { EChartsOption } from 'echarts';
 import ReactECharts from 'echarts-for-react';
-import PageHeader from '@/components/PageHeader';
-import { Card, CardContent } from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
+import {
+  ChartColumn, ChartPie, CheckCircle2, CircleAlert, HardDrive, Hourglass, RefreshCw, Table2, Trophy,
+} from 'lucide-react';
+import { useTheme } from 'next-themes';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { extras, type IStatsResp } from '@/api/extras';
+import { EmptyState } from '@/components/app/EmptyState';
+import { Page } from '@/components/app/Page';
+import { Panel } from '@/components/app/Panel';
+import { StatCard } from '@/components/app/StatCard';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { STATE_META } from '@/lib/status';
 import type { TaskState } from '@/lib/types';
+import { cn } from '@/lib/utils';
 
-/* ---------------- 主题色板 ---------------- */
+/* ---------------- 图表配色：只取主题变量 ---------------- */
 
-const STATE_COLOR: Record<string, string> = {
-  done: '#10b981',
-  stored: '#14b8a6',
-  organizing: '#22c55e',
-  saving: '#06b6d4',
-  queued: '#0ea5e9',
-  parsed: '#6366f1',
-  received: '#8b5cf6',
-  pending_approval: '#f59e0b',
-  need_manual: '#f97316',
-  failed: '#ef4444',
-  rejected: '#e11d48',
-  skipped: '#94a3b8',
-};
-const FALLBACK = ['#0f766e', '#0ea5e9', '#8b5cf6', '#f59e0b', '#ef4444', '#94a3b8'];
-const stateColor = (st: string, i: number) => STATE_COLOR[st] ?? FALLBACK[i % FALLBACK.length];
-const hexA = (hex: string, a: number) => {
-  const h = hex.replace('#', '');
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${a})`;
-};
-
-const TOOLTIP = {
-  backgroundColor: 'rgba(15, 23, 42, 0.94)',
-  borderColor: 'transparent',
-  padding: [10, 14],
-  textStyle: { color: '#f1f5f9', fontSize: 12 },
-  extraCssText: 'border-radius:12px;box-shadow:0 14px 36px -10px rgba(15,23,42,.5);',
-};
-
-/* 状态分组：主流程三类聚合 + 其它，避免 12 条线糊在一起 */
-const TREND_GROUPS = [
-  { key: 'success', name: '已入库', color: '#0d9488', states: ['done', 'stored'] },
-  { key: 'running', name: '处理中', color: '#6366f1', states: ['received', 'parsed', 'queued', 'saving', 'organizing'] },
-  { key: 'waiting', name: '待确认', color: '#f59e0b', states: ['pending_approval', 'need_manual'] },
-  { key: 'failed', name: '失败/忽略', color: '#f43f5e', states: ['failed', 'rejected', 'skipped'] },
+const TOKENS = [
+  '--chart-1', '--chart-2', '--chart-3', '--chart-5',
+  '--foreground', '--muted-foreground', '--border', '--card', '--popover', '--popover-foreground',
 ] as const;
+type Token = typeof TOKENS[number];
+interface ChartPalette { colors: Record<Token, string>; font: string }
 
-/* ---------------- 迷你面积（KPI 卡内嵌） ---------------- */
-
-function Sparkline({ data, color }: { data: number[]; color: string }) {
-  const option = useMemo(() => ({
-    animationDuration: 600,
-    grid: { left: 0, right: 0, top: 5, bottom: 0 },
-    xAxis: { type: 'category' as const, show: false, data: data.map((_, i) => i), boundaryGap: false },
-    yAxis: { type: 'value' as const, show: false, min: 0 },
-    tooltip: { show: false },
-    series: [{
-      type: 'line' as const,
-      data,
-      smooth: true,
-      showSymbol: false,
-      lineStyle: { width: 2, color },
-      areaStyle: {
-        color: {
-          type: 'linear' as const, x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: hexA(color, 0.30) }, { offset: 1, color: hexA(color, 0.02) }],
-        },
-      },
-    }],
-  }), [data, color]);
-  return <ReactECharts option={option} style={{ height: 42, width: '100%' }} opts={{ renderer: 'svg' }} />;
+/**
+ * 读取当前主题下的颜色变量。变量是 `hsl(173 58% 38%)` 这种空格写法，zrender 解析不了（悬停高亮会变黑），
+ * 所以借一个探针元素让浏览器换算成 rgb。
+ */
+function readPalette(): ChartPalette {
+  const probe = document.createElement('span');
+  probe.style.display = 'none';
+  document.body.append(probe);
+  const colors = {} as Record<Token, string>;
+  for (const token of TOKENS) {
+    probe.style.color = `var(${token})`;
+    colors[token] = getComputedStyle(probe).color;
+  }
+  probe.remove();
+  return { colors, font: getComputedStyle(document.body).fontFamily };
 }
 
-/* ---------------- 主组件 ---------------- */
+const samePalette = (a: ChartPalette, b: ChartPalette) =>
+  a.font === b.font && TOKENS.every((token) => a.colors[token] === b.colors[token]);
 
-type View = {
+/** 主题切换后重新取色。next-themes 在自己的 effect 里才改 <html class>，所以同时监听 class 变化。 */
+function useChartPalette(): ChartPalette {
+  const { resolvedTheme } = useTheme();
+  const [palette, setPalette] = useState(readPalette);
+  useEffect(() => {
+    const refresh = () => setPalette((prev) => {
+      const next = readPalette();
+      return samePalette(prev, next) ? prev : next;
+    });
+    const frame = requestAnimationFrame(refresh);
+    const observer = new MutationObserver(refresh);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [resolvedTheme]);
+  return palette;
+}
+
+function withAlpha(rgb: string, alpha: number): string {
+  const [r = 0, g = 0, b = 0] = rgb.match(/[\d.]+/g)?.map(Number) ?? [];
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/* ---------------- 状态分组 ---------------- */
+
+type GroupKey = 'done' | 'waiting' | 'active' | 'failed' | 'filtered';
+interface Group { key: GroupKey; label: string; states: TaskState[]; token: Token; alpha?: number; swatch: string }
+
+/**
+ * 12 个状态按主流程聚合成 5 组。堆叠顺序即色板顺序（青 → 琥珀 → 蓝 → 红 → 灰）：
+ * 青与蓝相邻时肉眼难以区分（dataviz 校验 ΔE < 15），所以把蓝放在琥珀之后，调整顺序前请重新校验。
+ */
+const GROUPS: Group[] = [
+  { key: 'done', label: '已入库', states: ['done'], token: '--chart-1', swatch: 'bg-chart-1' },
+  { key: 'waiting', label: '待处理', states: ['pending_approval', 'need_manual'], token: '--chart-3', swatch: 'bg-chart-3' },
+  { key: 'active', label: '处理中', states: ['received', 'parsed', 'queued', 'saving', 'stored', 'organizing'], token: '--chart-2', swatch: 'bg-chart-2' },
+  { key: 'failed', label: '失败', states: ['failed'], token: '--chart-5', swatch: 'bg-chart-5' },
+  { key: 'filtered', label: '已过滤', states: ['rejected', 'skipped'], token: '--muted-foreground', alpha: 0.45, swatch: 'bg-muted-foreground/45' },
+];
+
+const GROUP_OF = new Map<string, GroupKey>(GROUPS.flatMap((g) => g.states.map((s) => [s, g.key] as const)));
+
+const RANGES = [7, 30, 90] as const;
+type Range = typeof RANGES[number];
+
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const shortDay = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+const longDay = (d: string) => `${Number(d.slice(5, 7))} 月 ${Number(d.slice(8, 10))} 日`;
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+interface View {
   days: string[];
-  counts: Record<string, number>;
-  total: number; ok: number; active: number; failed: number; successRate: number;
-  dailyDone: number[]; dailyActive: number[]; dailyFailed: number[];
-  trend: Record<string, number[]>;
-  peak: number; avg: number; peakDay: string;
-};
+  series: Record<GroupKey, number[]>;
+  rangeTotals: Record<GroupKey, number>;
+  counts: Record<GroupKey, number>;
+  total: number;
+  avg: number;
+  peak: number;
+  peakDay: string;
+}
 
-export default function StatsPage() {
-  const [s, setS] = useState<IStatsResp | null>(null);
+function buildView(stats: IStatsResp, range: Range): View {
+  // 没有任务的日子后端不返回，这里补齐为 0，避免横轴把空白日挤掉。
+  const today = new Date();
+  const dates = new Set(stats.daily.map((row) => row.d));
+  for (let i = range - 1; i >= 0; i -= 1) {
+    dates.add(ymd(new Date(today.getFullYear(), today.getMonth(), today.getDate() - i)));
+  }
+  const days = [...dates].sort();
+  const index = new Map(days.map((d, i) => [d, i]));
+  const empty = <T,>(fn: () => T) => Object.fromEntries(GROUPS.map((g) => [g.key, fn()])) as Record<GroupKey, T>;
+  const series = empty(() => days.map(() => 0));
+  for (const row of stats.daily) {
+    const group = GROUP_OF.get(row.state);
+    const i = index.get(row.d);
+    if (group && i !== undefined) series[group][i] += row.n;
+  }
+  const rangeTotals = empty(() => 0);
+  const counts = empty(() => 0);
+  for (const g of GROUPS) {
+    rangeTotals[g.key] = series[g.key].reduce((a, b) => a + b, 0);
+    counts[g.key] = g.states.reduce((a, s) => a + Number(stats.counts[s] ?? 0), 0);
+  }
+  const daily = days.map((_, i) => GROUPS.reduce((a, g) => a + series[g.key][i], 0));
+  const sum = daily.reduce((a, b) => a + b, 0);
+  const peak = Math.max(0, ...daily);
+  const avg = days.length ? sum / days.length : 0;
+  return {
+    days, series, rangeTotals, counts,
+    total: GROUPS.reduce((a, g) => a + counts[g.key], 0),
+    avg: avg >= 10 ? Math.round(avg) : Math.round(avg * 10) / 10,
+    peak,
+    peakDay: peak > 0 ? days[daily.indexOf(peak)] : '',
+  };
+}
 
-  useEffect(() => { void extras.stats(30).then(setS).catch(() => undefined); }, []);
+/* ---------------- 每日趋势 ---------------- */
 
-  const view = useMemo<View | null>(() => {
-    if (!s) return null;
-    const days = Array.from(new Set(s.daily.map((d) => d.d))).sort();
-    const counts = s.counts ?? {};
-    const total = Object.values(counts).reduce((a, b) => a + Number(b || 0), 0);
-    const ok = (counts.done ?? 0) + (counts.stored ?? 0);
-    const active = (counts.received ?? 0) + (counts.parsed ?? 0) + (counts.pending_approval ?? 0)
-      + (counts.queued ?? 0) + (counts.saving ?? 0) + (counts.organizing ?? 0) + (counts.need_manual ?? 0);
-    const failed = counts.failed ?? 0;
-    const valueAt = (d: string, st: string) =>
-      s.daily.find((x) => x.d === d && x.state === st)?.n ?? 0;
-    const sumStates = (d: string, states: readonly string[]) =>
-      states.reduce((a, st) => a + valueAt(d, st), 0);
-    const dailyTotal = days.map((d) => s.daily.filter((x) => x.d === d).reduce((a, x) => a + x.n, 0));
-    const trend: Record<string, number[]> = {};
-    for (const g of TREND_GROUPS) trend[g.key] = days.map((d) => sumStates(d, g.states));
-    const dailyDone = trend.success;
-    const dailyActive = days.map((d) => sumStates(d, ['received', 'parsed', 'pending_approval', 'queued', 'saving', 'organizing', 'need_manual']));
-    const dailyFailed = trend.failed;
-    const peak = Math.max(0, ...dailyTotal);
-    const peakIdx = dailyTotal.indexOf(peak);
-    const sum = dailyTotal.reduce((a, b) => a + b, 0);
+interface TooltipParam { axisValue: string; seriesName: string; value: number; color: string }
+
+function TrendChart({ view, hidden, height }: { view: View; hidden: Set<GroupKey>; height: number }) {
+  const palette = useChartPalette();
+  const option = useMemo<EChartsOption>(() => {
+    const c = palette.colors;
+    const visible = GROUPS.filter((g) => !hidden.has(g.key));
+    // 每天最上面那一段才做圆角，其余段保持方角，堆叠看起来是一整根柱子。
+    const topOf = view.days.map((_, i) => [...visible].reverse().find((g) => view.series[g.key][i] > 0)?.key);
     return {
-      days, counts, total, ok, active, failed,
-      successRate: total ? Math.round((ok / total) * 100) : 0,
-      dailyDone, dailyActive, dailyFailed, trend, peak,
-      avg: days.length ? Math.round(sum / days.length) : 0,
-      peakDay: peak >= 0 ? days[peakIdx] : '',
+      animationDuration: 400,
+      textStyle: { fontFamily: palette.font },
+      grid: { left: 2, right: 8, top: 10, bottom: 2, containLabel: true },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow', shadowStyle: { color: withAlpha(c['--muted-foreground'], 0.08) } },
+        backgroundColor: c['--popover'],
+        borderColor: c['--border'],
+        borderWidth: 1,
+        padding: [8, 12],
+        textStyle: { color: c['--popover-foreground'], fontSize: 12 },
+        extraCssText: 'border-radius:10px;box-shadow:0 12px 32px -12px rgba(0,0,0,.35);',
+        formatter: (raw) => {
+          const items = raw as unknown as TooltipParam[];
+          if (!items.length) return '';
+          const total = items.reduce((a, p) => a + (Number(p.value) || 0), 0);
+          const rows = items.map((p) => {
+            const value = Number(p.value) || 0;
+            return `<div style="display:flex;align-items:center;gap:8px;margin-top:4px;${value ? '' : 'opacity:.5'}">`
+              + `<span style="width:10px;height:3px;border-radius:2px;background:${p.color}"></span>`
+              + `<b style="min-width:16px;font-variant-numeric:tabular-nums">${value}</b>`
+              + `<span style="color:${c['--muted-foreground']}">${escapeHtml(p.seriesName)}</span></div>`;
+          }).join('');
+          return `<div style="font-weight:600;margin-bottom:2px">${escapeHtml(longDay(items[0].axisValue))}`
+            + `<span style="margin-left:8px;font-weight:400;color:${c['--muted-foreground']}">共 ${total} 条</span></div>${rows}`;
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: view.days,
+        axisLine: { lineStyle: { color: c['--border'] } },
+        axisTick: { show: false },
+        axisLabel: { color: c['--muted-foreground'], fontSize: 11, hideOverlap: true, margin: 10, formatter: shortDay },
+      },
+      yAxis: {
+        type: 'value',
+        minInterval: 1,
+        splitNumber: 4,
+        axisLabel: { color: c['--muted-foreground'], fontSize: 11 },
+        splitLine: { lineStyle: { color: c['--border'], width: 1 } },
+      },
+      series: visible.map((g) => {
+        const color = g.alpha ? withAlpha(c[g.token], g.alpha) : c[g.token];
+        return {
+          name: g.label,
+          type: 'bar',
+          stack: 'total',
+          barMaxWidth: 22,
+          barCategoryGap: '38%',
+          // 用卡片底色描边，在相邻段之间留出 2px 缝隙，而不是画分隔线。
+          itemStyle: { color, borderColor: c['--card'], borderWidth: 1 },
+          emphasis: { itemStyle: { color, borderColor: c['--card'] } },
+          data: view.series[g.key].map((value, i) => (
+            topOf[i] === g.key ? { value, itemStyle: { borderRadius: [4, 4, 0, 0] } } : value
+          )),
+        };
+      }),
     };
-  }, [s]);
+  }, [palette, view, hidden]);
+  return <ReactECharts notMerge lazyUpdate option={option} style={{ height }} opts={{ renderer: 'canvas' }} />;
+}
 
-  if (!s || !view) return (
-    <div className="mx-auto w-full max-w-7xl p-5 sm:p-8">
-      <PageHeader eyebrow="转存统计" title="近 30 天转存情况" description="按天查看各状态的任务数量、最常转存的片名，以及已入库资源的估算体积。" />
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[136px] rounded-2xl" />)}
+function TrendTable({ view }: { view: View }) {
+  const rows = view.days
+    .map((d, i) => ({ d, values: GROUPS.map((g) => view.series[g.key][i]) }))
+    .filter((row) => row.values.some(Boolean))
+    .reverse();
+  if (!rows.length) return <p className="py-10 text-center text-sm text-muted-foreground">这段时间没有任务</p>;
+  return (
+    <div className="max-h-[320px] overflow-auto rounded-lg border border-border">
+      <table className="w-full text-xs tabular-nums">
+        <thead className="sticky top-0 bg-muted text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium">日期</th>
+            {GROUPS.map((g) => <th key={g.key} className="px-2 py-2 text-right font-medium">{g.label}</th>)}
+            <th className="px-3 py-2 text-right font-medium">合计</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.d} className="border-t border-border/70">
+              <td className="whitespace-nowrap px-3 py-2 text-left">{shortDay(row.d)}</td>
+              {row.values.map((v, i) => (
+                <td key={GROUPS[i].key} className={cn('px-2 py-2 text-right', !v && 'text-muted-foreground/50')}>{v}</td>
+              ))}
+              <td className="px-3 py-2 text-right font-semibold">{row.values.reduce((a, b) => a + b, 0)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Segmented<T extends string | number>({ value, options, onChange, label }: {
+  value: T; options: Array<{ value: T; label: ReactNode; title?: string }>; onChange: (value: T) => void; label: string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex rounded-lg bg-muted p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={value === option.value}
+          title={option.title}
+          onClick={() => onChange(option.value)}
+          className={cn(
+            'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
+            value === option.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TrendPanel({ view, range }: { view: View; range: Range }) {
+  const [mode, setMode] = useState<'chart' | 'table'>('chart');
+  const [hidden, setHidden] = useState<Set<GroupKey>>(() => new Set());
+  const isMobile = useIsMobile();
+  const toggle = (key: GroupKey) => setHidden((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const empty = GROUPS.every((g) => view.rangeTotals[g.key] === 0);
+  return (
+    <Panel
+      title="每日任务"
+      description={`近 ${range} 天，按任务最后更新的日期与当前状态统计`}
+      icon={ChartColumn}
+      actions={(
+        <Segmented<'chart' | 'table'>
+          label="显示方式"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'chart', label: <ChartColumn className="size-3.5" />, title: '图表' },
+            { value: 'table', label: <Table2 className="size-3.5" />, title: '表格' },
+          ]}
+        />
+      )}
+      bodyClassName="p-4 sm:p-5"
+    >
+      {empty ? (
+        <EmptyState icon={ChartColumn} title="这段时间没有任务" description="监听到资源消息后，这里会按天显示处理情况。" className="border-none py-16" />
+      ) : (
+        <>
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="图例（点击可隐藏）">
+              {GROUPS.map((g) => {
+                const off = hidden.has(g.key);
+                return (
+                  <button
+                    key={g.key}
+                    type="button"
+                    aria-pressed={!off}
+                    disabled={mode === 'table'}
+                    onClick={() => toggle(g.key)}
+                    className={cn(
+                      'inline-flex min-h-8 items-center gap-2 rounded-md px-2 text-xs transition-colors enabled:hover:bg-muted',
+                      off && mode === 'chart' && 'opacity-45',
+                    )}
+                  >
+                    <span className={cn('size-2.5 rounded-[3px]', g.swatch)} />
+                    <span className="text-foreground/80">{g.label}</span>
+                    <span className="font-semibold tabular-nums text-foreground">{view.rangeTotals[g.key]}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex shrink-0 items-center gap-4 px-2 text-xs text-muted-foreground sm:px-0">
+              <span>日均 <b className="font-semibold tabular-nums text-foreground">{view.avg}</b> 条</span>
+              <span>
+                峰值 <b className="font-semibold tabular-nums text-foreground">{view.peak}</b> 条
+                {view.peakDay ? <span className="tabular-nums"> · {shortDay(view.peakDay)}</span> : null}
+              </span>
+            </div>
+          </div>
+          {mode === 'chart'
+            ? <TrendChart view={view} hidden={hidden} height={isMobile ? 240 : 300} />
+            : <TrendTable view={view} />}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/* ---------------- 片名排行与状态分布 ---------------- */
+
+function TopTitles({ titles }: { titles: IStatsResp['top_titles'] }) {
+  const max = Math.max(1, ...titles.map((x) => x.n));
+  return (
+    <Panel title="出现最多的片名" description="全部任务按片名合并后的次数" icon={Trophy} className="lg:col-span-3" bodyClassName="p-3 sm:p-4">
+      {titles.length ? (
+        <ol className="space-y-0.5">
+          {titles.map((x, i) => (
+            <li key={x.title} className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/60">
+              <span className={cn(
+                'w-5 shrink-0 text-center text-xs font-semibold tabular-nums',
+                i < 3 ? 'text-primary' : 'text-muted-foreground',
+              )}>
+                {i + 1}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="truncate text-[13px] font-medium" title={x.title}>{x.title}</span>
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    <b className="font-semibold text-foreground">{x.n}</b> 次
+                  </span>
+                </div>
+                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-primary/10">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max((x.n / max) * 100, 3)}%` }} />
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <EmptyState icon={Trophy} title="还没有片名数据" description="识别出片名的任务会在这里按出现次数排名。" className="border-none" />
+      )}
+    </Panel>
+  );
+}
+
+function Distribution({ view, stats }: { view: View; stats: IStatsResp }) {
+  return (
+    <Panel
+      title="状态分布"
+      description={`全部 ${view.total} 条任务的当前状态`}
+      icon={ChartPie}
+      className="lg:col-span-2"
+    >
+      {view.total ? (
+        <>
+          <div className="flex h-3 gap-[2px] overflow-hidden rounded-full" role="img" aria-label="各状态占比">
+            {GROUPS.filter((g) => view.counts[g.key] > 0).map((g) => (
+              <div
+                key={g.key}
+                className={cn('h-full first:rounded-l-full last:rounded-r-full', g.swatch)}
+                style={{ width: `${(view.counts[g.key] / view.total) * 100}%` }}
+                title={`${g.label} ${view.counts[g.key]} 条`}
+              />
+            ))}
+          </div>
+          <ul className="mt-5 divide-y divide-border/70">
+            {GROUPS.map((g) => {
+              const n = view.counts[g.key];
+              const parts = g.states.filter((s) => Number(stats.counts[s] ?? 0) > 0);
+              return (
+                <li key={g.key} className={cn('py-2.5 first:pt-0 last:pb-0', !n && 'opacity-50')}>
+                  <div className="flex items-center gap-2.5 text-[13px]">
+                    <span className={cn('size-2.5 shrink-0 rounded-[3px]', g.swatch)} />
+                    <span className="font-medium">{g.label}</span>
+                    <span className="ml-auto font-semibold tabular-nums">{n}</span>
+                    <span className="w-10 text-right text-xs tabular-nums text-muted-foreground">
+                      {Math.round((n / view.total) * 100)}%
+                    </span>
+                  </div>
+                  {g.states.length > 1 && parts.length ? (
+                    <p className="mt-1 pl-5 text-xs text-muted-foreground">
+                      {parts.map((s) => `${STATE_META[s].label} ${stats.counts[s]}`).join(' · ')}
+                    </p>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : (
+        <EmptyState icon={ChartPie} title="还没有任务" className="border-none" />
+      )}
+    </Panel>
+  );
+}
+
+/* ---------------- 页面 ---------------- */
+
+function StatsSkeleton() {
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[118px] rounded-xl" />)}
       </div>
-      <Skeleton className="mt-5 h-[380px] rounded-2xl" />
-      <div className="mt-5 grid gap-5 xl:grid-cols-5">
-        <Skeleton className="h-[460px] rounded-2xl xl:col-span-3" />
-        <Skeleton className="h-[460px] rounded-2xl xl:col-span-2" />
+      <Skeleton className="h-[420px] rounded-xl" />
+      <div className="grid gap-5 lg:grid-cols-5">
+        <Skeleton className="h-[360px] rounded-xl lg:col-span-3" />
+        <Skeleton className="h-[360px] rounded-xl lg:col-span-2" />
       </div>
     </div>
   );
+}
 
-  /* ---------------- KPI ---------------- */
+export default function StatsPage() {
+  const [range, setRange] = useState<Range>(30);
+  const [stats, setStats] = useState<{ range: Range; data: IStatsResp } | null>(null);
+  const [error, setError] = useState('');
+  const [reload, setReload] = useState(0);
 
-  const kpis: {
-    label: string; value: string; unit: string; note: string;
-    icon: LucideIcon; chip: string; spark: number[]; color: string;
-  }[] = [
-    {
-      label: '入库体积', value: s.estimated_done_gb.toFixed(1), unit: 'GB',
-      note: '按识别到的文件大小累加', icon: HardDrive,
-      chip: 'bg-teal-50 text-teal-600 ring-1 ring-teal-100', spark: view.dailyDone, color: '#0d9488',
-    },
-    {
-      label: '已完成', value: String(view.ok), unit: '部',
-      note: `整体成功率 ${view.successRate}%`, icon: CheckCircle2,
-      chip: 'bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100', spark: view.dailyDone, color: '#10b981',
-    },
-    {
-      label: '处理中', value: String(view.active), unit: '条',
-      note: '识别 · 确认 · 转存 · 整理', icon: Loader2,
-      chip: 'bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100', spark: view.dailyActive, color: '#6366f1',
-    },
-    {
-      label: '失败 / 待处理', value: String(view.failed), unit: '条',
-      note: view.failed ? '可在任务中心重试' : '近 30 天一切顺利', icon: Trophy,
-      chip: view.failed ? 'bg-rose-50 text-rose-600 ring-1 ring-rose-100' : 'bg-slate-100 text-slate-500 ring-1 ring-slate-200',
-      spark: view.dailyFailed, color: '#f43f5e',
-    },
-  ];
+  useEffect(() => {
+    let active = true;
+    extras.stats(range)
+      .then((data) => { if (active) { setStats({ range, data }); setError(''); } })
+      .catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : '统计数据加载失败'); });
+    return () => { active = false; };
+  }, [range, reload]);
 
-  /* ---------------- 每日趋势：圆角渐变堆叠柱状 ---------------- */
+  const view = useMemo(() => (stats ? buildView(stats.data, stats.range) : null), [stats]);
+  const retry = useCallback(() => { setError(''); setReload((n) => n + 1); }, []);
+  const refreshing = stats !== null && stats.range !== range && !error;
 
-  const barOption = {
-    tooltip: {
-      ...TOOLTIP,
-      trigger: 'axis' as const,
-      axisPointer: {
-        type: 'shadow' as const,
-        shadowStyle: { color: 'rgba(13,148,136,0.06)' },
-      },
-      order: 'valueDesc' as const,
-    },
-    legend: {
-      data: TREND_GROUPS.map((g) => g.name),
-      top: 2, right: 0, icon: 'roundRect',
-      itemWidth: 12, itemHeight: 12, itemGap: 18,
-      textStyle: { color: '#64748b', fontSize: 11.5 },
-    },
-    grid: { left: 8, right: 14, top: 52, bottom: 8, containLabel: true },
-    xAxis: {
-      type: 'category' as const,
-      data: view.days,
-      boundaryGap: true,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: {
-        color: '#94a3b8', fontSize: 10.5, hideOverlap: true, margin: 12,
-        formatter: (v: string) => v.slice(5),
-      },
-    },
-    yAxis: {
-      type: 'value' as const,
-      minInterval: 1,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(148,163,184,.16)', type: 'dashed' as const } },
-      axisLabel: { color: '#94a3b8', fontSize: 10.5 },
-    },
-    series: TREND_GROUPS.map((g, gi) => ({
-      name: g.name,
-      type: 'bar' as const,
-      stack: 'total',
-      barWidth: '58%',
-      itemStyle: {
-        borderRadius: gi === TREND_GROUPS.length - 1 ? [7, 7, 0, 0] : 0,
-        color: {
-          type: 'linear' as const, x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: hexA(g.color, gi === 0 ? 0.95 : 0.88) },
-            { offset: 1, color: hexA(g.color, gi === 0 ? 0.70 : 0.62) },
-          ],
-        },
-      },
-      emphasis: { focus: 'series' as const, itemStyle: { color: g.color } },
-      data: view.trend[g.key],
-    })),
-  };
+  const actions = (
+    <Segmented<Range>
+      label="时间范围"
+      value={range}
+      onChange={setRange}
+      options={RANGES.map((r) => ({ value: r, label: `近 ${r} 天` }))}
+    />
+  );
 
-  /* ---------------- 状态环图 ---------------- */
-
-  const distEntries = Object.entries(view.counts)
-    .filter(([, v]) => Number(v) > 0)
-    .sort((a, b) => Number(b[1]) - Number(a[1]));
-  const pieData = distEntries.map(([k, v], i) => ({
-    name: STATE_META[k as TaskState]?.label ?? k,
-    value: Number(v),
-    itemStyle: { color: stateColor(k, i) },
-  }));
-
-  const donutOption = {
-    tooltip: {
-      ...TOOLTIP,
-      trigger: 'item' as const,
-      formatter: (p: { name: string; value: number; percent: number }) =>
-        `<div style="font-weight:600;margin-bottom:2px">${p.name}</div>${p.value} 条 · 占比 <b>${p.percent}%</b>`,
-    },
-    series: [{
-      type: 'pie' as const,
-      radius: ['58%', '82%'],
-      center: ['50%', '44%'],
-      avoidLabelOverlap: true,
-      itemStyle: { borderColor: '#ffffff', borderWidth: 3, borderRadius: 7 },
-      label: { show: false },
-      labelLine: { show: false },
-      emphasis: {
-        scale: true, scaleSize: 6,
-        itemStyle: { shadowBlur: 22, shadowColor: 'rgba(13,148,136,.32)' },
-      },
-      data: pieData,
-    }],
-  };
-
-  const top = s.top_titles ?? [];
-  const medals = [
-    { bg: 'linear-gradient(135deg,#fbbf24,#f59e0b)', ring: 'bg-amber-50 text-amber-600 ring-amber-100', bar: 'linear-gradient(90deg,#f59e0b,#fbbf24)' },
-    { bg: 'linear-gradient(135deg,#cbd5e1,#94a3b8)', ring: 'bg-slate-100 text-slate-500 ring-slate-200', bar: 'linear-gradient(90deg,#94a3b8,#cbd5e1)' },
-    { bg: 'linear-gradient(135deg,#fb923c,#d97706)', ring: 'bg-orange-50 text-orange-600 ring-orange-100', bar: 'linear-gradient(90deg,#d97706,#fb923c)' },
-  ];
+  let body: ReactNode;
+  if (error && !stats) {
+    body = (
+      <EmptyState
+        icon={CircleAlert}
+        title="统计数据加载失败"
+        description={error}
+        action={<Button variant="outline" onClick={retry}><RefreshCw />重试</Button>}
+      />
+    );
+  } else if (!stats || !view) {
+    body = <StatsSkeleton />;
+  } else {
+    const { counts } = view;
+    const data = stats.data;
+    const rate = view.total ? Math.round((counts.done / view.total) * 100) : 0;
+    const gb = data.estimated_done_gb;
+    body = (
+      <div className={cn('space-y-5 transition-opacity', refreshing && 'opacity-60')}>
+        {error ? (
+          <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-sm text-destructive">
+            <span className="min-w-0">{error}</span>
+            <Button variant="outline" size="sm" onClick={retry}>重试</Button>
+          </div>
+        ) : null}
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+          <StatCard
+            label="入库体积"
+            icon={HardDrive}
+            tone="primary"
+            value={<>{gb >= 100 ? Math.round(gb) : gb.toFixed(1)}<span className="ml-1 text-sm font-medium text-muted-foreground">GB</span></>}
+            hint="按识别到的文件大小估算"
+          />
+          <StatCard label="已入库" icon={CheckCircle2} tone="success" value={counts.done} hint={`占全部任务 ${rate}%`} />
+          <StatCard
+            label="待处理"
+            icon={Hourglass}
+            tone="warning"
+            value={counts.waiting}
+            hint={counts.waiting ? '等你确认或人工处理' : '没有待处理的任务'}
+            to="/inbox"
+            highlight={counts.waiting > 0}
+          />
+          <StatCard
+            label="失败"
+            icon={CircleAlert}
+            tone={counts.failed ? 'danger' : 'neutral'}
+            value={counts.failed}
+            hint={counts.failed ? '可在任务页查看并重试' : '没有失败的任务'}
+            to="/tasks?group=failed"
+          />
+        </div>
+        <TrendPanel view={view} range={stats.range} />
+        <div className="grid gap-5 lg:grid-cols-5 lg:items-start">
+          <TopTitles titles={data.top_titles ?? []} />
+          <Distribution view={view} stats={data} />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto w-full max-w-7xl p-5 sm:p-8">
-      <PageHeader
-        eyebrow="转存统计"
-        title="近 30 天转存情况"
-        description="按天查看各状态的任务数量、最常转存的片名，以及已入库资源的估算体积。"
-      />
-
-      {/* KPI 卡片 */}
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {kpis.map((k) => {
-          const Icon = k.icon;
-          return (
-            <Card
-              key={k.label}
-              className="group relative overflow-hidden rounded-2xl border-border/60 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-slate-200/70"
-            >
-              <CardContent className="p-5 pb-1">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="text-[13px] font-medium text-muted-foreground">{k.label}</div>
-                    <div className="mt-2 flex items-baseline gap-1.5">
-                      <span className="text-[30px] font-bold leading-none tracking-tight tabular-nums text-slate-900">{k.value}</span>
-                      <span className="text-[13px] font-medium text-muted-foreground">{k.unit}</span>
-                    </div>
-                  </div>
-                  <span className={`grid size-10 shrink-0 place-items-center rounded-xl ${k.chip}`}>
-                    <Icon className="size-[19px]" />
-                  </span>
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">{k.note}</p>
-                <div className="-mx-2 -mb-1 mt-1 opacity-90">
-                  <Sparkline data={k.spark.length ? k.spark : [0, 0]} color={k.color} />
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-
-      {/* 每日趋势 */}
-      <Card className="mt-5 overflow-hidden rounded-2xl border-border/60 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 px-5 py-4 sm:px-6">
-          <div>
-            <h3 className="flex items-center gap-2 text-[15px] font-semibold text-slate-900">
-              <span className="grid size-7 place-items-center rounded-lg bg-primary/10 text-primary">
-                <TrendingUp className="size-4" />
-              </span>
-              每日任务趋势
-            </h3>
-            <p className="mt-1 text-xs text-muted-foreground">按主流程聚合的堆叠柱状图</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-100">
-              日均 <b className="ml-0.5 text-slate-900 tabular-nums">{view.avg}</b> 条
-            </span>
-            <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-700 ring-1 ring-teal-100">
-              峰值 <b className="ml-0.5 tabular-nums">{view.peak}</b> 条/天
-            </span>
-            {view.peakDay && (
-              <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
-                高峰日 {view.peakDay.slice(5)}
-              </span>
-            )}
-          </div>
-        </div>
-        <CardContent className="p-3 sm:p-5">
-          <ReactECharts notMerge lazyUpdate style={{ height: 340 }} option={barOption} opts={{ renderer: 'canvas' }} />
-        </CardContent>
-      </Card>
-
-      {/* Top 榜单 + 状态分布 */}
-      <div className="mt-5 grid gap-5 xl:grid-cols-5">
-        {/* 高频片名榜 */}
-        <Card className="overflow-hidden rounded-2xl border-border/60 shadow-sm xl:col-span-3">
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4 sm:px-6">
-            <div>
-              <h3 className="flex items-center gap-2 text-[15px] font-semibold text-slate-900">
-                <span className="grid size-7 place-items-center rounded-lg bg-amber-50 text-amber-600 ring-1 ring-amber-100">
-                  <Crown className="size-4" />
-                </span>
-                高频片名 Top {top.length || 15}
-              </h3>
-              <p className="mt-1 text-xs text-muted-foreground">近 30 天消息中出现次数最多的资源</p>
-            </div>
-          </div>
-          <CardContent className="p-3 sm:p-4">
-            {top.length ? (
-              <ul className="space-y-1">
-                {top.map((x, i) => {
-                  const pct = Math.round((x.n / Math.max(1, top[0].n)) * 100);
-                  const medal = i < 3 ? medals[i] : null;
-                  return (
-                    <li
-                      key={x.title}
-                      className="group relative flex items-center gap-3 overflow-hidden rounded-xl px-3 py-2.5 transition-colors hover:bg-slate-50"
-                    >
-                      <span
-                        className={`grid size-7 shrink-0 place-items-center rounded-lg text-xs font-bold tabular-nums ${
-                          medal ? medal.ring : 'bg-slate-100 text-slate-400'
-                        }`}
-                      >
-                        {i + 1}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="truncate text-[13px] font-medium text-slate-700 group-hover:text-slate-900">
-                            {x.title}
-                          </span>
-                          <span className="shrink-0 tabular-nums text-xs font-semibold text-slate-500 group-hover:text-teal-700">
-                            {x.n} 次
-                          </span>
-                        </div>
-                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                          <div
-                            className="h-full rounded-full transition-all duration-500"
-                            style={{
-                              width: `${Math.max(pct, 4)}%`,
-                              background: medal
-                                ? medal.bar
-                                : 'linear-gradient(90deg,#0d9488,#22d3ee)',
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <div className="grid h-[420px] place-items-center text-sm text-muted-foreground">
-                暂无数据，监听到资源消息后这里会出现排名
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* 状态分布 */}
-        <Card className="overflow-hidden rounded-2xl border-border/60 shadow-sm xl:col-span-2">
-          <div className="border-b border-border/50 px-5 py-4 sm:px-6">
-            <h3 className="text-[15px] font-semibold text-slate-900">任务状态分布</h3>
-            <p className="mt-1 text-xs text-muted-foreground">近 30 天各状态占比</p>
-          </div>
-          <CardContent className="p-3 sm:p-4">
-            {pieData.length ? (
-              <>
-                <div className="relative">
-                  <ReactECharts notMerge lazyUpdate style={{ height: 232 }} option={donutOption} opts={{ renderer: 'canvas' }} />
-                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center" style={{ paddingBottom: 26 }}>
-                    <span className="text-[34px] font-bold leading-none tabular-nums text-slate-900">{view.successRate}<span className="text-lg text-slate-400">%</span></span>
-                    <span className="mt-1 text-xs text-muted-foreground">共 {view.total} 条</span>
-                  </div>
-                </div>
-                <ul className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2">
-                  {pieData.map((d) => {
-                    const pct = view.total ? Math.round((d.value / view.total) * 100) : 0;
-                    return (
-                      <li key={d.name} className="flex items-center gap-2 text-xs">
-                        <span className="size-2.5 shrink-0 rounded-full ring-2 ring-white" style={{ backgroundColor: d.itemStyle.color }} />
-                        <span className="truncate text-slate-600">{d.name}</span>
-                        <span className="ml-auto shrink-0 font-semibold tabular-nums text-slate-500">{pct}%</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </>
-            ) : (
-              <div className="grid h-[420px] place-items-center text-sm text-muted-foreground">暂无任务</div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+    <Page title="统计" description="任务处理情况与入库体积。每日趋势按所选时间范围统计，其余为累计数据。" actions={actions}>
+      {body}
+    </Page>
   );
 }

@@ -1,6 +1,7 @@
 import type {
   IConfigResponse,
   IDashboard,
+  IInboxItem,
   IDelivery,
   IOrganizePreviewItem,
   IParsedResource,
@@ -49,14 +50,19 @@ export const api = {
   dashboard: () => request<IDashboard>('dashboard'),
   deliveries: () => request<{ items: IDelivery[] }>('deliveries?status=failed&limit=500'),
   retryDelivery: (id: number) => request<{ ok: boolean }>(`deliveries/${id}/retry`, { method: 'POST' }),
-  tasks: (filters: { state?: TaskState | ''; source?: string; query?: string } = {}) => {
+  /** state 可传逗号分隔的多个状态；limit/offset 用于分页加载。 */
+  tasks: (filters: { state?: TaskState | string; source?: string; query?: string; limit?: number; offset?: number } = {}) => {
     const params = new URLSearchParams();
     if (filters.state) params.set('state', filters.state);
     if (filters.source) params.set('source', filters.source);
     if (filters.query) params.set('query', filters.query);
+    if (filters.limit) params.set('limit', String(filters.limit));
+    if (filters.offset) params.set('offset', String(filters.offset));
     const suffix = params.size ? `?${params.toString()}` : '';
     return request<{ items: ITaskSummary[] }>(`tasks${suffix}`);
   },
+  inbox: (state: 'pending_approval' | 'need_manual' = 'pending_approval') =>
+    request<{ items: IInboxItem[]; save_dirs: string[] }>(`inbox?state=${state}`),
   task: (taskId: string) => request<ITaskDetail>(`tasks/${taskId}`),
   action: (taskId: string, action: 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile', body?: unknown) =>
     request<{ ok: boolean }>(`tasks/${taskId}/${action}`, {

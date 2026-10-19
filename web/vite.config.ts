@@ -15,7 +15,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:28080',
+        // 开发时可用 VITE_API_TARGET 指向其他后端（如演示数据实例）
+        target: process.env.VITE_API_TARGET || 'http://127.0.0.1:28080',
         changeOrigin: true,
       },
     },

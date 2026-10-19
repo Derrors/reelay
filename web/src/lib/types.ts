@@ -53,6 +53,8 @@ export interface IDashboard {
   deliveries: Record<string, number>;
   /** 进行中的系统告警（如 115 凭证失效暂停转存、消息源断开）。 */
   alerts?: IAlert[];
+  /** 最近 24 小时：新收消息数与入库数。 */
+  recent?: { received_24h: number; done_24h: number };
   config_revision: string;
 }
 
@@ -93,6 +95,42 @@ export interface ITaskSummary {
   retries: number;
   created_at: number;
   updated_at: number;
+  media_type?: string | null;
+  year?: number | null;
+  season?: number | null;
+  episodes?: number[];
+  resolution?: string | null;
+  size?: string | null;
+  poster_path?: string | null;
+  save_dir_alias?: string | null;
+}
+
+/** 收件箱卡片：/api/inbox 一次返回展示所需字段（不含分享链接）。 */
+export interface IInboxItem {
+  task_id: string;
+  state: TaskState;
+  source: string | null;
+  created_at: number;
+  updated_at: number;
+  error: string | null;
+  title: string | null;
+  year: number | null;
+  media_type: string | null;
+  season: number | null;
+  episodes: number[];
+  resolution: string | null;
+  size: string | null;
+  reason: string | null;
+  confidence: number;
+  confidence_caps: string[];
+  fallback: boolean;
+  tmdb_matched: boolean | null;
+  poster_path: string | null;
+  save_dir_alias: string | null;
+  preview: string;
+  storage_phase: string | null;
+  has_landed: boolean;
+  organize_error: string | null;
 }
 
 export interface ITaskContext {
@@ -123,6 +161,8 @@ export interface ITaskDetail extends ITaskSummary {
 export interface IExtensionField {
   path: string; label: string; type: 'string' | 'number' | 'boolean';
   choices?: string[]; min?: number; max?: number; required?: boolean;
+  /** 未配置时后端实际使用的值（扩展可选声明）。 */
+  default?: unknown;
 }
 export interface IExtension {
   name: string; kind: 'provider' | 'hook' | 'event'; slot: string; label: string;
@@ -131,6 +171,8 @@ export interface IExtension {
 }
 export interface IExtensionCatalog {
   providers: Record<string, IExtension[]>; hooks: IExtension[]; events: IExtension[];
+  /** 外部扩展导入或实例化失败的记录。 */
+  load_errors?: Array<{ source: string; error: string }>;
 }
 export interface IConfigResponse {
   revision: string;

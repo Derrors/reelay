@@ -1,71 +1,59 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { LucideIcon } from 'lucide-react';
 import {
-  CheckCircle2, ChevronDown, CircleDashed, Cloud, FolderCog, KeyRound, Link2,
-  Loader2, QrCode, RefreshCw, ScanLine, ShieldAlert, ShieldCheck, Trash2,
+  AlertTriangle, ChevronDown, CircleAlert, FolderCog, KeyRound, Link2, Loader2, QrCode, RefreshCw,
+  ScanLine, ShieldCheck, Trash2, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { Panel } from '@/components/app/Panel';
+import { ToneBadge } from '@/components/app/StatusBadge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { extras, type IAuth115Status } from '@/api/extras';
-
-const stateText: Record<string, string> = {
-  active: '连接正常',
-  expired: '凭证失效',
-  error: '连接异常',
-  unknown: '等待检测',
-};
+import { extras, type IAuth115Side, type IAuth115Status } from '@/api/extras';
+import { fullTime, relativeTime } from '@/lib/format';
+import type { Tone } from '@/lib/status';
 
 type QrMode = 'cookie' | 'oauth';
 
-function StateTag({ state, configured }: { state: string; configured: boolean }) {
-  if (!configured) {
-    return <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted px-2.5 py-1 text-xs text-muted-foreground">
-      <CircleDashed className="size-3.5" />未配置
-    </span>;
-  }
-  const ok = state === 'active';
-  const bad = state === 'expired' || state === 'error';
-  return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-      ok ? 'border-emerald-600/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-        : bad ? 'border-destructive/25 bg-destructive/10 text-destructive'
-          : 'border-amber-600/25 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-    }`}>
-      {ok ? <CheckCircle2 className="size-3.5" /> : bad ? <ShieldAlert className="size-3.5" /> : <CircleDashed className="size-3.5" />}
-      {stateText[state] ?? state}
-    </span>
-  );
+const STATE_META: Record<string, { label: string; tone: Tone }> = {
+  active: { label: '连接正常', tone: 'success' },
+  expired: { label: '凭证失效', tone: 'danger' },
+  error: { label: '连接异常', tone: 'danger' },
+  unknown: { label: '等待检测', tone: 'info' },
+};
+
+function SideBadge({ side }: { side?: IAuth115Side }) {
+  if (!side?.configured) return <ToneBadge tone="neutral">未配置</ToneBadge>;
+  const meta = STATE_META[side.state] ?? STATE_META.unknown;
+  return <ToneBadge tone={meta.tone}>{meta.label}</ToneBadge>;
 }
 
-function ChannelCard({
-  icon, title, eyebrow, state, configured, description, detail, danger, children,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  eyebrow: string;
-  state: string;
-  configured: boolean;
-  description: string;
-  detail: string;
-  danger?: string;
-  children?: React.ReactNode;
+function MethodCard({ icon: Icon, step, title, side, description, detail, children }: {
+  icon: LucideIcon; step: string; title: string; side?: IAuth115Side;
+  description: string; detail: string; children: React.ReactNode;
 }) {
   return (
-    <section className="min-w-0 rounded-lg border bg-card p-4 sm:p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">{icon}</div>
-          <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-[.14em] text-muted-foreground">{eyebrow}</p>
-            <h3 className="mt-0.5 truncate text-sm font-semibold text-foreground sm:text-base">{title}</h3>
-          </div>
+    <section className="flex min-w-0 flex-col rounded-lg border border-border bg-background/60 p-4">
+      <div className="flex items-start gap-3">
+        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" /></span>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{step}</p>
+          <h3 className="text-sm font-semibold leading-6">{title}</h3>
         </div>
-        <StateTag state={state} configured={configured} />
+        <SideBadge side={side} />
       </div>
-      <p className="mt-4 text-sm leading-6 text-foreground">{description}</p>
-      <p className="mt-2 text-xs leading-5 text-muted-foreground">{danger || detail}</p>
-      {children}
+      <p className="mt-3 text-[13px] leading-6 text-foreground/85">{description}</p>
+      {side?.error ? (
+        <p className="mt-2 flex items-start gap-1.5 text-xs leading-5 text-destructive">
+          <CircleAlert className="mt-0.5 size-3.5 shrink-0" />{side.error}
+        </p>
+      ) : (
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {detail}
+          {side?.checked_at ? <span title={fullTime(side.checked_at)}> · 上次检测 {relativeTime(side.checked_at)}</span> : null}
+        </p>
+      )}
+      <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">{children}</div>
     </section>
   );
 }
@@ -101,9 +89,9 @@ export default function Auth115Card() {
     try {
       const r = await extras.auth115Ping();
       setStatus(r.status);
-      toast.success('双通道检测完成');
+      toast.success('检测完成');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '探活失败');
+      toast.error(err instanceof Error ? err.message : '检测失败');
       await loadStatus();
     } finally {
       setPinging(false);
@@ -126,6 +114,8 @@ export default function Auth115Card() {
     }
   };
 
+  const stopQr = () => { setQrMode(null); setQrUrl(null); setQrUid(null); };
+
   const startQr = async (mode: QrMode) => {
     setQrBusy(mode);
     setQrMsg('');
@@ -139,7 +129,7 @@ export default function Auth115Card() {
         : '请在 115 App 中确认授权文件管理');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '申请授权二维码失败');
-      setQrMode(null); setQrUrl(null); setQrUid(null);
+      stopQr();
     } finally {
       setQrBusy(null);
     }
@@ -179,6 +169,7 @@ export default function Auth115Card() {
   }, [qrMode, qrUid, qrUrl, loadStatus]);
 
   const clearOauth = async () => {
+    if (!window.confirm('取消后，转存后的改名整理会改用扫码登录执行。确定取消文件管理授权吗？')) return;
     try {
       await extras.auth115ClearOauth();
       toast.success('已取消文件管理授权');
@@ -192,138 +183,115 @@ export default function Auth115Card() {
   const qrImage = qrMode === 'cookie' && qrUid
     ? extras.auth115CookieQrImageUrl(qrUid)
     : qrUid ? extras.auth115QrImageUrl(qrUid) : '';
+  const scanDisabled = Boolean(qrMode) || qrBusy !== null;
+  const scanButton = (mode: QrMode, configured: boolean, label: string, again: string) => (
+    <Button size="sm" variant={configured ? 'outline' : 'default'} disabled={scanDisabled} onClick={() => void startQr(mode)}>
+      {qrBusy === mode ? <Loader2 className="animate-spin" /> : mode === 'cookie' ? <ScanLine /> : <QrCode />}
+      {qrMode === mode ? '等待扫码…' : configured ? again : label}
+    </Button>
+  );
 
   return (
-    <Card className="overflow-hidden rounded-lg shadow-none">
-      <div className="border-b bg-muted/20 px-5 py-6 sm:px-7">
-        <div className="hidden" />
-        <div className="hidden" />
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-primary">
-              <ShieldCheck className="size-5" />
-              <span className="text-xs font-semibold uppercase tracking-[.18em]">115 账号连接</span>
-            </div>
-            <h2 className="mt-3 text-2xl font-bold tracking-tight">连接你的 115 网盘</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              两种登录方式配合使用，扫码即可自动完成：<b className="text-foreground/80">扫码登录</b>负责接收他人分享的资源，<b className="text-foreground/80">应用授权</b>负责转存后的改名与整理。
-            </p>
-          </div>
-          <div className="rounded-lg border bg-background px-4 py-3 text-right">
-            <p className="text-[11px] uppercase tracking-[.16em] text-muted-foreground">已连接</p>
-            <p className="mt-1 text-xl font-bold">{readyCount}<span className="ml-1 text-sm font-normal text-muted-foreground">/ 2 种方式</span></p>
-          </div>
+    <Panel
+      icon={ShieldCheck}
+      title="115 网盘连接"
+      description="两种方式配合使用：扫码登录负责接收他人分享的资源，文件管理授权负责转存后的改名与整理。"
+      actions={status ? (
+        <ToneBadge tone={readyCount === 2 ? 'success' : readyCount ? 'warning' : 'neutral'} className="tabular-nums">
+          已连接 {readyCount}/2
+        </ToneBadge>
+      ) : undefined}
+      bodyClassName="space-y-4 p-4 sm:p-5"
+    >
+      {statusError ? (
+        <div role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive">
+          <CircleAlert className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1">{statusError}</span>
+          <Button size="sm" variant="outline" className="bg-card" onClick={() => void loadStatus()}>重新加载</Button>
         </div>
+      ) : null}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <MethodCard
+          icon={Link2}
+          step="第 1 步 · 接收分享必备"
+          title="扫码登录 115"
+          side={status?.cookie}
+          description="相当于在网页上登录 115，用来浏览并接收别人分享的资源，是转存必须完成的一步。"
+          detail={status?.cookie.configured ? '登录状态会自动维护，过期时重新扫码即可。' : '未登录时无法接收分享链接。'}
+        >
+          {scanButton('cookie', Boolean(status?.cookie.configured), '扫码登录', '重新扫码')}
+        </MethodCard>
+        <MethodCard
+          icon={FolderCog}
+          step="第 2 步 · 改名整理"
+          title="授权文件管理"
+          side={status?.oauth}
+          description="授权后才能在网盘里建文件夹、改名、移动文件；到期前会自动续期，无需反复操作。"
+          detail={status?.oauth.configured ? '已授权，转存后的整理会自动完成。' : '暂未授权时，改名整理会临时改用扫码登录执行。'}
+        >
+          {scanButton('oauth', Boolean(status?.oauth.configured), '扫码授权', '重新授权')}
+          {status?.oauth.configured ? (
+            <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void clearOauth()}>
+              <Trash2 />取消授权
+            </Button>
+          ) : null}
+        </MethodCard>
       </div>
 
-      <CardContent className="space-y-5 p-5 sm:p-7">
-        {statusError && (
-          <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-            {statusError}
-            <Button size="sm" variant="ghost" className="ml-2 text-destructive" onClick={() => void loadStatus()}>重新加载</Button>
-          </div>
-        )}
-
-        <div className="grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-stretch">
-          <ChannelCard
-            icon={<Link2 className="size-5" />}
-            eyebrow="方式一 · 接收分享必备"
-            title="扫码登录 115"
-            state={status?.cookie.state ?? 'unknown'}
-            configured={Boolean(status?.cookie.configured)}
-            description="相当于在网页上登录 115，用来浏览并接收别人分享给你的资源，是影视转存必须完成的一步。"
-            detail={status?.cookie.configured ? '登录态会自动维护，过期时重新扫码即可' : '未登录时无法接收分享链接。'}
-            danger={status?.cookie.error}
+      {qrUrl && qrUid && qrMode ? (
+        <div className="flex flex-col items-center gap-4 rounded-lg border border-primary/25 bg-primary/[0.04] p-4 sm:flex-row sm:items-start sm:gap-5">
+          {/* 二维码需要深色码点配浅色底才能被识别，深色模式下也保持白底 */}
+          <img
+            src={qrImage} alt={qrMode === 'cookie' ? '115 登录二维码' : '115 授权二维码'}
+            className="size-44 shrink-0 rounded-lg bg-white p-2 shadow-md ring-1 ring-black/5"
           />
-          <div className="hidden items-center justify-center lg:flex">
-            <div className="grid size-9 place-items-center rounded-full border bg-muted text-muted-foreground">+</div>
+          <div className="min-w-0 flex-1 text-center sm:text-left">
+            <p className="text-xs font-medium text-primary">请用手机 115 App 扫码</p>
+            <h4 className="mt-1 text-base font-semibold">{qrMode === 'cookie' ? '登录并接收分享' : '授权文件整理'}</h4>
+            <p className="mt-2 flex items-center justify-center gap-2 text-sm text-foreground/85 sm:justify-start">
+              <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />{qrMsg}
+            </p>
+            <p className="mt-3 text-xs leading-5 text-muted-foreground">直接用 App 扫码即可，不要保存或转发二维码图片。扫码登录使用独立会话，不会影响手机和网页上已登录的 115。</p>
+            <Button size="sm" variant="ghost" className="mt-3" onClick={stopQr}><X />取消</Button>
           </div>
-          <ChannelCard
-            icon={<FolderCog className="size-5" />}
-            eyebrow="方式二 · 改名整理"
-            title="授权文件管理"
-            state={status?.oauth.state ?? 'unknown'}
-            configured={Boolean(status?.oauth.configured)}
-            description="授权后才能在网盘里建文件夹、改名、移动文件；授权到期前会自动续期，无需反复操作。"
-            detail={status?.oauth.configured ? '已授权，转存后的整理操作会自动完成' : '暂未授权时，改名整理会临时改用方式一执行。'}
-            danger={status?.oauth.error}
-          >
-            {status?.oauth.configured && (
-              <Button size="sm" variant="ghost" className="mt-2 h-7 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void clearOauth()}>
-                <Trash2 className="size-3.5" />取消授权
-              </Button>
-            )}
-          </ChannelCard>
         </div>
+      ) : null}
 
-        {status?.traffic?.cooling_down && (
-          <div className="rounded-lg border border-amber-600/30 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
-            115 暂时限制了操作频率，约 {status.traffic.cooldown_remaining ?? 0} 秒后自动恢复。期间系统会自动等待，不会反复重试，请放心。
-          </div>
-        )}
+      {status?.traffic?.cooling_down ? (
+        <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/12 px-3.5 py-2.5 text-[13px] leading-6">
+          <AlertTriangle className="mt-1 size-4 shrink-0 text-warning" />
+          <span>115 暂时限制了操作频率，约 <b className="tabular-nums">{status.traffic.cooldown_remaining ?? 0}</b> 秒后自动恢复。期间系统会自动等待，不会反复重试。</span>
+        </div>
+      ) : null}
 
-        <section className="rounded-lg border bg-muted/20 p-4 sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[.16em] text-primary">操作</p>
-              <h3 className="mt-1 text-base font-semibold">扫码连接网盘</h3>
-            </div>
-            <p className="text-xs text-muted-foreground">建议先扫码登录，再做应用授权</p>
-          </div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-4">
+        <Button size="sm" variant="outline" disabled={pinging} onClick={() => void ping()}>
+          {pinging ? <Loader2 className="animate-spin" /> : <RefreshCw />}检测连接是否正常
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => void loadStatus()}>刷新状态</Button>
+        <span className="text-xs text-muted-foreground sm:ml-auto">建议先扫码登录，再授权文件管理</span>
+      </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <Button variant="outline" className="h-auto min-h-20 flex-col gap-2 rounded-lg py-4"
-                    disabled={Boolean(qrMode) || qrBusy !== null} onClick={() => void startQr('cookie')}>
-              {qrBusy === 'cookie' ? <Loader2 className="size-5 animate-spin" /> : <ScanLine className="size-5" />}
-              <span>{qrMode === 'cookie' ? '等待你扫码确认' : '扫码登录 115'}</span>
-            </Button>
-            <Button variant="outline" className="h-auto min-h-20 flex-col gap-2 rounded-lg py-4"
-                    disabled={Boolean(qrMode) || qrBusy !== null} onClick={() => void startQr('oauth')}>
-              {qrBusy === 'oauth' ? <Loader2 className="size-5 animate-spin" /> : <QrCode className="size-5" />}
-              <span>{qrMode === 'oauth' ? '等待你扫码确认' : '授权文件管理'}</span>
-            </Button>
-            <Button variant="outline" className="h-12 rounded-lg"
-                    disabled={pinging} onClick={() => void ping()}>
-              {pinging ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}检测连接是否正常
-            </Button>
-            <Button variant="outline" className="h-12 rounded-lg"
-                    onClick={() => void loadStatus()}>
-              <Cloud className="size-4" />刷新状态
+      <details className="group rounded-lg border border-border bg-background/60">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-2.5 text-[13px] font-medium [&::-webkit-details-marker]:hidden">
+          <span className="flex items-center gap-2"><KeyRound className="size-4 text-muted-foreground" />无法扫码？手动粘贴登录信息（高级）</span>
+          <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="space-y-3 border-t border-border/70 p-4">
+          <p className="text-xs leading-5 text-muted-foreground">仅在扫码失败时使用：在浏览器登录 115 后复制完整 Cookie 粘贴进来，保存后会自动检测是否有效。</p>
+          <Textarea
+            value={cookieText} onChange={(e) => setCookieText(e.target.value)}
+            placeholder="UID=...; CID=...; SEID=...; KID=..." spellCheck={false}
+            className="min-h-24 break-all bg-card font-mono text-xs md:text-xs"
+          />
+          <div className="flex justify-end">
+            <Button size="sm" disabled={savingCookie} onClick={() => void saveCookie()}>
+              {savingCookie ? <Loader2 className="animate-spin" /> : <KeyRound />}保存并验证
             </Button>
           </div>
-
-          {qrUrl && qrUid && qrMode && (
-            <div className="mt-5 grid gap-4 rounded-lg border bg-background p-4 sm:grid-cols-[184px_1fr] sm:items-center">
-              <img src={qrImage} alt={qrMode === 'cookie' ? '115 登录二维码' : '115 授权二维码'}
-                   className="mx-auto size-44 rounded-xl bg-white p-2 shadow-xl" />
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[.16em] text-primary">请用手机 115 App 扫码</p>
-                <h4 className="mt-2 text-lg font-semibold">{qrMode === 'cookie' ? '登录并接收分享' : '授权文件整理能力'}</h4>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">{qrMsg}</p>
-                <p className="mt-3 text-xs leading-5 text-muted-foreground">直接用 App 扫码即可，不要保存或转发二维码图片。扫码登录使用独立会话，不会影响你手机和网页上已登录的 115。</p>
-              </div>
-            </div>
-          )}
-        </section>
-
-        <details className="group rounded-lg border bg-card">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 text-sm font-medium text-foreground">
-            <span className="flex items-center gap-2"><KeyRound className="size-4 text-muted-foreground" />无法扫码？手动粘贴登录信息（高级）</span>
-            <ChevronDown className="size-4 text-muted-foreground transition group-open:rotate-180" />
-          </summary>
-          <div className="border-t p-4">
-            <p className="mb-2 text-xs leading-5 text-muted-foreground">仅推荐有经验的用户在扫码失败时使用。从浏览器登录 115 后复制完整 Cookie 粘贴进来，保存后会自动检测是否有效。</p>
-            <Textarea value={cookieText} onChange={(e) => setCookieText(e.target.value)}
-                      placeholder="UID=...; CID=...; SEID=...; KID=..." spellCheck={false}
-                      className="min-h-24 font-mono text-xs" />
-            <div className="mt-3 flex justify-end">
-              <Button size="sm" disabled={savingCookie} onClick={() => void saveCookie()}>
-                {savingCookie ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}保存并验证
-              </Button>
-            </div>
-          </div>
-        </details>
-      </CardContent>
-    </Card>
+        </div>
+      </details>
+    </Panel>
   );
 }

@@ -5,6 +5,8 @@
  * - 降级：EventSource 报错（旧代理不支持流等）时自动切轮询；页面隐藏时降频/暂停，
  *   重新可见立即刷新。
  * - 所有取数逻辑仍走原 REST，事件只负责「通知该刷新了」，不改数据契约。
+ * - 同一标签页内所有 Realtime 实例共用一条 EventSource：HTTP/1.1 下浏览器对每个域名
+ *   最多保持 6 条连接，每个订阅者各开一条会很快占满，导致普通请求排队挂起。
  */
 
 import { apiUrl } from '@/api/client';
@@ -29,12 +31,87 @@ function intersects(a: ChangeScope[], b?: ChangeScope[]): boolean {
   return a.some((s) => b.includes(s));
 }
 
+const ALL_SCOPES: ChangeScope[] = ['counts', 'deliveries', 'runtime', 'tasks'];
+
+type StreamEvent =
+  | { type: 'hello' }
+  | { type: 'state'; changed: ChangeScope[] }
+  | { type: 'offline' }
+  | { type: 'fatal' };
+type StreamListener = (event: StreamEvent) => void;
+
+/** 标签页级共享的 SSE 连接，按订阅者引用计数开关。 */
+const stream = {
+  es: null as EventSource | null,
+  failures: 0,
+  listeners: new Set<StreamListener>(),
+
+  subscribe(listener: StreamListener): () => void {
+    this.bindPageLifecycle();
+    this.listeners.add(listener);
+    if (!this.es) this.open();
+    else if (this.es.readyState === EventSource.OPEN) listener({ type: 'hello' }); // 已连通：新订阅者立即对齐
+    return () => {
+      this.listeners.delete(listener);
+      if (!this.listeners.size) this.close();
+    };
+  },
+
+  emit(event: StreamEvent) {
+    for (const listener of [...this.listeners]) listener(event);
+  },
+
+  close() {
+    this.es?.close();
+    this.es = null;
+    this.failures = 0;
+  },
+
+  lifecycleBound: false,
+  /** 页面进入往返缓存（bfcache）时释放连接，否则后台页面会一直占着连接名额。 */
+  bindPageLifecycle() {
+    if (this.lifecycleBound || typeof window === 'undefined' || !('onpagehide' in window)) return;
+    this.lifecycleBound = true;
+    window.addEventListener('pagehide', () => this.close());
+    window.addEventListener('pageshow', (event: PageTransitionEvent) => {
+      if (event.persisted && this.listeners.size && !this.es) this.open();
+    });
+  },
+
+  open() {
+    const es = new EventSource(apiUrl('events'));
+    this.es = es;
+    // 新连接/重连后立刻对齐，弥补断线期间漏掉的变化。
+    es.addEventListener('hello', () => { this.failures = 0; this.emit({ type: 'hello' }); });
+    es.addEventListener('state', (ev: MessageEvent) => {
+      let changed = ALL_SCOPES;
+      try {
+        const payload = JSON.parse(ev.data || '{}');
+        if (Array.isArray(payload.changed)) changed = payload.changed;
+      } catch { /* 解析失败按全部变化处理 */ }
+      this.emit({ type: 'state', changed });
+    });
+    // ping 不触发取数，仅用于保活。EventSource 自己会重连；连续失败说明流被拦，通知订阅者降级轮询。
+    es.onerror = () => {
+      this.failures += 1;
+      if (this.failures >= 2) {
+        // 降级后的订阅者改为各自轮询，不再挂在这条连接上
+        const dropped = [...this.listeners];
+        this.listeners.clear();
+        this.close();
+        for (const listener of dropped) listener({ type: 'fatal' });
+      } else {
+        this.emit({ type: 'offline' });
+      }
+    };
+  },
+};
+
 export class Realtime {
   private opts: Required<Pick<RealtimeOptions, 'scopes'>> & RealtimeOptions;
-  private es: EventSource | null = null;
+  private unsubscribe: (() => void) | null = null;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private mode: 'live' | 'polling' | 'offline' = 'offline';
-  private failures = 0;
   private stopped = false;
 
   constructor(opts: RealtimeOptions) {
@@ -54,14 +131,14 @@ export class Realtime {
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('online', this.flush);
     window.removeEventListener('offline', this.setOffline);
-    this.es?.close();
-    this.es = null;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
     if (this.pollTimer) clearTimeout(this.pollTimer);
   }
 
   /** 操作后立即对齐一次（批准/重试/保存等场景调用）。 */
   flush = () => {
-    this.fire(['counts', 'deliveries', 'runtime', 'tasks']);
+    this.fire(ALL_SCOPES);
     // live 模式下不必额外做什么，观察者下一拍自然会推；poll 模式立即取一次。
     if (this.mode === 'polling') this.schedulePoll(0);
   };
@@ -74,40 +151,19 @@ export class Realtime {
       this.startPolling();
       return;
     }
-    const es = new EventSource(apiUrl('events'));
-    this.es = es;
-
-    es.addEventListener('hello', () => {
-      // 新连接/重连后立刻对齐，弥补断线期间漏掉的变化。
-      this.failures = 0;
-      this.setMode('live');
-      this.fire(['counts', 'deliveries', 'runtime', 'tasks']);
-    });
-
-    es.addEventListener('state', (ev: MessageEvent) => {
-      try {
-        const payload = JSON.parse(ev.data || '{}');
-        const changed = Array.isArray(payload.changed) ? payload.changed : [];
-        if (intersects(changed, this.opts.scopes)) {
-          this.fire(changed);
-        }
-      } catch {
-        this.fire(['counts', 'deliveries', 'runtime', 'tasks']);
-      }
-    });
-
-    // ping 不触发取数，仅用于保活；浏览器原生会自动重连。
-    es.onerror = () => {
-      this.failures += 1;
-      // EventSource 自己会重连；连续失败较久说明流被拦，降级轮询。
-      if (this.failures >= 2) {
-        es.close();
-        this.es = null;
-        this.startPolling();
-      } else {
+    this.unsubscribe = stream.subscribe((event) => {
+      if (event.type === 'hello') {
+        this.setMode('live');
+        this.fire(ALL_SCOPES);
+      } else if (event.type === 'state') {
+        this.fire(event.changed);
+      } else if (event.type === 'offline') {
         this.setMode('offline');
+      } else {
+        this.unsubscribe = null;
+        this.startPolling();
       }
-    };
+    });
   }
 
   // ------------------------------------------------------------------ //
@@ -123,7 +179,7 @@ export class Realtime {
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.stopped) return;
     this.pollTimer = setTimeout(() => {
-      this.fire(['counts', 'deliveries', 'runtime', 'tasks']);
+      this.fire(ALL_SCOPES);
       this.schedulePoll(this.nextDelay());
     }, delay);
   }
@@ -139,7 +195,7 @@ export class Realtime {
       if (this.mode === 'polling') this.schedulePoll(HIDDEN_POLL_MS);
     } else {
       // 回到前台立刻对齐。
-      this.fire(['counts', 'deliveries', 'runtime', 'tasks']);
+      this.fire(ALL_SCOPES);
       if (this.mode === 'polling') this.schedulePoll(0);
     }
   };

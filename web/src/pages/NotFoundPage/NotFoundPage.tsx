@@ -1,18 +1,25 @@
-import { Link } from 'react-router-dom';
-import { Compass } from 'lucide-react';
+import { ArrowLeft, Compass, LayoutDashboard } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Button } from '@/components/ui/button';
 
 export default function NotFoundPage() {
+  const navigate = useNavigate();
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center p-6 text-center">
-      <div className="grid size-14 place-items-center rounded-2xl bg-primary/10 text-primary">
-        <Compass className="size-7" />
+    <div className="flex min-h-svh flex-col items-center justify-center px-5 py-10 text-center">
+      <span className="grid size-12 place-items-center rounded-full bg-primary/10 text-primary">
+        <Compass className="size-6" />
+      </span>
+      <p className="mt-5 text-sm font-semibold tabular-nums text-primary">404</p>
+      <h1 className="mt-1 text-[22px] font-semibold tracking-tight">找不到这个页面</h1>
+      <p className="mt-1.5 max-w-sm text-sm leading-6 text-muted-foreground">链接可能输错了，或者页面已经被移动。</p>
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
+        <Button asChild>
+          <Link to="/dashboard"><LayoutDashboard />回到总览</Link>
+        </Button>
+        {window.history.length > 1 ? (
+          <Button variant="outline" className="bg-card" onClick={() => navigate(-1)}><ArrowLeft />返回上一页</Button>
+        ) : null}
       </div>
-      <h1 className="mt-5 text-5xl font-bold tracking-tight text-primary">404</h1>
-      <p className="mt-3 text-[15px] font-medium">页面走丢了</p>
-      <p className="mt-1 text-sm text-muted-foreground">你要找的页面不存在或已被移动</p>
-      <Link to="/dashboard" className="mt-6 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90">
-        回到运行总览
-      </Link>
     </div>
   );
 }

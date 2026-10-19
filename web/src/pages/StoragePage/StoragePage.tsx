@@ -1,81 +1,256 @@
+import { ArrowRight, Check, ChevronRight, CircleAlert, Copy, Folder, FolderOpen, Hash, House, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { ChevronRight, Folder, RefreshCw, Copy, ArrowRight, Search } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import PageHeader from '@/components/PageHeader';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { extras, type IDirItem } from '@/api/extras';
+import { EmptyState } from '@/components/app/EmptyState';
+import { Page } from '@/components/app/Page';
+import { Panel } from '@/components/app/Panel';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
+
+type Crumb = { id: string; name: string };
+
+/** 复制文本；非 HTTPS 访问时浏览器不提供剪贴板 API，退回到 execCommand。 */
+async function copyText(text: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.append(area);
+  area.select();
+  const ok = document.execCommand('copy');
+  area.remove();
+  if (!ok) throw new Error('copy failed');
+}
+
+function useCopy() {
+  const [copied, setCopied] = useState<string | null>(null);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = (id: string) => {
+    copyText(id).then(() => {
+      setCopied(id);
+      toast.success(`目录编号 ${id} 已复制`);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(null), 1600);
+    }).catch(() => toast.error('无法访问剪贴板，请手动复制'));
+  };
+  return { copied, copy };
+}
 
 export default function StoragePage() {
   const [items, setItems] = useState<IDirItem[]>([]);
-  const [path, setPath] = useState<Array<{ id: string; name: string }>>([]);
+  const [path, setPath] = useState<Crumb[]>([]);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [next, setNext] = useState<number | null>(null);
   const [manualCid, setManualCid] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const version = useRef(0);
+  const { copied, copy } = useCopy();
   const current = path.at(-1)?.id ?? '0';
-  const load = async (cid: string, target: typeof path, offset = 0) => {
+
+  const load = async (cid: string, target: Crumb[], offset = 0) => {
     const request = ++version.current;
-    setBusy(true); setError('');
+    setBusy(true);
+    setError('');
     try {
       const result = await extras.dirs(cid, offset);
       if (request !== version.current) return;
-      setItems(old => offset ? [...old, ...result.items] : result.items);
-      setNext(result.next_offset); setPath(target);
+      // 优先用 115 返回的真实路径（按编号定位时也能显示正确的目录名）。
+      const serverPath = (result.path ?? []).filter((p) => p.id !== '0').map((p) => ({ id: p.id, name: p.name }));
+      setItems((old) => (offset ? [...old, ...result.items] : result.items));
+      setNext(result.next_offset);
+      setPath(serverPath.length ? serverPath : target);
     } catch (e) {
       if (request === version.current) setError(e instanceof Error ? e.message : '目录查询失败');
-    } finally { if (request === version.current) setBusy(false); }
+    } finally {
+      if (request === version.current) setBusy(false);
+    }
   };
+
   useEffect(() => {
     let active = true;
-    extras.dirs('0').then(r => { if (active) { setItems(r.items); setNext(r.next_offset); } })
-      .catch(e => { if (active) setError(e instanceof Error ? e.message : '目录查询失败'); });
+    extras.dirs('0')
+      .then((r) => { if (active) { setItems(r.items); setNext(r.next_offset); } })
+      .catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : '目录查询失败'); })
+      .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, []);
-  return <div className="mx-auto w-full max-w-5xl p-5 sm:p-8">
-    <PageHeader eyebrow="115 网盘" title="浏览网盘目录"
-      description="只读浏览你的 115 网盘，确认保存位置是否正确。这里不会创建、移动或删除任何文件。"
-      action={<Button variant="outline" className="rounded-lg" disabled={busy} onClick={() => void load(current, path)}><RefreshCw className="size-4" />刷新</Button>} />
 
-    <nav aria-label="当前位置" className="mt-5 flex flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-card px-4 py-2.5 text-sm shadow-sm">
-      <button className="flex items-center gap-1 font-medium text-primary" disabled={busy} onClick={() => void load('0', [])}><Folder className="size-4" />全部文件</button>
-      {path.map((x, i) => <span key={x.id} className="flex items-center gap-1"><ChevronRight className="size-3.5 text-muted-foreground" /><button disabled={busy} className="max-w-52 truncate font-medium text-primary" onClick={() => void load(x.id, path.slice(0, i + 1))}>{x.name}</button></span>)}
-    </nav>
+  const jump = () => {
+    const cid = manualCid.trim();
+    if (!/^[0-9]+$/.test(cid)) {
+      toast.error('目录编号必须是纯数字');
+      return;
+    }
+    void load(cid, cid === '0' ? [] : [{ id: cid, name: `目录 ${cid}` }]);
+  };
 
-    {error && <div role="alert" className="mt-4 rounded-xl border border-destructive/30 bg-destructive/5 p-5"><p className="text-sm text-destructive">{error}</p><div className="mt-3 flex gap-4"><Button variant="outline" size="sm" onClick={() => void load(current, path)}>重新查询</Button><Link to="/config?tab=connections" className="text-sm text-primary underline">检查 115 连接</Link></div></div>}
+  const firstLoad = busy && items.length === 0 && !error;
 
-    <Card className="mt-4 rounded-xl border-border/70 shadow-sm">
-      <CardContent className="p-2">
-        {busy && <p role="status" className="p-6 text-sm text-muted-foreground">正在读取目录…</p>}
-        {!busy && !error && items.length === 0 && <p className="p-12 text-center text-sm text-muted-foreground">这个文件夹里没有子文件夹{next !== null ? '，可继续加载后面的内容。' : '。'}</p>}
-        <ul className="divide-y divide-border/60">
-          {items.map(x => <li key={x.id} className="group flex items-center gap-2 rounded-lg">
-            <button disabled={busy} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-3 text-left transition-colors hover:bg-muted/70" onClick={() => void load(x.id, [...path, x])}>
-              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/8 text-primary"><Folder className="size-4" /></span>
-              <span className="flex-1 truncate text-[13.5px] font-medium">{x.name}</span>
-              <span className="font-mono text-[11px] text-muted-foreground/50 opacity-0 transition group-hover:opacity-100">{x.id}</span>
+  return (
+    <Page
+      title="115 目录"
+      description="只读浏览你的 115 网盘，确认保存位置是否正确；不会创建、移动或删除任何文件。"
+      actions={(
+        <Button variant="outline" className="bg-card" disabled={busy} onClick={() => void load(current, path)}>
+          <RefreshCw className={cn(busy && 'animate-spin')} />刷新
+        </Button>
+      )}
+    >
+      <Panel bodyClassName="p-0">
+        <div className="flex items-center gap-3 border-b border-border/70 px-3 py-2.5 sm:px-4">
+          <nav aria-label="当前位置" className="min-w-0 flex-1 overflow-x-auto">
+            <ol className="flex items-center gap-0.5 whitespace-nowrap text-sm">
+              <li>
+                <button
+                  type="button"
+                  disabled={busy || path.length === 0}
+                  onClick={() => void load('0', [])}
+                  className={cn(
+                    'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 font-medium transition-colors',
+                    path.length ? 'text-muted-foreground hover:bg-muted hover:text-foreground' : 'text-foreground',
+                  )}
+                >
+                  <House className="size-4" />全部文件
+                </button>
+              </li>
+              {path.map((crumb, i) => {
+                const last = i === path.length - 1;
+                return (
+                  <li key={crumb.id} className="flex items-center gap-0.5">
+                    <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
+                    <button
+                      type="button"
+                      disabled={busy || last}
+                      aria-current={last ? 'page' : undefined}
+                      onClick={() => void load(crumb.id, path.slice(0, i + 1))}
+                      className={cn(
+                        'inline-flex min-h-8 max-w-56 items-center rounded-md px-2 font-medium transition-colors',
+                        last ? 'text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                      )}
+                    >
+                      <span className="truncate">{crumb.name}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          </nav>
+          {current !== '0' ? (
+            <button
+              type="button"
+              onClick={() => copy(current)}
+              title="复制当前目录编号"
+              className="hidden min-h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground sm:inline-flex"
+            >
+              <Hash className="size-3.5" />
+              <span className="font-mono tabular-nums">{current}</span>
+              {copied === current ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
             </button>
-            <Button aria-label={`复制「${x.name}」的目录编号`} variant="ghost" size="icon" className="mr-1 opacity-0 transition group-hover:opacity-100" onClick={() => void navigator.clipboard.writeText(x.id).then(() => toast.success('目录编号已复制')).catch(() => toast.error('无法访问剪贴板，请手动复制'))}><Copy className="size-4" /></Button>
-          </li>)}
-        </ul>
-        {next !== null && <Button className="m-3 rounded-lg" variant="outline" disabled={busy} onClick={() => void load(current, path, next)}>加载更多</Button>}
-      </CardContent>
-    </Card>
+          ) : null}
+        </div>
 
-    <div className="mt-4">
-      <button type="button" onClick={() => setShowAdvanced(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
-        <Search className="size-3.5" />{showAdvanced ? '收起按编号定位' : '知道目录编号？直接定位'}
-      </button>
-      {showAdvanced && <div className="mt-2 flex flex-wrap gap-2">
-        <Input aria-label="目录编号" value={manualCid} onChange={e => setManualCid(e.target.value)} className="max-w-sm font-mono" placeholder="输入目录编号后回车" onKeyDown={(e) => { if (e.key === 'Enter') { if (!/^[0-9]+$/.test(manualCid)) { toast.error('目录编号必须是纯数字'); return; } void load(manualCid, manualCid === '0' ? [] : [{ id: manualCid, name: '指定目录' }]); } }} />
-        <Button variant="outline" disabled={busy} onClick={() => { if (!/^[0-9]+$/.test(manualCid)) { toast.error('目录编号必须是纯数字'); return; } void load(manualCid, manualCid === '0' ? [] : [{ id: manualCid, name: '指定目录' }]); }}><ArrowRight className="size-4" />定位</Button>
-        <Link to="/config" className="flex items-center px-2 text-sm text-primary underline">去设置保存目录</Link>
-      </div>}
-      <p className="mt-2 text-xs text-muted-foreground">一般使用无需关心目录编号；它只在和外部工具对接时才需要。</p>
-    </div>
-  </div>;
+        {error ? (
+          <div role="alert" className="flex flex-col items-center px-6 py-14 text-center">
+            <span className="grid size-11 place-items-center rounded-full bg-destructive/10 text-destructive">
+              <CircleAlert className="size-5" />
+            </span>
+            <p className="mt-4 text-sm font-medium">无法读取这个目录</p>
+            <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{error}</p>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <Button variant="outline" onClick={() => void load(current, path)}><RefreshCw />重新查询</Button>
+              <Button asChild variant="ghost" className="text-primary">
+                <Link to="/config?tab=connections">检查 115 连接<ArrowRight /></Link>
+              </Button>
+            </div>
+          </div>
+        ) : firstLoad ? (
+          <div className="space-y-1 p-2" role="status" aria-label="正在读取目录">
+            {[0, 1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-11 rounded-lg" />)}
+          </div>
+        ) : items.length === 0 ? (
+          <EmptyState
+            icon={FolderOpen}
+            title="这里没有子文件夹"
+            description={next !== null ? '可以继续加载后面的内容。' : '这个页面只列出文件夹，不显示文件。'}
+            className="m-4 border-none py-12"
+          />
+        ) : (
+          <ul className={cn('p-1.5 transition-opacity sm:p-2', busy && 'opacity-60')}>
+            {items.map((item) => (
+              <li key={item.id} className="group flex items-center gap-1 rounded-lg transition-colors hover:bg-muted/70">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void load(item.id, [...path, { id: item.id, name: item.name }])}
+                  className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-lg px-2.5 text-left"
+                >
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                    <Folder className="size-4" />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.name}</span>
+                  <span className="hidden font-mono text-[11px] tabular-nums text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 sm:inline">
+                    {item.id}
+                  </span>
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground/50" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`复制「${item.name}」的目录编号`}
+                  title="复制目录编号"
+                  onClick={() => copy(item.id)}
+                  className="mr-1 grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-card hover:text-foreground focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                >
+                  {copied === item.id ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {next !== null && !error ? (
+          <div className="border-t border-border/70 p-3 text-center">
+            <Button variant="outline" disabled={busy} onClick={() => void load(current, path, next)}>加载更多</Button>
+          </div>
+        ) : null}
+      </Panel>
+
+      <div className="mt-4 px-1">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          aria-expanded={showAdvanced}
+          className="inline-flex min-h-8 items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+        >
+          <Hash className="size-3.5" />{showAdvanced ? '收起按编号定位' : '知道目录编号？直接定位'}
+        </button>
+        {showAdvanced ? (
+          <form className="mt-2 flex max-w-md gap-2" onSubmit={(e) => { e.preventDefault(); jump(); }}>
+            <Input
+              aria-label="目录编号"
+              inputMode="numeric"
+              value={manualCid}
+              onChange={(e) => setManualCid(e.target.value)}
+              className="bg-card font-mono"
+              placeholder="输入目录编号"
+            />
+            <Button type="submit" variant="outline" className="bg-card" disabled={busy || !manualCid.trim()}>定位</Button>
+          </form>
+        ) : null}
+        <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+          一般使用不需要关心目录编号，只在对接外部工具时才用得到。保存目录在
+          <Link to="/config" className="mx-0.5 font-medium text-primary hover:underline">设置</Link>中修改。
+        </p>
+      </div>
+    </Page>
+  );
 }

@@ -17,6 +17,8 @@ npm run lint:eslint
 npm run build                 # 产物在 dist/，由 python -m reelay.web 直接托管
 ```
 
+界面规范见 [DESIGN.md](DESIGN.md)（语义色、深色模式、页面结构与移动端约定）。
+
 部署在反向代理的子路径下时，构建前设置 `VITE_BASE_PATH`（如 `/reelay/`），路由与 API 前缀都会随之调整。
 
 ## 目录
@@ -24,7 +26,7 @@ npm run build                 # 产物在 dist/，由 python -m reelay.web 直�
 ```
 src/
 ├── api/          # REST 客户端（apiUrl 统一拼接前缀）
-├── components/   # 布局、登录、业务组件；ui/ 为 shadcn 组件
+├── components/   # 布局、登录、业务组件；app/ 为页面通用组件，ui/ 为 shadcn 组件
 ├── lib/          # 类型、状态文案、SSE 实时通道
 └── pages/        # 各页面，按路由拆分；统计页按需加载
 ```

@@ -1,141 +1,266 @@
 import {
-  Clapperboard, FolderCog, FolderTree, LayoutDashboard, LibraryBig, ListChecks,
-  LogOut, Puzzle, RadioTower, ScrollText, Settings2, TrendingUp,
+  ChartColumn, ChevronRight, Clapperboard, FolderCog, FolderTree, Inbox, LayoutDashboard, LibraryBig,
+  ListChecks, LogOut, Menu, Puzzle, ScanSearch, ScrollText, Settings2, Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { Suspense, useEffect, useState } from 'react';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { Toaster } from '@/components/ui/sonner';
+import { Sheet } from '@/components/app/Sheet';
+import { ThemeToggle } from '@/components/app/ThemeToggle';
+import { api } from '@/api/client';
 import { extras } from '@/api/extras';
+import { Realtime } from '@/lib/realtime';
+import type { IDashboard } from '@/lib/types';
 import { cn } from '@/lib/utils';
+
+type BadgeKey = 'pending' | 'failed';
 
 interface NavEntry {
   path: string;
   label: string;
   icon: LucideIcon;
-}
-interface NavGroup {
-  title: string;
-  items: NavEntry[];
+  badge?: BadgeKey;
 }
 
-const NAV_GROUPS: NavGroup[] = [
-  {
-    title: '监控',
-    items: [
-      { path: '/dashboard', label: '运行总览', icon: LayoutDashboard },
-      { path: '/tasks', label: '待办与任务', icon: ListChecks },
-    ],
-  },
-  {
-    title: '资源',
-    items: [
-      { path: '/library', label: '媒体库', icon: LibraryBig },
-      { path: '/stats', label: '转存统计', icon: TrendingUp },
-    ],
-  },
-  {
-    title: '设置',
-    items: [
-      { path: '/sources', label: '监听源测试', icon: RadioTower },
-      { path: '/organize', label: '整理命名预览', icon: FolderCog },
-      { path: '/storage', label: '115 目录', icon: FolderTree },
-      { path: '/config', label: '系统设置', icon: Settings2 },
-      { path: '/extensions', label: '插件与扩展', icon: Puzzle },
-      { path: '/logs', label: '运行日志', icon: ScrollText },
-    ],
-  },
+const PRIMARY: NavEntry[] = [
+  { path: '/dashboard', label: '总览', icon: LayoutDashboard },
+  { path: '/inbox', label: '待审批', icon: Inbox, badge: 'pending' },
+  { path: '/tasks', label: '任务', icon: ListChecks, badge: 'failed' },
 ];
+const MEDIA: NavEntry[] = [
+  { path: '/library', label: '媒体库', icon: LibraryBig },
+  { path: '/stats', label: '统计', icon: ChartColumn },
+];
+const SYSTEM: NavEntry[] = [
+  { path: '/config', label: '设置', icon: Settings2 },
+  { path: '/extensions', label: '插件', icon: Puzzle },
+];
+const TOOLS: NavEntry[] = [
+  { path: '/sources', label: '识别测试', icon: ScanSearch },
+  { path: '/organize', label: '命名预览', icon: FolderCog },
+  { path: '/storage', label: '115 目录', icon: FolderTree },
+  { path: '/logs', label: '运行日志', icon: ScrollText },
+];
+const MOBILE_TABS: NavEntry[] = [...PRIMARY, MEDIA[0]];
+
+/** 侧边栏徽标与 Worker 状态：订阅实时通道，计数变化时刷新。 */
+function useShellStatus() {
+  const [dashboard, setDashboard] = useState<IDashboard | null>(null);
+  useEffect(() => {
+    let active = true;
+    const load = () => api.dashboard().then((d) => { if (active) setDashboard(d); }).catch(() => undefined);
+    void load();
+    const realtime = new Realtime({ scopes: ['counts', 'runtime'], onChange: () => { void load(); } });
+    realtime.start();
+    return () => { active = false; realtime.stop(); };
+  }, []);
+  const counts = dashboard?.counts ?? {};
+  const worker = dashboard?.runtime.worker;
+  return {
+    badges: { pending: counts.pending_approval ?? 0, failed: counts.failed ?? 0 } as Record<BadgeKey, number>,
+    workerOnline: Boolean(worker && worker.status === 'running' && !worker.stale),
+    alerts: dashboard?.alerts?.length ?? 0,
+    loaded: dashboard !== null,
+  };
+}
+
+function NavItem({ item, count, onNavigate }: { item: NavEntry; count?: number; onNavigate?: () => void }) {
+  const Icon = item.icon;
+  return (
+    <NavLink
+      to={item.path}
+      onClick={onNavigate}
+      className={({ isActive }) => cn(
+        'group flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13.5px] font-medium transition-colors',
+        isActive
+          ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-xs ring-1 ring-sidebar-border'
+          : 'text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground',
+      )}
+    >
+      {({ isActive }) => (
+        <>
+          <Icon className={cn('size-4 shrink-0', isActive ? 'text-sidebar-primary' : 'text-sidebar-foreground/70')} />
+          <span className="flex-1 truncate">{item.label}</span>
+          {count ? (
+            <span className={cn(
+              'min-w-5 rounded-full px-1.5 text-center text-[11px] font-semibold leading-5 tabular-nums',
+              item.badge === 'failed' ? 'bg-destructive/12 text-destructive' : 'bg-warning/15 text-warning',
+            )}>
+              {count > 99 ? '99+' : count}
+            </span>
+          ) : null}
+        </>
+      )}
+    </NavLink>
+  );
+}
+
+function NavGroup({ title, items, badges, onNavigate }: {
+  title?: string; items: NavEntry[]; badges: Record<BadgeKey, number>; onNavigate?: () => void;
+}) {
+  return (
+    <div className="space-y-0.5">
+      {title ? <div className="px-2.5 pb-1 pt-4 text-[11px] font-medium tracking-wide text-sidebar-foreground/55">{title}</div> : null}
+      {items.map((item) => (
+        <NavItem key={item.path} item={item} count={item.badge ? badges[item.badge] : undefined} onNavigate={onNavigate} />
+      ))}
+    </div>
+  );
+}
+
+function ToolsGroup({ onNavigate }: { onNavigate?: () => void }) {
+  const location = useLocation();
+  const inside = TOOLS.some((t) => location.pathname.startsWith(t.path));
+  const [open, setOpen] = useState(inside);
+  const expanded = open || inside;
+  return (
+    <div className="space-y-0.5">
+      <button
+        type="button"
+        onClick={() => setOpen(!expanded)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13.5px] font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+      >
+        <Wrench className="size-4 shrink-0 text-sidebar-foreground/70" />
+        <span className="flex-1 text-left">工具</span>
+        <ChevronRight className={cn('size-3.5 text-sidebar-foreground/50 transition-transform', expanded && 'rotate-90')} />
+      </button>
+      {expanded ? (
+        <div className="ml-[17px] space-y-0.5 border-l border-sidebar-border pl-2">
+          {TOOLS.map((item) => <NavItem key={item.path} item={item} onNavigate={onNavigate} />)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="grid size-8 place-items-center rounded-[9px] bg-gradient-to-br from-[hsl(171_58%_44%)] to-[hsl(178_64%_26%)] text-white shadow-[0_4px_12px_-3px_hsl(173_60%_30%/0.6)]">
+        <Clapperboard className="size-4" />
+      </div>
+      <div className="leading-tight">
+        <div className="text-[15px] font-semibold tracking-tight text-foreground">Reelay</div>
+        <div className="text-[11px] text-muted-foreground">Telegram → 115</div>
+      </div>
+    </div>
+  );
+}
+
+function ShellFooter({ workerOnline, loaded }: { workerOnline: boolean; loaded: boolean }) {
+  const [authEnabled, setAuthEnabled] = useState(false);
+  useEffect(() => {
+    extras.authStatus().then((r) => setAuthEnabled(r.auth_required)).catch(() => undefined);
+  }, []);
+  return (
+    <div className="space-y-3 border-t border-sidebar-border px-3 py-3">
+      <div className="flex items-center justify-between gap-2 px-1">
+        <span className="flex items-center gap-2 text-xs text-sidebar-foreground">
+          <span className={cn('size-2 rounded-full', !loaded ? 'bg-muted-foreground/40' : workerOnline ? 'bg-success' : 'bg-warning')} />
+          {!loaded ? '连接中' : workerOnline ? '后台运行中' : '后台未运行'}
+        </span>
+        <ThemeToggle />
+      </div>
+      {authEnabled ? (
+        <button
+          type="button"
+          onClick={() => { void extras.logout().then(() => window.location.reload()); }}
+          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+        >
+          <LogOut className="size-3.5" />退出登录
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function NavContent({ badges, onNavigate }: { badges: Record<BadgeKey, number>; onNavigate?: () => void }) {
+  return (
+    <nav aria-label="主导航" className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+      <NavGroup items={PRIMARY} badges={badges} onNavigate={onNavigate} />
+      <NavGroup title="媒体" items={MEDIA} badges={badges} onNavigate={onNavigate} />
+      <NavGroup title="系统" items={SYSTEM} badges={badges} onNavigate={onNavigate} />
+      <div className="mt-0.5"><ToolsGroup onNavigate={onNavigate} /></div>
+    </nav>
+  );
+}
 
 export const Layout = () => {
+  const status = useShellStatus();
+  const [drawer, setDrawer] = useState(false);
+
   return (
-    <div className="min-h-screen bg-transparent text-foreground lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
-      <aside className="border-sidebar-border/70 bg-sidebar text-sidebar-foreground lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col lg:border-r">
-        {/* 品牌区 */}
-        <div className="relative flex h-16 items-center gap-3 overflow-hidden border-b border-sidebar-border/70 px-5">
-          <div
-            className="pointer-events-none absolute inset-0 opacity-60"
-            style={{ background: 'radial-gradient(420px 120px at 0% -40%, rgba(64,200,180,.22), transparent 70%)' }}
-          />
-          <div className="relative flex size-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-[#2bb5a3] to-[#137a6e] text-white shadow-[0_4px_14px_-2px_rgba(20,160,145,.55)]">
-            <Clapperboard className="size-[18px]" />
-          </div>
-          <div className="relative leading-tight">
-            <div className="text-[15px] font-semibold tracking-tight text-white">Reelay</div>
-            <div className="text-[11px] text-sidebar-foreground/55">Telegram → 115 智能转存</div>
-          </div>
-        </div>
-
-        {/* 导航 */}
-        <nav className="flex gap-1.5 overflow-x-auto px-3 pb-3 pt-3 lg:flex-1 lg:flex-col lg:overflow-y-auto lg:pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {NAV_GROUPS.map((group, gi) => (
-            <div key={group.title} className="contents lg:block">
-              {gi > 0 && <div className="mx-2 my-3 hidden h-px bg-sidebar-border/60 lg:block" />}
-              <div className="hidden px-3 pb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.14em] text-sidebar-foreground/40 lg:block">
-                {group.title}
-              </div>
-              <div className="contents lg:block lg:space-y-0.5">
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <NavLink
-                      key={item.path}
-                      to={item.path}
-                      className={({ isActive }) =>
-                        cn(
-                          'relative flex min-w-fit items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-150',
-                          isActive
-                            ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-[inset_0_1px_0_rgba(255,255,255,.04)]'
-                            : 'text-sidebar-foreground/62 hover:bg-sidebar-accent/55 hover:text-sidebar-foreground',
-                        )
-                      }
-                    >
-                      {({ isActive }) => (
-                        <>
-                          <span
-                            className={cn(
-                              'absolute left-0 top-1/2 hidden h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-sidebar-primary transition-all lg:block',
-                              isActive ? 'opacity-100' : 'opacity-0',
-                            )}
-                          />
-                          <Icon className={cn('size-4 shrink-0', isActive ? 'text-sidebar-primary' : 'text-sidebar-foreground/50')} />
-                          {item.label}
-                        </>
-                      )}
-                    </NavLink>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </nav>
-
-        {/* 底部：退出 */}
-        <div className="hidden border-t border-sidebar-border/70 p-3 lg:block">
-          <LogoutButton />
-        </div>
+    <div className="min-h-screen text-foreground lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
+      {/* 桌面侧边栏 */}
+      <aside className="hidden border-r border-sidebar-border bg-sidebar lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
+        <div className="px-5 pb-3 pt-5"><Brand /></div>
+        <NavContent badges={status.badges} />
+        <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} />
       </aside>
 
+      {/* 移动端顶栏 */}
+      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-background/85 px-4 backdrop-blur lg:hidden">
+        <Brand />
+        <button
+          type="button"
+          onClick={() => setDrawer(true)}
+          className="grid size-9 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label="打开导航"
+        >
+          <Menu className="size-5" />
+        </button>
+      </header>
+      <Sheet open={drawer} onOpenChange={setDrawer} title="导航" side="left" className="bg-sidebar p-0">
+        <div className="-mx-5 -my-5 flex h-[calc(100%+2.5rem)] flex-col">
+          <NavContent badges={status.badges} onNavigate={() => setDrawer(false)} />
+          <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} />
+        </div>
+      </Sheet>
+
       <main className="min-w-0">
-        <Outlet />
+        <Suspense fallback={null}><Outlet /></Suspense>
       </main>
+
+      {/* 移动端底部标签栏 */}
+      <nav aria-label="快捷导航" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t bg-background/92 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
+        {MOBILE_TABS.map((item) => {
+          const Icon = item.icon;
+          const count = item.badge ? status.badges[item.badge] : 0;
+          return (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              className={({ isActive }) => cn(
+                'relative flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium',
+                isActive ? 'text-primary' : 'text-muted-foreground',
+              )}
+            >
+              <Icon className="size-5" />
+              {item.label}
+              {count ? (
+                <span className={cn(
+                  'absolute left-1/2 top-1 ml-1.5 min-w-4 rounded-full px-1 text-center text-[10px] font-semibold leading-4 text-white',
+                  item.badge === 'failed' ? 'bg-destructive' : 'bg-warning',
+                )}>
+                  {count > 99 ? '99+' : count}
+                </span>
+              ) : null}
+            </NavLink>
+          );
+        })}
+        <button
+          type="button"
+          onClick={() => setDrawer(true)}
+          className="flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-muted-foreground"
+        >
+          <Menu className="size-5" />
+          更多
+        </button>
+      </nav>
+
       <Toaster position="top-right" richColors closeButton />
     </div>
   );
 };
-
-function LogoutButton() {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    extras.authStatus().then((r) => setEnabled(r.auth_required)).catch(() => undefined);
-  }, []);
-  if (!enabled) return null;
-  return (
-    <button
-      onClick={() => { void extras.logout().then(() => window.location.reload()); }}
-      className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium text-sidebar-foreground/62 transition-colors hover:bg-sidebar-accent/55 hover:text-sidebar-foreground"
-    >
-      <LogOut className="size-4 text-sidebar-foreground/50" />退出登录
-    </button>
-  );
-}

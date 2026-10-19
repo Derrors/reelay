@@ -1,20 +1,21 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import LoginGate from '@/components/LoginGate';
 import DashboardPage from '@/pages/DashboardPage/DashboardPage';
+import InboxPage from '@/pages/InboxPage/InboxPage';
 import TasksPage from '@/pages/TasksPage/TasksPage';
-import ConfigPage from '@/pages/ConfigPage/ConfigPage';
-import OrganizePage from '@/pages/OrganizePage/OrganizePage';
-import LogsPage from '@/pages/LogsPage/LogsPage';
-import StoragePage from '@/pages/StoragePage/StoragePage';
-import SourcesPage from '@/pages/SourcesPage/SourcesPage';
 import LibraryPage from '@/pages/LibraryPage/LibraryPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 import { extras } from '@/api/extras';
 
-// 统计页依赖 echarts（体积占主包大半），按需加载。
+// 常用页面直接打包；统计页（echarts）、设置与工具页按需加载，控制首屏体积。
 const StatsPage = lazy(() => import('@/pages/StatsPage/StatsPage'));
+const ConfigPage = lazy(() => import('@/pages/ConfigPage/ConfigPage'));
+const SourcesPage = lazy(() => import('@/pages/SourcesPage/SourcesPage'));
+const OrganizePage = lazy(() => import('@/pages/OrganizePage/OrganizePage'));
+const StoragePage = lazy(() => import('@/pages/StoragePage/StoragePage'));
+const LogsPage = lazy(() => import('@/pages/LogsPage/LogsPage'));
 
 export default function App() {
   const [needAuth, setNeedAuth] = useState<boolean | null>(null);
@@ -39,6 +40,7 @@ export default function App() {
       <Route path="/" element={<Layout />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="inbox" element={<InboxPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="config" element={<ConfigPage />} />
         <Route path="extensions" element={<ConfigPage key="extensions" initialTab="extensions" />} />
@@ -46,7 +48,7 @@ export default function App() {
         <Route path="logs" element={<LogsPage />} />
         <Route path="storage" element={<StoragePage />} />
         <Route path="sources" element={<SourcesPage />} />
-        <Route path="stats" element={<Suspense fallback={null}><StatsPage /></Suspense>} />
+        <Route path="stats" element={<StatsPage />} />
         <Route path="library" element={<LibraryPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
