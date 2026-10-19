@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - 仅在未装 web 依赖时触发
@@ -27,6 +27,7 @@ from .core.registry import discover
 from .core.service import ConflictError, ManagementService, NotFoundError
 from .core.store import Store
 from .core.worker import Worker
+from .realtime import EventBus, event_stream
 from .web_extras import register_extras, auth_enabled
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,7 @@ def create_app(
         store,
         concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")),
     )
+    bus = EventBus(store=store, service=service)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -90,13 +92,16 @@ def create_app(
         app.state.pipeline = pipeline
         app.state.service = service
         app.state.worker = worker
+        app.state.bus = bus
         worker_task = None
         if start_worker:
             import asyncio
             worker_task = asyncio.create_task(worker.run(drain=False))
+        bus.start()
         try:
             yield
         finally:
+            await bus.stop()
             worker.stop()
             if worker_task:
                 worker_task.cancel()
@@ -128,6 +133,25 @@ def create_app(
     @app.get("/api/dashboard")
     async def dashboard():
         return service.dashboard()
+
+    @app.get("/api/events")
+    async def events(request: Request):
+        """SSE：状态变化时推送 {type:'state', changed:[...]}。
+
+        鉴权与其他接口一致（HttpOnly Cookie 自动随 EventSource 发送）；
+        nginx/反代需关闭该路径缓冲（X-Accel-Buffering: no）。
+        """
+        if auth_enabled():
+            from .web_extras import _COOKIE
+            token = request.cookies.get(_COOKIE)
+            if token is None:
+                raise HTTPException(status_code=401, detail="需要登录")
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        return StreamingResponse(event_stream(bus), media_type="text/event-stream", headers=headers)
 
     @app.get("/api/tasks")
     async def tasks(

@@ -446,6 +446,14 @@ class Store:
         ).fetchall()
         return {r["state"]: r["c"] for r in rows}
 
+    def list_recent_updated(self, limit: int = 200) -> list[sqlite3.Row]:
+        """最近更新任务的轻量指纹，供 SSE 观察者判断任务是否有推进。"""
+        return self._conn.execute(
+            "SELECT task_id, state, updated_at FROM tasks "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+
     def recover_interrupted(self) -> list[PipelineContext]:
         """所有可执行中间态都有恢复路径；旧版未知转存不能盲目重放。"""
         rows = self._conn.execute(
