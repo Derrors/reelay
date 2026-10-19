@@ -29,10 +29,13 @@ ACTIONS = {
     "reorganize": "重新整理",
     "fix_parse": "修正片名或季集后重新整理",
     "fix_and_retry": "修正识别结果后重试",
+    "manual_transfer": "到网盘挑选文件手动转存",
     "retry": "稍后重试",
     "review": "查看任务轨迹",
 }
 _PARSE_WORDS = ("集号", "季号", "缺标题", "缺集数", "识别结果", "无法从文件名")
+# 分享里的文件本身需要人挑（多个候选、分段、目录太深）：改识别结果也不会通过
+_SHARE_WORDS = ("需人工选择", "未找到正片", "分段", "目录过深")
 _PROMPT = (
     "你在帮用户看懂一个影视资源转存任务为什么停下来了。facts 是代码查出的事实，action 是已经决定的建议操作。"
     "用一句不超过 50 字的中文说明原因，只依据 facts，不要编造，不要改变或质疑 action，不要复述建议操作。"
@@ -71,7 +74,7 @@ def action(f: dict) -> str:
             return "fix_parse" if any(word in problem for word in _PARSE_WORDS) else "reorganize"
         return "review"
     if f["no_auto_retry"]:
-        return "fix_and_retry"
+        return "manual_transfer" if any(word in (f["error"] or "") for word in _SHARE_WORDS) else "fix_and_retry"
     return "retry" if f["error"] else "review"
 
 
@@ -85,6 +88,7 @@ def rule_text(f: dict, act: str) -> str:
         "reorganize": f"文件已转存，整理没有完成：{(f['organize_error'] or '')[:60]}",
         "fix_parse": f"文件已转存，但{(f['organize_error'] or '')[:60]}",
         "fix_and_retry": f"转存前校验未通过：{error[:70]}",
+        "manual_transfer": f"转存前校验未通过：{error[:70]}",
         "retry": f"自动重试 {f['retries']} 次后仍失败：{error[:60]}",
         "review": error[:80] or "需要你确认处理结果",
     }[act]

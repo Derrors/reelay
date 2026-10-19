@@ -230,8 +230,9 @@ async def compile_rules(client, model: str, *, cfg: dict, scope: str, request: s
     messages = [{"role": "system", "content": _PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
     for attempt in range(2):
+        # 要写出整套过滤与分类规则，输出长：实测一句三条偏好要 80 秒
         proposal, _ = await ai.complete_json(client, model=model, purpose="compile", messages=messages,
-                                             schema=SCHEMA, name="rule_draft", validate=validate)
+                                             schema=SCHEMA, name="rule_draft", validate=validate, timeout=150)
         candidate = apply(cfg, scope, proposal)
         try:
             candidate = normalize_config(candidate)

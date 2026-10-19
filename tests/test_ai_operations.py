@@ -162,7 +162,15 @@ class TestLibraryAndQuality(Base):
             ad.state = TaskState.REJECTED
             self.store.save_task(ad)
         done_task(self.store, "1", title="剧")
+        for i in range(10):  # 确认前就过期的分享：单独统计，也不作为被拒样例交给 AI
+            gone = message(text=f"剧 第{i}集 已过期", msg_id=f"gone{i}", source="@slow")
+            gone.parsed = ParsedResource(is_media=True, title="剧", media_type="tv")
+            gone.ns("share").update(status="unavailable", note="分享无法访问：链接已过期")
+            gone.state = TaskState.SKIPPED
+            self.store.save_task(gone)
         stats = {item["source"]: item for item in self.service.source_quality()["sources"]}
+        self.assertEqual((stats["@slow"]["unavailable"], stats["@slow"]["unavailable_rate"]), (10, 1.0))
+        self.assertIn("分享常在确认前失效", stats["@slow"]["flags"])
         self.assertEqual((stats["@noisy"]["received"], stats["@noisy"]["ad_rate"]), (12, 1.0))
         self.assertIn("广告占一半以上", stats["@noisy"]["flags"])
         self.assertEqual(stats["@bot"]["resolution"], "1080p")
@@ -176,6 +184,8 @@ class TestLibraryAndQuality(Base):
         self.assertEqual(noisy["filters"]["block_keywords"], ["进群"])
         payload = json.loads(self.parser._client.calls[0]["messages"][1]["content"])
         self.assertTrue(all("<链接>" in s or "http" not in s for s in payload[0]["rejected_samples"]))
+        slow = next(item for item in payload if item["source"] == "@slow")
+        self.assertEqual(slow["rejected_samples"], [])
 
     def test_rates_are_none_without_data(self):
         self.assertEqual(library.source_quality([], {}), [])
@@ -254,6 +264,14 @@ class TestFailureExplainer(Base):
         explanation = await self.run_on(ctx)
         self.assertEqual((explanation["action"], explanation["text"]), ("share_gone", "分享不可用，无法转存：链接已过期"))
         self.assertIn("建议：分享已失效", self.notices()[0])
+
+    async def test_shares_that_need_picking_files_are_not_sent_to_fix_the_parse(self):
+        ctx = tv_ctx()
+        ctx.state = TaskState.FAILED
+        ctx.ns("task")["no_auto_retry"] = True
+        self.store.save_task(ctx, error="转存前校验未通过，需人工处理：电影分享包含 2 个正片候选，需人工选择：a.iso、b.iso")
+        explanation = await self.run_on(ctx)
+        self.assertEqual((explanation["action"], explanation["label"]), ("manual_transfer", "到网盘挑选文件手动转存"))
 
     async def test_ai_phrases_the_reason_but_not_the_action(self):
         ctx = tv_ctx()

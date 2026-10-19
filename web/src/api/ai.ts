@@ -136,6 +136,9 @@ export interface ISourceDraft {
     title: string | null; media_type: string | null; season: number | null; episodes: number[] | null;
     resolution: string | null; reason: string | null;
   }>;
+  /** 用草案的关键词过滤核对过的、这个来源批准过的消息数，以及其中会被挡掉的。 */
+  approved_checked: number;
+  blocked_approved: Array<{ preview: string; reason: string }>;
   /** 配置里已有同名来源，加入时会替换它。 */
   exists: boolean;
 }
@@ -153,6 +156,9 @@ export interface ISourceQuality {
   duplicate_rate: number | null;
   tmdb_match_rate: number | null;
   fallback_rate: number | null;
+  /** 影视资源中分享在转存前已过期或取消的比例。 */
+  unavailable: number;
+  unavailable_rate: number | null;
   decisions: number;
   approve_rate: number | null;
   correct_rate: number | null;

@@ -72,7 +72,7 @@ export function SourceQualityPanel({ days }: { days: number }) {
             <table className="w-full min-w-[640px] text-xs tabular-nums">
               <thead className="text-left text-muted-foreground">
                 <tr className="border-b border-border/70">
-                  {['来源', '新收', '广告', '过滤', '重复', '批准率', '修正率', 'TMDB 匹配', '入库清晰度'].map((h) => (
+                  {['来源', '新收', '广告', '过滤', '重复', '分享失效', '批准率', '修正率', 'TMDB 匹配', '入库清晰度'].map((h) => (
                     <th key={h} className="py-2 pr-3 font-medium">{h}</th>
                   ))}
                 </tr>
@@ -90,6 +90,7 @@ export function SourceQualityPanel({ days }: { days: number }) {
                     <td className="py-2 pr-3">{percent(r.ad_rate)}</td>
                     <td className="py-2 pr-3">{percent(r.filter_rate)}</td>
                     <td className="py-2 pr-3">{percent(r.duplicate_rate)}</td>
+                    <td className="py-2 pr-3" title={`${r.unavailable} 条分享在转存前已过期或取消`}>{percent(r.unavailable_rate)}</td>
                     <td className="py-2 pr-3" title={`人工确认 ${r.decisions} 次`}>{percent(r.approve_rate)}</td>
                     <td className="py-2 pr-3">{percent(r.correct_rate)}</td>
                     <td className="py-2 pr-3">{percent(r.tmdb_match_rate)}</td>

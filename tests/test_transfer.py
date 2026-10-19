@@ -34,6 +34,7 @@ class Cloud:
         self.share_gone = {}  # 分享码 -> 不可用原因（如「链接已过期」）
         self.calls = []
         self.receive_mode = {}
+        self.landing = {}  # 暂存目录 -> [还要被查看几次, 待落地文件, 届时消失的临时项 ID]
         self.barrier = None
         self.before_receive = None
         self.before_mutation = None
@@ -64,6 +65,19 @@ class Cloud:
         with self.lock:
             return [dict(x) for x in self.items.values() if x['parent_id'] == pid]
 
+    def land(self, pid):
+        """模拟 115 后台落地：转存被接受后，目录要再被查看几次文件才出现。"""
+        with self.lock:
+            pending = self.landing.get(pid)
+            if pending:
+                pending[0] -= 1
+                if pending[0] <= 0:
+                    _, items, temporary = self.landing.pop(pid)
+                    for item in items:
+                        self.add(item, pid)
+                    for fid in temporary:
+                        self.items.pop(fid)
+
     def sdk(self):
         cloud = self
         module = types.ModuleType('p115client')
@@ -74,6 +88,7 @@ class Cloud:
                 assert client is cloud
 
             def iterdir(self, id_or_path, /):
+                cloud.land(id_or_path)
                 return iter(cloud.children(id_or_path))
 
             # 与已核对的 p115client SDK 一致：第一个参数是必需的位置参数。
@@ -112,6 +127,15 @@ class Cloud:
                     mode = cloud.receive_mode.get(self.code)
                     if mode == 'partial':
                         selected = selected[:1]
+                    if mode == 'background':
+                        cloud.landing[to_pid] = [3, selected, []]
+                        return {'state': True}
+                    if mode == 'unsettled':  # 文件已到齐，但列表里暂时多一个临时目录
+                        for item in selected:
+                            cloud.add(item, to_pid)
+                        temp = cloud.add(Cloud.directory(0, to_pid, '.receiving'), to_pid)
+                        cloud.landing[to_pid] = [2, [], [temp['id']]]
+                        return {'state': True}
                     for item in selected:
                         copied = cloud.add(item, to_pid)
                         if mode == 'corrupt':
@@ -207,6 +231,8 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.cloud = Cloud()
         self.sdk = patch.dict('sys.modules', {'p115client': self.cloud.sdk()})
         self.sdk.start()
+        self.no_wait = patch('reelay.providers.storage.LANDING_WAIT', 0)  # 部分落地的用例不真的等待
+        self.no_wait.start()
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tempdir.name) / 'tasks.db'
         self.store = Store(self.db_path)
@@ -225,6 +251,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.store.close()
         self.tempdir.cleanup()
+        self.no_wait.stop()
         self.sdk.stop()
         self.env.stop()
 
@@ -571,6 +598,25 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.reopen()
         self.assertEqual((await self.execute(ctx)).state, TaskState.DONE)
         self.assertEqual(len(self.cloud.receives()), 1)
+
+    async def test_files_landing_in_the_background_are_waited_for(self):
+        for code, mode, waits in (('a', 'background', 2), ('b', 'unsettled', 1)):
+            self.cloud.add_share(code, 'S01E01.mkv', 'S01E02.mkv')
+            self.cloud.receive_mode[code] = mode
+            sleeps = []
+            with patch('reelay.providers.storage.LANDING_WAIT', 60), \
+                    patch('reelay.providers.storage._sleep', sleeps.append):
+                done = await self.execute(self.task(code, title=f'剧集{code}', episodes=(1, 2)))
+            self.assertEqual(done.state, TaskState.DONE)
+            self.assertEqual(len(sleeps), waits)
+            self.assertFalse(any('没有确认结果' in line for line in done.trail))
+        self.assertEqual(len(self.cloud.receives()), 2)
+        # 等到时限仍不一致：交给只读核验，错误里写明实际数量
+        self.cloud.add_share('c', 'S01E01.mkv', 'S01E02.mkv')
+        self.cloud.receive_mode['c'] = 'partial'
+        manual = await self.execute(self.task('c', title='剧集c', episodes=(1, 2)))
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        self.assertIn('暂存目录有 1 项，与转存清单的 2 个文件不一致', manual.trail[-1])
 
     async def test_partial_transfer_retains_claim_and_manual_recheck_never_resends(self):
         self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')

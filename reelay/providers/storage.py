@@ -33,6 +33,25 @@ def _is_video(name: str) -> bool:
 
 # 电影分享中小于最大文件该比例的视频视为花絮/样片。
 MOVIE_EXTRA_RATIO = 0.15
+# 预告、样片、花絮不会有这么大：电影分享按文件名全像花絮时，至少这么大的仍当作正片候选。
+MOVIE_MIN_SIZE = 1 << 30
+# 115 接受转存后在后台陆续落地文件（实测 23 集的分享 5 秒后一个都没到），期间目录列表可能不全或不稳定：
+# 核验不通过时退避重查，最多等这么久，仍不通过交给只读核验与人工。
+LANDING_WAIT = 180.0
+_sleep = time.sleep
+
+
+def _await_landing(verify):
+    deadline = time.monotonic() + LANDING_WAIT
+    delay = 2.0
+    while True:
+        try:
+            return verify()
+        except TransferUncertain:
+            if time.monotonic() + delay > deadline:
+                raise
+            _sleep(delay)
+            delay = min(delay * 1.5, 20.0)
 # 分段电影（CD1/CD2、上下部）：只能整体转存，不能只选一段。
 _MULTIPART_RE = re.compile(r'(?i)(?<![a-z])(?:cd|disc|disk|part|pt)[ ._\-]*\d|[上下]部|[上下]集')
 
@@ -60,14 +79,17 @@ def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: st
     在电影多个正片候选中选清晰度最高（或与消息一致）的一个；与文件名冲突或校验不过照样转人工。
     """
     hints = hints or {}
+    episodic = parsed.media_type in ('tv', 'anime') or bool(parsed.episodes)
     videos = [x for x in video_items if not is_extra(x.get('name', ''))]
+    if not videos and not episodic:
+        # 原盘、合集的文件名常列出附带内容（如「花絮中字」）：分享里总有正片，按文件名全像花絮时改按大小判断
+        videos = [x for x in video_items if type(x.get('size')) is int and x['size'] >= MOVIE_MIN_SIZE]
     if not videos:
         raise NeedsManual('分享内未找到正片视频文件')
     names = {x.get('name', '') for x in videos}
     for name in [*hints.get('episodes', {}), *hints.get('drop', []), *filter(None, [hints.get('movie_file')])]:
         if name not in names:
             raise NeedsManual(f'方案引用了分享里没有的正片文件：{name}')
-    episodic = parsed.media_type in ('tv', 'anime') or bool(parsed.episodes)
     if not episodic:
         sizes = [x.get('size') for x in videos]
         if all(type(size) is int and size > 0 for size in sizes):
@@ -235,7 +257,9 @@ def _file_record(item: dict) -> dict:
 def _verified_files(expected: list[dict], actual: list[dict]) -> list[dict]:
     """独占目录中必须恰好出现清单全部文件，数量、名称、大小和可用 SHA1 一致。"""
     if not expected or len(expected) != len(actual) or any(x['is_dir'] for x in actual):
-        raise TransferUncertain('暂存目录的文件数量或类型与转存清单不一致，请核验')
+        dirs = sum(x['is_dir'] for x in actual)
+        raise TransferUncertain(f'暂存目录有 {len(actual)} 项{f"（含 {dirs} 个目录）" if dirs else ""}，'
+                                f'与转存清单的 {len(expected)} 个文件不一致，请核验')
     if len({x['name'] for x in expected}) != len(expected):
         raise TransferUncertain('转存清单存在重名文件，无法确定对应关系')
     by_name = {x['name']: x for x in actual}
@@ -412,7 +436,7 @@ class P115Storage:
                 raise
             problem = share_problem(client, p.share_code, p.receive_code)
             raise TransferRejected(problem or reason, permanent=bool(problem)) from None
-        receipt = self._reconcile_sync(manifest)
+        receipt = _await_landing(lambda: self._reconcile_sync(manifest))
         receipt['received'] = recv
         return receipt
 

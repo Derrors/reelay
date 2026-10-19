@@ -95,9 +95,10 @@ async def propose_selection(client, model: str, ctx: PipelineContext, listing: l
                      "episodes": p.episodes, "resolution": p.resolution},
         "files": files,
     }
+    # 文件多时提示词很长（实测 150 个文件约 1.8 万 token，30 秒时屡次超时重发）
     proposal, _ = await ai.complete_json(
         client, model=model, purpose="assist", task_id=ctx.task_id,
         messages=[{"role": "system", "content": _PROMPT},
                   {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-        schema=SCHEMA, name="share_selection", rule=ctx.source_rule, validate=validate)
+        schema=SCHEMA, name="share_selection", rule=ctx.source_rule, validate=validate, timeout=90)
     return proposal

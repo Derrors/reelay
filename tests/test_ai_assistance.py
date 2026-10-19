@@ -214,6 +214,28 @@ class TestVersionsAndAdvice(Base):
                          ("reject", "分享无法访问：链接已过期，无法转存"))
         self.assertEqual(item["share"]["status"], "unavailable")
 
+    async def test_ignoring_an_unavailable_share_is_not_a_preference_sample(self):
+        gone = tv_ctx(msg_id="1")
+        gone.ns("share").update(status="unavailable", note="分享无法访问：链接已过期")
+        gone.state = TaskState.PENDING_APPROVAL
+        self.store.save_task(gone)
+        unwanted = self.save_pending("2", episodes=(4,))
+        await self.service.reject(gone.task_id)
+        await self.service.reject(unwanted.task_id)
+        self.assertEqual(self.store.get_task(gone.task_id).state, TaskState.SKIPPED)
+        self.assertEqual([row["task_id"] for row in self.store.feedback_rows()], [unwanted.task_id])
+
+    def test_unavailable_shares_do_not_outrank_usable_versions(self):
+        usable = self.save_pending("1", resolution="1080p")
+        gone = tv_ctx(msg_id="2", resolution="2160p")
+        gone.ns("share").update(status="unavailable", note="分享无法访问：访问码错误")
+        gone.state = TaskState.PENDING_APPROVAL
+        self.store.save_task(gone)
+        items = {item["task_id"]: item for item in self.service.inbox()["items"]}
+        self.assertIsNone(items[usable.task_id]["version"])
+        self.assertEqual(items[usable.task_id]["advice"]["action"], "approve")
+        self.assertEqual(items[gone.task_id]["advice"]["action"], "reject")
+
     async def test_advice_can_be_turned_off(self):
         self.configure({**self.CFG, "ai": {"advice": False}})
         self.save_pending("1")
@@ -238,6 +260,22 @@ class TestSourceDraft(Base):
         self.assertNotIn("sources", json.loads(self.config_path.read_text(encoding="utf-8")))  # 不写入配置
         purposes = {p["purpose"] for p in self.service.llm_usage()["purposes"]}
         self.assertEqual(purposes, {"source_draft", "parse"})
+
+    async def test_draft_filters_are_checked_against_messages_you_approved(self):
+        # 样例全是电影时 AI 可能把「🎬」当必含词，会挡掉这个来源的剧集消息
+        for i, text in enumerate((f"🎬 电影 (2026) 2160p {SHARE}", f"📺 剧 S01E03 {SHARE}")):
+            past = message(text=text, msg_id=str(i), source="@new_bot")
+            self.store.save_task(past)
+            self.store.add_feedback(task_id=past.task_id, source="@new_bot", kind="approve", text=text, parsed={}, label={})
+        self.parser._client = FakeAI({**self.DRAFT, "must_have": ["🎬"]}, media(title="电影", media_type="movie"))
+        result = await self.service.draft_source("@new_bot", [f"🎬 电影 (2026) 2160p {SHARE}"])
+        self.assertEqual(result["approved_checked"], 2)
+        self.assertEqual([(b["reason"], b["preview"]) for b in result["blocked_approved"]],
+                         [("未命中 must_have", "📺 剧 S01E03 <链接>")])
+        # 必含词写的是链接域名时也按原始消息（含链接）核对，不会误报
+        self.parser._client = FakeAI(self.DRAFT, media(title="电影", media_type="movie"))
+        result = await self.service.draft_source("@new_bot", [f"🎬 电影 (2026) 2160p {SHARE}"])
+        self.assertEqual(result["blocked_approved"], [])
 
     async def test_bad_input_and_missing_ai_are_reported(self):
         with self.assertRaises(ValueError):

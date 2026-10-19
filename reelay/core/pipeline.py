@@ -100,33 +100,43 @@ class Pipeline:
         refreshed = 0
         for state in (TaskState.PENDING_APPROVAL, TaskState.DONE):
             for row in self.store.list_by_state(state, 100_000):
-                ctx = self.store.get_task(row["task_id"])
-                if not ctx or not ctx.parsed:
-                    continue
-                hooks = [hook for hook in self.reg.hooks_for("after_parse", self.cfg)
-                         if hasattr(hook, "needs_refresh") and hook.needs_refresh(ctx)]
-                if not hooks:
-                    continue
-                fresh = copy.deepcopy(ctx)
-                fresh.log("补跑元数据补全（未重新调用 LLM）")
-                for hook in hooks:
-                    try:
-                        with self._scope(fresh):
-                            await hook.run(fresh)
-                    except Exception as exc:  # 与识别阶段一样失败隔离
-                        log.warning("补跑 %s 失败：%s", self.reg.extension_name(hook), exc)
-                if state == TaskState.PENDING_APPROVAL:
-                    confidence.apply(fresh)
-                    fresh.ns("dir_router")["preview"] = self.display_target(self.target_preview(fresh))
-                    ctx = fresh
-                else:
-                    poster = fresh.parsed.raw_fields.get("poster_path")
-                    if poster and fresh.parsed.title == ctx.parsed.title:
-                        ctx.parsed.raw_fields["poster_path"] = poster
-                    ctx.meta, ctx.trail = fresh.meta, fresh.trail
-                if self.store.refresh_snapshot(ctx, updated_at=row["updated_at"]):
+                if await self._refresh_task(row["task_id"], state, row["updated_at"]):
                     refreshed += 1
         return refreshed
+
+    async def refresh_task(self, task_id: str) -> bool:
+        """人工修正识别结果后为待审批任务补跑元数据补全：修正后的片名同样要经过 TMDB 等事实源核对。"""
+        record = self.store.get_task_record(task_id)
+        if not record or record["state"] != TaskState.PENDING_APPROVAL.value:
+            return False
+        return await self._refresh_task(task_id, TaskState.PENDING_APPROVAL, record["updated_at"])
+
+    async def _refresh_task(self, task_id: str, state: TaskState, updated_at: float) -> bool:
+        ctx = self.store.get_task(task_id)
+        if not ctx or not ctx.parsed:
+            return False
+        hooks = [hook for hook in self.reg.hooks_for("after_parse", self.cfg)
+                 if hasattr(hook, "needs_refresh") and hook.needs_refresh(ctx)]
+        if not hooks:
+            return False
+        fresh = copy.deepcopy(ctx)
+        fresh.log("补跑元数据补全（未重新调用 LLM）")
+        for hook in hooks:
+            try:
+                with self._scope(fresh):
+                    await hook.run(fresh)
+            except Exception as exc:  # 与识别阶段一样失败隔离
+                log.warning("补跑 %s 失败：%s", self.reg.extension_name(hook), exc)
+        if state == TaskState.PENDING_APPROVAL:
+            confidence.apply(fresh)
+            fresh.ns("dir_router")["preview"] = self.display_target(self.target_preview(fresh))
+            ctx = fresh
+        else:
+            poster = fresh.parsed.raw_fields.get("poster_path")
+            if poster and fresh.parsed.title == ctx.parsed.title:
+                ctx.parsed.raw_fields["poster_path"] = poster
+            ctx.meta, ctx.trail = fresh.meta, fresh.trail
+        return self.store.refresh_snapshot(ctx, updated_at=updated_at)
 
     def dir_paths(self) -> dict[str, str]:
         """各目录别名在网盘中的路径（Worker 读取后记录）；目录 CID 已改过的记录不用。"""

@@ -38,9 +38,14 @@ def candidate(ctx: PipelineContext) -> dict:
 
 
 def pick_versions(contexts: list[PipelineContext], prefs: dict) -> dict[str, dict]:
-    """task_id → {count, best, best_task_id}；只有一个版本的不出现在结果里。"""
+    """task_id → {count, best, best_task_id}；只有一个版本的不出现在结果里。
+
+    已确认无法访问的分享不参与比较：它再符合偏好也转存不了，不能因此让可用的版本被建议忽略。
+    """
     groups: dict[tuple, list[PipelineContext]] = {}
     for ctx in contexts:
+        if (ctx.meta.get("share") or {}).get("status") == "unavailable":
+            continue
         key = version_key(ctx)
         if key:
             groups.setdefault(key, []).append(ctx)

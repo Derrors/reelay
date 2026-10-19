@@ -38,10 +38,6 @@ from urllib.parse import urlsplit
 log = logging.getLogger("reelay.115auth")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CRED_FILE = Path(os.getenv(
-    "REELAY_115_OAUTH_FILE",
-    str(PROJECT_ROOT / "data" / "115_credentials.json"),
-))
 DEFAULT_APP_ID = 100195125  # p115client 文档示例开放应用，已实测可用
 # 115 鉴权失效错误码（cookie 模式）。
 AUTH_ERRNOS = {99, 401}
@@ -49,21 +45,24 @@ AUTH_ERRNOS = {99, 401}
 OPEN_AUTH_CODES = {401, 99, 40140125, 20004, 20005}
 # 开放平台扫码会话有效期（115 二维码约 5 分钟），本地稍短一点做兜底。
 QR_TTL = 240
-# Cookie 扫码默认绑定独立 TV 会话，降低与网页端/手机端既有会话互踢概率。
-COOKIE_QR_APP = os.getenv("REELAY_115_COOKIE_QR_APP", "tv")
-# MoviePilot 风格的请求治理：文件 API 与分享 API 分级限流，触发风控后全通道冷却。
-OPEN_QPS = float(os.getenv("REELAY_115_OPEN_QPS", "3"))
-COOKIE_QPS = float(os.getenv("REELAY_115_COOKIE_QPS", "2"))
-SHARE_QPS = float(os.getenv("REELAY_115_SHARE_QPS", "1"))
-RISK_COOLDOWN_SEC = max(1, int(os.getenv("REELAY_115_RISK_COOLDOWN_SEC", "3600")))
 RISK_CODES = {429, 405, 990009}
 RISK_MARKERS = ("访问上限", "操作频繁", "请求过于频繁", "风控", "429 Too Many Requests")
+
+
+def _env(name: str, default: str) -> str:
+    """用到时才读取环境变量：入口模块会先导入本模块再加载 .env，导入时读取会忽略 .env 里的设置。"""
+    return os.getenv(name) or default
+
+
+def default_cred_file() -> Path:
+    return Path(_env("REELAY_115_OAUTH_FILE", str(PROJECT_ROOT / "data" / "115_credentials.json")))
 
 
 class _RateGate:
     """线程安全的最小间隔限流器；同步/异步调用共享同一配额。"""
 
     def __init__(self, qps: float) -> None:
+        self.qps = qps
         self.interval = 0.0 if qps <= 0 else 1.0 / qps
         self._lock = threading.Lock()
         self._next = 0.0
@@ -108,7 +107,7 @@ class CredentialStore:
     """线程安全地持有并持久化 115 凭证（cookie + OAuth token）。"""
 
     def __init__(self, cred_file: str | Path | None = None) -> None:
-        self.path = Path(cred_file or DEFAULT_CRED_FILE)
+        self.path = Path(cred_file or default_cred_file())
         # 兼容旧版本的 data/115_oauth.json：新文件不存在但旧文件在时，
         # 首次保存自动迁移到新路径（统一容纳 cookie + OAuth）。
         self._legacy_path = self.path.parent / "115_oauth.json"
@@ -116,11 +115,13 @@ class CredentialStore:
         self._refresh_lock = threading.Lock()
         self._data: dict[str, Any] = self._load()
         self._file_mtime = self.path.stat().st_mtime if self.path.is_file() else 0.0
+        # MoviePilot 风格的请求治理：文件 API 与分享 API 分级限流，触发风控后全通道冷却。
         self._gates = {
-            "open": _RateGate(OPEN_QPS),
-            "cookie": _RateGate(COOKIE_QPS),
-            "share": _RateGate(SHARE_QPS),
+            "open": _RateGate(float(_env("REELAY_115_OPEN_QPS", "3"))),
+            "cookie": _RateGate(float(_env("REELAY_115_COOKIE_QPS", "2"))),
+            "share": _RateGate(float(_env("REELAY_115_SHARE_QPS", "1"))),
         }
+        self._cooldown_sec = max(1, int(_env("REELAY_115_RISK_COOLDOWN_SEC", "3600")))
         self._cooldown_lock = threading.Lock()
         self._cooldown_until = 0.0
         self._cooldown_reason = ""
@@ -184,11 +185,11 @@ class CredentialStore:
         return None
 
     def _enter_cooldown(self, reason: str) -> None:
-        until = time.time() + RISK_COOLDOWN_SEC
+        until = time.time() + self._cooldown_sec
         with self._cooldown_lock:
             self._cooldown_until = max(self._cooldown_until, until)
             self._cooldown_reason = reason[:200]
-        log.warning("115 触发风控，所有接口冷却 %s 秒：%s", RISK_COOLDOWN_SEC, reason[:120])
+        log.warning("115 触发风控，所有接口冷却 %s 秒：%s", self._cooldown_sec, reason[:120])
 
     @contextmanager
     def _refresh_file_lock(self):
@@ -511,7 +512,9 @@ class CredentialStore:
     def cookie_qr_start(self, app: str | None = None) -> dict[str, Any]:
         from p115client import P115Client
 
-        device = (app or COOKIE_QR_APP).strip() or COOKIE_QR_APP
+        # 默认绑定独立 TV 会话，降低与网页端/手机端既有会话互踢概率。
+        default = _env("REELAY_115_COOKIE_QR_APP", "tv")
+        device = (app or default).strip() or default
         # 二维码 token 固定从 web 入口申请；确认后再绑定到独立 device 会话。
         # 这与 p115client.login_with_qrcode 的实现一致。
         resp = P115Client.login_qrcode_token()
@@ -794,9 +797,9 @@ class CredentialStore:
                 "cooldown_until": self._cooldown_until or None,
                 "cooldown_remaining": max(0, int(self._cooldown_until - time.time())),
                 "cooldown_reason": self._cooldown_reason,
-                "open_qps": OPEN_QPS,
-                "cookie_qps": COOKIE_QPS,
-                "share_qps": SHARE_QPS,
+                "open_qps": self._gates["open"].qps,
+                "cookie_qps": self._gates["cookie"].qps,
+                "share_qps": self._gates["share"].qps,
             },
             "ready": self.has_cookie or self.has_oauth,
             "writes_via": "oauth" if self.has_oauth else (

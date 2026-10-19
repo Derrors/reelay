@@ -277,7 +277,7 @@ def create_app(
     @app.patch("/api/tasks/{task_id}/parsed")
     async def patch_parsed(task_id: str, payload: ParsePatchPayload):
         try:
-            return service.patch_parsed(task_id, payload.values)
+            return await service.correct_parsed(task_id, payload.values)
         except Exception as exc:
             raise _error(exc) from exc
 

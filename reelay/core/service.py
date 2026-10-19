@@ -334,7 +334,9 @@ class ManagementService:
         advice = self.advice_action(ctx) if ctx and ctx.state == TaskState.PENDING_APPROVAL else None
         if not await self.pipeline.reject(task_id):
             raise ConflictError("任务不是待审批状态")
-        self._record(ctx, "reject", {}, advice)
+        # 分享已失效时忽略不说明你不想要这部资源，不记为样本，以免影响偏好参考、通过率与来源质量建议
+        if (ctx.meta.get("share") or {}).get("status") != "unavailable":
+            self._record(ctx, "reject", {}, advice)
 
     def _record(self, ctx: PipelineContext, kind: str, label: dict, advice: str | None = None) -> None:
         self.store.add_feedback(task_id=ctx.task_id, source=ctx.raw.source, kind=kind, text=ai.scrub(ctx.raw.text),
@@ -426,6 +428,11 @@ class ManagementService:
         values = dict(before)
         values.update(patch)
         ctx.parsed = ParsedResource(**validate_resource(values))
+        if any(before.get(key) != getattr(ctx.parsed, key) for key in ("title", "year", "media_type")):
+            # 片名或类型改了，原来的 TMDB 匹配（含 tmdbid、海报）不再可信；待审批任务随后按新片名重新匹配
+            ctx.meta.pop("tmdb", None)
+            for key in ("tmdbid", "poster_path"):
+                ctx.parsed.raw_fields.pop(key, None)
         ctx.ns("organize").pop("plan", None)
         ctx.log("管理端修正了解析结果")
         self._update(ctx, expected=ctx.state)
@@ -436,6 +443,12 @@ class ManagementService:
             # result 是修正后的完整识别结果，作为同来源后续解析的示例与本地评测的标准答案。
             self._record(ctx, "correct", {"changes": changes, "result": {
                 key: after[key] for key in MEDIA_SCHEMA["properties"] if key in after}})
+        return self.get_task(task_id)
+
+    async def correct_parsed(self, task_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        """修正识别结果，待审批任务随后按修正后的片名重新核对 TMDB 并重算置信度（不调用 LLM）。"""
+        self.patch_parsed(task_id, patch)
+        await self.pipeline.refresh_task(task_id)
         return self.get_task(task_id)
 
     # ------------------------------------------------------------------ #
@@ -571,7 +584,7 @@ class ManagementService:
         with self.ai_scope():
             try:
                 result, _ = await ai.complete_json(
-                    client, model=model, purpose="source_draft", schema=schema, name="source_draft",
+                    client, model=model, purpose="source_draft", schema=schema, name="source_draft", timeout=90,
                     validate=validate, messages=[{"role": "system", "content": prompt},
                                                  {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}])
             except ai.AIError as exc:
@@ -590,7 +603,19 @@ class ManagementService:
                             "decision": outcome["decision"], "confidence": (outcome["confidence"] or {}).get("score"),
                             **{key: parsed.get(key) for key in ("title", "media_type", "season", "episodes",
                                                                 "resolution", "reason")}})
-        return {**result, "results": results,
+        # 样例只是几条，草案的关键词过滤再拿这个来源批准过的消息核对：会挡掉你要过的资源时列出来
+        from ..providers.parser import prefilter_reason
+        checked, blocked = 0, []
+        for row in self.store.recent_feedback(source=bot, kinds=("approve",), limit=200):
+            past = self.store.get_task(row["task_id"])
+            if not past:
+                continue
+            checked += 1
+            probe = PipelineContext(raw=past.raw, source_rule={"filters": result["draft"].get("filters", {})})
+            reason = prefilter_reason(probe, "share")  # 只核对关键词，不看有没有链接
+            if reason:
+                blocked.append({"preview": (ai.scrub(past.raw.text).splitlines() or [""])[0][:80], "reason": reason})
+        return {**result, "results": results, "approved_checked": checked, "blocked_approved": blocked,
                 "exists": any(s["bot"].lower() == bot.lower() for s in cfg["sources"])}
 
     # ------------------------------------------------------------------ #
@@ -626,7 +651,8 @@ class ManagementService:
         since = time.time() - days * 86400
         rejected: dict[str, list[str]] = {}
         for snap in self.store.snapshots_since(since, 2000):
-            if snap["state"] in ("rejected", "skipped") and (snap.get("raw") or {}).get("text"):
+            if snap["state"] in ("rejected", "skipped") and (snap.get("raw") or {}).get("text") and \
+                    ((snap.get("meta") or {}).get("share") or {}).get("status") != "unavailable":
                 rejected.setdefault((snap["source"] or "").lower(), []).append(ai.scrub(snap["raw"]["text"])[:300])
         approved: dict[str, list[str]] = {}
         for row in self.store.recent_feedback(source=None, kinds=("approve", "reject"), limit=2000):
@@ -668,7 +694,7 @@ class ManagementService:
         with self.ai_scope():
             try:
                 items, _ = await ai.complete_json(
-                    client, model=model, purpose="source_quality", schema=schema, name="source_quality",
+                    client, model=model, purpose="source_quality", schema=schema, name="source_quality", timeout=90,
                     validate=validate, messages=[{"role": "system", "content": prompt},
                                                  {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}])
             except ai.AIError as exc:

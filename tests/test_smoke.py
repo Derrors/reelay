@@ -179,6 +179,19 @@ class TestDirRouter(unittest.TestCase):
         run(self.router.run(c))
         self.assertEqual(c.save_dir_alias, "剧集")
 
+    def test_unchanged_route_is_logged_once(self):
+        # 等待同一集的其他任务时每轮都会重新路由
+        from reelay.core import runtime
+        runtime.set_config({"save_dirs": {"剧集": "1", "电影": "2"}})
+        c = self._ctx(media_type="tv", origin_country=["CN"])
+        for _ in range(3):
+            run(self.router.run(c))
+        self.assertEqual(c.trail[0][9:], "二级分类命中「剧集/国产剧集」")
+        self.assertEqual(len(c.trail), 1)
+        c.parsed.media_type = "movie"
+        run(self.router.run(c))
+        self.assertEqual((len(c.trail), c.save_dir_alias), (2, "电影"))
+
     def test_genre_contains(self):
         c = self._ctx(media_type="movie", resolution="1080p")
         c.parsed.raw_fields["genre"] = "动画/奇幻"
@@ -313,6 +326,19 @@ class TestStorageEpisodeSelection(unittest.TestCase):
         with self.assertRaises(NeedsManual):
             _select_video_items([{"id": "a", "name": "Film.CD1.mkv", "size": 9_000},
                                  {"id": "b", "name": "Film.CD2.mkv", "size": 8_000}], movie)
+
+    def test_disc_named_after_its_bundled_extras_is_still_the_movie(self):
+        # 原盘文件名列出附带内容：「花絮中字」
+        from reelay.core.contracts import NeedsManual
+        from reelay.providers.storage import _select_video_items
+        disc = {"id": "d", "name": "[Film 2018][原盘 简繁字幕 花絮中字][40.91G].iso", "size": 40 << 30}
+        trailer = {"id": "t", "name": "Film 预告片.mp4", "size": 80 << 20}
+        movie = ParsedResource(media_type="movie")
+        self.assertEqual([x["id"] for x in _select_video_items([disc, trailer], movie)["files"]], ["d"])
+        with self.assertRaises(NeedsManual):  # 只有预告片
+            _select_video_items([trailer], movie)
+        with self.assertRaises(NeedsManual):  # 剧集分享里只有花絮时仍转人工
+            _select_video_items([{**disc, "name": "Show 花絮 E01.mkv"}], ParsedResource(media_type="tv"))
 
     MULTI = [{"id": "11", "name": "Show.S01E01.mkv"}, {"id": "12", "name": "Show.S01E02.mkv"},
              {"id": "21", "name": "Show.S02E01.mkv"}, {"id": "22", "name": "Show.S02E02.mkv"}]

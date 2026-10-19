@@ -68,8 +68,10 @@ class DirRouter:
         if target["category_path"]:
             ns["category_path"] = target["category_path"]
             ns["relative_category"] = target["relative_category"]
-        if target["note"]:
+        # 等待同一集的其他任务时每轮都会重新路由，结果不变就不再写轨迹
+        if target["note"] and target["note"] != ns.get("note"):
             ctx.log(target["note"])
+        ns["note"] = target["note"]
         return True
 
     def preview(self, ctx: PipelineContext) -> str:

@@ -103,8 +103,8 @@ def source_quality(snapshots: list[dict], decisions: dict[str, dict]) -> list[di
     for snap in snapshots:
         source = (snap.get("source") or "").lower()
         item = by_source.setdefault(source, {"source": snap.get("source"), "received": 0, "ads": 0, "filtered": 0,
-                                             "duplicates": 0, "done": 0, "media": 0, "tmdb_checked": 0,
-                                             "tmdb_matched": 0, "fallback": 0, "ranks": []})
+                                             "duplicates": 0, "done": 0, "media": 0, "unavailable": 0,
+                                             "tmdb_checked": 0, "tmdb_matched": 0, "fallback": 0, "ranks": []})
         item["received"] += 1
         meta, parsed, state = snap.get("meta") or {}, snap.get("parsed") or {}, snap["state"]
         trail = " ".join(snap.get("trail") or [])
@@ -118,6 +118,8 @@ def source_quality(snapshots: list[dict], decisions: dict[str, dict]) -> list[di
             item["media"] += 1
             if (meta.get("parse") or {}).get("fallback"):
                 item["fallback"] += 1
+            if (meta.get("share") or {}).get("status") == "unavailable":
+                item["unavailable"] += 1  # 转存前分享已过期或取消，多是确认得太晚
             tmdb_ns = meta.get("tmdb") or {}
             if "matched" in tmdb_ns and not tmdb_ns.get("note") and not tmdb_ns.get("error"):
                 item["tmdb_checked"] += 1
@@ -136,6 +138,7 @@ def source_quality(snapshots: list[dict], decisions: dict[str, dict]) -> list[di
                  "duplicate_rate": rate(item["duplicates"], received),
                  "tmdb_match_rate": rate(item["tmdb_matched"], item["tmdb_checked"]),
                  "fallback_rate": rate(item["fallback"], item["media"]),
+                 "unavailable_rate": rate(item["unavailable"], item["media"]),
                  "decisions": human.get("decisions", 0), "approve_rate": rate(human.get("approved", 0), human.get("decisions", 0)),
                  "correct_rate": rate(human.get("corrected", 0), human.get("decisions", 0)),
                  "resolution": RANK_LABELS.get(round(sum(ranks) / len(ranks))) if ranks else None}
@@ -150,5 +153,7 @@ def source_quality(snapshots: list[dict], decisions: dict[str, dict]) -> list[di
             flags.append("TMDB 匹配率低，片名常不规范")
         if stats["media"] >= 10 and stats["fallback_rate"] >= 0.2:
             flags.append("AI 识别经常降级")
+        if stats["media"] >= 10 and stats["unavailable_rate"] >= 0.3:
+            flags.append("分享常在确认前失效")
         out.append({**stats, "flags": flags})
     return sorted(out, key=lambda item: -item["received"])

@@ -706,6 +706,24 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
         self.assertEqual((untouched.parsed.title, untouched.parsed.raw_fields.get("poster_path")), ("美人余 竖屏版", None))
         self.assertEqual({task_id: self.updated_at(task_id) for task_id in (same, renamed)}, before)  # 入库统计不变
 
+    async def test_corrected_title_is_matched_against_tmdb_again(self):
+        task_id = self.task("美人余3")
+        ctx = self.store.get_task(task_id)
+        ctx.meta["tmdb"] = {"matched": False}  # 查询过但没有可信匹配
+        ctx.parsed.raw_fields["tmdbid"] = 1
+        self.store.save_task(ctx)
+        from reelay.core.service import ManagementService
+        service = ManagementService(self.store, self.pl, config_path=str(Path(self.temp.name) / "c.yaml"))
+        with patch.object(tmdb, "best_match", return_value=(self.HIT, [self.HIT])) as match:
+            await service.correct_parsed(task_id, {"title": "美人余"})
+        self.assertEqual(match.call_args.args[1], "美人余")
+        ctx = self.store.get_task(task_id)
+        self.assertEqual((ctx.parsed.raw_fields["tmdbid"], ctx.meta["confidence"]["caps"]), (294446, []))
+        self.assertEqual(self.store.feedback_rows()[-1]["label"]["changes"]["title"], ["美人余3", "美人余"])
+        with patch.object(tmdb, "best_match") as match:  # 只改集数：原来的匹配仍然有效
+            await service.correct_parsed(task_id, {"episodes": [24]})
+        match.assert_not_called()
+
     async def test_snapshot_refresh_gives_up_when_task_changed_meanwhile(self):
         task_id = self.task("美人余")
         ctx = self.store.get_task(task_id)
@@ -923,6 +941,25 @@ class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
             tmdb.search("movie", "流浪地球2", 2023, language="zh-CN", timeout=1)
             tmdb.search("movie", "流浪地球 2", 2023, language="zh-CN", timeout=1)
         self.assertEqual(request.call_count, 1)
+
+    def test_base_url_set_after_import_is_used(self):
+        # 入口先导入模块再加载 .env：地址要在请求时读取
+        seen = []
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"results": []}'
+
+        with patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "k", "REELAY_TMDB_BASE_URL": "https://tmdb.example/3"}), \
+                patch("urllib.request.urlopen", side_effect=lambda req, timeout: seen.append(req.full_url) or Resp()):
+            tmdb.search("movie", "流浪地球2", 2023, language="zh-CN", timeout=1)
+        self.assertTrue(seen[0].startswith("https://tmdb.example/3/search/movie?"))
 
     def test_anime_searches_tv_then_movie(self):
         self.assertEqual(search_kinds("anime", True), ["tv", "movie"])

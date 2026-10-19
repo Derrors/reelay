@@ -109,8 +109,11 @@ def response_format(schema: dict, name: str, rule: dict | None) -> dict:
 
 async def complete_json(client, *, model: str, purpose: str, messages: list[dict], schema: dict, name: str,
                         validate: Callable[[Any], Any], rule: dict | None = None, task_id: str | None = None,
-                        timeout: float = 30, invalid_retries: int = 1) -> tuple[Any, int]:
-    """结构化调用；返回 (validate 的返回值, 请求次数)。失败抛 AIError。"""
+                        timeout: float = 60, invalid_retries: int = 1) -> tuple[Any, int]:
+    """结构化调用；返回 (validate 的返回值, 请求次数)。失败抛 AIError。
+
+    默认超时按识别一条消息定：带推理的模型输出 500–1000 token，实测单条 11–28 秒，并发时更慢。
+    """
     if client is None:
         raise AIError("unavailable")
     attempts = 0

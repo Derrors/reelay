@@ -18,7 +18,7 @@ from collections import OrderedDict
 from difflib import SequenceMatcher
 from typing import Any
 
-TMDB_BASE = os.getenv("REELAY_TMDB_BASE_URL", "https://api.themoviedb.org/3")
+DEFAULT_BASE = "https://api.themoviedb.org/3"
 ACCEPT_SCORE = 0.8          # 年份无冲突时的最低标题相似度
 ACCEPT_SCORE_YEAR = 0.6     # 年份精确一致时放宽的标题相似度
 _CACHE: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
@@ -28,6 +28,11 @@ _CACHE_SIZE = 512
 
 def api_key() -> str | None:
     return os.getenv("REELAY_TMDB_API_KEY") or None
+
+
+def base_url() -> str:
+    """请求时才读取：入口模块会先导入本模块再加载 .env，导入时读取会忽略 .env 里的地址。"""
+    return os.getenv("REELAY_TMDB_BASE_URL") or DEFAULT_BASE
 
 
 def _request(path: str, params: dict[str, Any], *, timeout: float) -> dict:
@@ -40,7 +45,7 @@ def _request(path: str, params: dict[str, Any], *, timeout: float) -> dict:
         headers["Authorization"] = f"Bearer {key}"
     else:
         query["api_key"] = key
-    url = f"{TMDB_BASE}{path}?" + urllib.parse.urlencode(query)
+    url = f"{base_url()}{path}?" + urllib.parse.urlencode(query)
     with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

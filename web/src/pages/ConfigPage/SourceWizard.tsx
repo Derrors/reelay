@@ -106,6 +106,18 @@ export function SourceWizard({ open, onOpenChange, onAdd }: SourceWizardProps) {
                   ))}
                 </ul>
               </div>
+              {result.blocked_approved.length ? (
+                <div className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs leading-5">
+                  <p className="font-medium text-warning">
+                    这个来源批准过的 {result.approved_checked} 条消息里，有 {result.blocked_approved.length} 条会被这份规则挡掉
+                  </p>
+                  <ul className="mt-1 space-y-0.5 text-muted-foreground">
+                    {result.blocked_approved.slice(0, 5).map((b, i) => <li key={i} className="truncate">{b.reason}：{b.preview}</li>)}
+                  </ul>
+                </div>
+              ) : result.approved_checked ? (
+                <p className="text-xs text-muted-foreground">已用这个来源批准过的 {result.approved_checked} 条消息核对，关键词过滤都不会挡掉。</p>
+              ) : null}
               {result.exists ? <p className="text-xs text-warning">已有同名来源，加入后会替换它现在的设置。</p> : null}
             </div>
           ) : null}

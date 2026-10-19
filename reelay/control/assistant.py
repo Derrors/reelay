@@ -183,8 +183,10 @@ class Assistant:
         with self.service.ai_scope():
             for _ in range(MAX_ROUNDS):
                 try:
+                    # 按查询结果列清单时输出长：实测列出当天二十多部入库，单轮最长 43 秒；
+                    # 网关偶尔卡住不返回，超时也不能太长
                     response, started = await ai.request(client, purpose="assistant", model=model, messages=messages,
-                                                         tools=TOOLS, temperature=0, timeout=30)
+                                                         tools=TOOLS, temperature=0, timeout=60)
                 except Exception as exc:  # noqa: BLE001 - 只回报类别，不暴露 SDK 异常正文
                     return Reply(f"AI 暂时不可用（{type(exc).__name__}），请稍后再试或使用命令。")
                 ai.record("assistant", model, started, outcome="ok", usage=getattr(response, "usage", None))

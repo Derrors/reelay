@@ -311,6 +311,15 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(gate.calls, 1)
         self.assertGreaterEqual(self.store._cooldown_until, before + 1)
 
+    def test_settings_loaded_after_import_take_effect(self):
+        # 入口先导入模块再加载 .env：这些设置要在创建凭证存储时读取
+        with patch.dict(os.environ, {"REELAY_115_OAUTH_FILE": str(self.cred), "REELAY_115_SHARE_QPS": "0.5",
+                                     "REELAY_115_RISK_COOLDOWN_SEC": "60"}):
+            store = auth115.CredentialStore()
+        self.assertEqual(store.path, self.cred)
+        self.assertEqual(store.status()["traffic"]["share_qps"], 0.5)
+        self.assertEqual(store._cooldown_sec, 60)
+
     def test_rate_lane_and_risk_cooldown(self):
         self.assertEqual(self.store._request_lane("https://proapi.115.com/open/ufile/files"), "open")
         self.assertEqual(self.store._request_lane("https://webapi.115.com/share/receive"), "share")
