@@ -10,9 +10,11 @@ services:
       REELAY_CONFIG_PATH: /app/config/config.yaml
       REELAY_TG_SESSION: /app/data/userbot.session
       REELAY_CONTROL_BOT_SESSION: /app/data/controlbot.session
+      REELAY_PLUGIN_DIRS: /app/plugins
     volumes:
       - reelay-data:/app/data
       - ./deploy/config:/app/config
+      - ./deploy/plugins:/app/plugins:ro
     healthcheck:
       test: ["CMD", "python", "-m", "reelay.core.health"]
       interval: 15s
@@ -33,9 +35,11 @@ services:
       REELAY_CONFIG_PATH: /app/config/config.yaml
       REELAY_WEB_HOST: 0.0.0.0
       REELAY_WEB_PORT: "28080"
+      REELAY_PLUGIN_DIRS: /app/plugins
     volumes:
       - reelay-data:/app/data
       - ./deploy/config:/app/config
+      - ./deploy/plugins:/app/plugins:ro
     ports:
       - "127.0.0.1:28080:28080"
     healthcheck:

@@ -11,6 +11,9 @@ plugins:
   tmdb_enrich: true
   dir_router: true
   organizer: true
+  daily_report: true      # 每日日报（on_daily 事件）
+  episode_tracker: true   # 缺集追更巡检
+  strm: false             # STRM 生成，默认关闭；开启需配置下方 strm
 
 # 115 目录别名 -> cid 映射（转存目标，可随时切换）
 save_dirs:
@@ -26,10 +29,14 @@ forward:
   template: "🎬 {title} ({year}) {resolution}\n📦 {size}\n🔗 {link}"
 
 # 媒体库整理插件：Jinja2 模板（在 Web「插件与扩展」中维护）
+# 目录名中的 [tmdbid=xxx] 在 TMDB 匹配成功时写入，Jellyfin/Emby 据此精确刮削。
 organize:
   naming:
-    movie: "{{ title }} ({{ year|default('', true) }})/{{ title }} ({{ year|default('', true) }}){% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
-    tv: "{{ title }} ({{ year|default('', true) }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}"
+    movie: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/{{ title }}{% if year %} ({{ year }}){% endif %}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
+    tv: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}"
+  # 库里已有同名不同文件时：manual（转人工，默认）| skip（保留旧文件，新文件进回收站）
+  # | suffix（新文件加「 (2)」并存）| upgrade（洗版：画质/大小更好则替换，旧文件进回收站）
+  conflict: manual
 
 # 二级分类路由插件：MoviePilot 风格策略（Web「插件与扩展」中维护）
 dir_router:
@@ -55,7 +62,25 @@ dir_router:
 # 审批超时兜底（manual 卡片久未处理）
 approval:
   timeout_hours: 24
-  on_timeout: remind     # remind（重推提醒）| skip（超时忽略）
+  on_timeout: remind     # remind（提醒）| skip（超时忽略）
+  reminder: digest       # digest：所有超时任务合并成一条汇总 | card：逐条重推确认卡片
+  max_reminders: 3       # 每条最多提醒次数，之后不再提醒但保留在待审批（0 = 不限）
+
+# 每日系统事件（日报、追更巡检）的发送时刻，本地时间 0-23 点
+schedule:
+  daily_hour: 9
+
+# 缺集追更：自动跟踪最近有更新的剧，订阅的剧从第 1 集开始检查
+episode_tracker:
+  track_all: true
+  lookback_days: 30
+  subscriptions: []
+  # - {title: 一瓯春, season: 1, total: 36}
+
+# STRM（plugins.strm 开启时必填）：output_dir 是本机目录，base_url 是媒体服务器能访问到的 Reelay 地址
+# strm:
+#   output_dir: /media/strm
+#   base_url: http://192.168.1.10:28080
 
 # 监听多个 bot，各挂各的规则（先设全局默认，再按 bot 覆盖）
 defaults:
@@ -64,8 +89,9 @@ defaults:
   llm_response_format: json_schema # 不支持 schema 的兼容接口可显式用 json_object，仍严格本地校验
   decision: default          # default | llm（自然语言偏好）
   storage: p115
-  confidence_threshold: 0.5
+  confidence_threshold: 0.5  # 置信度由标题/类型/年份/TMDB 匹配等确定性信号计算，不采信 LLM 自报值
   preferences: ""            # decision=llm 时，例如：只收 4K 电影，动画放入动漫目录
+  episodes_from: share       # share：以分享内文件名为准并跳过已入库的集 | message：只转存消息声明的集
   save_to: 默认
 
 sources:
@@ -76,8 +102,11 @@ sources:
       must_have: ["115.com", "115.cn"]
       block_keywords: ["广告", "招商", "投稿", "频道"]
 
+  # 高度信任的源：自动审批 + 自然语言偏好；低置信度、TMDB 未匹配和 LLM 降级仍会转人工
   - bot: "@example_tv_bot"
     approval_mode: auto
+    decision: llm
+    preferences: "只要 4K 或 1080p 的国产剧和日本动画，综艺不要"
     save_to: 剧集
     forward:
       enabled: false         # 来源级覆盖，全局 target/template 继续继承

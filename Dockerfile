@@ -12,7 +12,7 @@ COPY pyproject.toml README.md ./
 COPY reelay/ ./reelay/
 RUN pip install --no-cache-dir ".[all]" \
     && useradd --create-home --uid 10001 reelay \
-    && mkdir -p /app/data /app/config /app/web/dist \
+    && mkdir -p /app/data /app/config /app/plugins /app/web/dist \
     && chown -R reelay:reelay /app/data /app/config
 COPY --from=frontend /build/web/dist/ ./web/dist/
 USER reelay
