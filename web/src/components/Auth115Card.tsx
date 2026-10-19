@@ -20,7 +20,7 @@ type QrMode = 'cookie' | 'oauth';
 
 function StateTag({ state, configured }: { state: string; configured: boolean }) {
   if (!configured) {
-    return <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300">
+    return <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted px-2.5 py-1 text-xs text-muted-foreground">
       <CircleDashed className="size-3.5" />未配置
     </span>;
   }
@@ -28,9 +28,9 @@ function StateTag({ state, configured }: { state: string; configured: boolean })
   const bad = state === 'expired' || state === 'error';
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-      ok ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300'
-        : bad ? 'border-rose-400/30 bg-rose-400/10 text-rose-300'
-          : 'border-amber-300/20 bg-amber-300/10 text-amber-200'
+      ok ? 'border-emerald-600/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+        : bad ? 'border-destructive/25 bg-destructive/10 text-destructive'
+          : 'border-amber-600/25 bg-amber-500/10 text-amber-700 dark:text-amber-300'
     }`}>
       {ok ? <CheckCircle2 className="size-3.5" /> : bad ? <ShieldAlert className="size-3.5" /> : <CircleDashed className="size-3.5" />}
       {stateText[state] ?? state}
@@ -52,19 +52,19 @@ function ChannelCard({
   children?: React.ReactNode;
 }) {
   return (
-    <section className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.055] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,.06)] sm:p-5">
+    <section className="min-w-0 rounded-lg border bg-card p-4 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-fuchsia-400/10 text-fuchsia-200">{icon}</div>
+          <div className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">{icon}</div>
           <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-[.16em] text-slate-400">{eyebrow}</p>
-            <h3 className="mt-0.5 truncate text-sm font-semibold text-white sm:text-base">{title}</h3>
+            <p className="text-[11px] font-medium uppercase tracking-[.14em] text-muted-foreground">{eyebrow}</p>
+            <h3 className="mt-0.5 truncate text-sm font-semibold text-foreground sm:text-base">{title}</h3>
           </div>
         </div>
         <StateTag state={state} configured={configured} />
       </div>
-      <p className="mt-4 text-sm leading-6 text-slate-200">{description}</p>
-      <p className="mt-2 text-xs leading-5 text-slate-400">{danger || detail}</p>
+      <p className="mt-4 text-sm leading-6 text-foreground">{description}</p>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">{danger || detail}</p>
       {children}
     </section>
   );
@@ -87,7 +87,7 @@ export default function Auth115Card() {
       setStatusError('');
       setStatus(await extras.auth115Status());
     } catch (err) {
-      setStatusError(err instanceof Error ? err.message : '读取 115 鉴权状态失败');
+      setStatusError(err instanceof Error ? err.message : '读取 115 连接状态失败');
     }
   }, []);
 
@@ -112,15 +112,15 @@ export default function Auth115Card() {
 
   const saveCookie = async () => {
     const cookies = cookieText.trim();
-    if (!cookies) { toast.error('请先粘贴 Cookie'); return; }
+    if (!cookies) { toast.error('请先粘贴登录信息'); return; }
     setSavingCookie(true);
     try {
       const r = await extras.auth115SetCookie(cookies);
-      toast.success(r.state === 'active' ? 'Cookie 已保存并验证通过' : 'Cookie 已保存');
+      toast.success(r.state === 'active' ? '登录信息已保存，检测通过' : '登录信息已保存');
       setCookieText('');
       await loadStatus();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '保存 Cookie 失败');
+      toast.error(err instanceof Error ? err.message : '登录信息保存失败');
     } finally {
       setSavingCookie(false);
     }
@@ -135,8 +135,8 @@ export default function Auth115Card() {
       setQrUrl(info.qrcode_url);
       setQrUid(info.uid);
       setQrMsg(mode === 'cookie'
-        ? '用 115 App 扫码并确认，完成后 Cookie 会自动保存'
-        : '用 115 App 扫码并确认开放平台授权');
+        ? '请在 115 App 中确认登录，完成后会自动保存'
+        : '请在 115 App 中确认授权文件管理');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '申请授权二维码失败');
       setQrMode(null); setQrUrl(null); setQrUid(null);
@@ -157,7 +157,7 @@ export default function Auth115Card() {
         if (cancelled) return;
         setQrMsg(r.message);
         if (r.authenticated) {
-          const label = qrMode === 'cookie' ? 'Cookie 登录成功' : '开放平台授权成功';
+          const label = qrMode === 'cookie' ? '115 登录成功' : '文件管理授权成功';
           setQrMode(null); setQrUrl(null); setQrUid(null);
           toast.success(label);
           await loadStatus();
@@ -181,10 +181,10 @@ export default function Auth115Card() {
   const clearOauth = async () => {
     try {
       await extras.auth115ClearOauth();
-      toast.success('已清除开放平台授权');
+      toast.success('已取消文件管理授权');
       await loadStatus();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '清除授权失败');
+      toast.error(err instanceof Error ? err.message : '取消授权失败');
     }
   };
 
@@ -194,128 +194,128 @@ export default function Auth115Card() {
     : qrUid ? extras.auth115QrImageUrl(qrUid) : '';
 
   return (
-    <Card className="overflow-hidden rounded-3xl border-slate-800 bg-[#15131c] text-white shadow-[0_24px_80px_rgba(15,8,25,.2)]">
-      <div className="relative overflow-hidden border-b border-white/10 px-5 py-6 sm:px-7">
-        <div className="pointer-events-none absolute -right-20 -top-24 size-72 rounded-full bg-fuchsia-500/15 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-24 left-1/4 size-56 rounded-full bg-violet-500/10 blur-3xl" />
-        <div className="relative flex flex-wrap items-start justify-between gap-4">
+    <Card className="overflow-hidden rounded-lg shadow-none">
+      <div className="border-b bg-muted/20 px-5 py-6 sm:px-7">
+        <div className="hidden" />
+        <div className="hidden" />
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 text-fuchsia-200">
+            <div className="flex items-center gap-2 text-primary">
               <ShieldCheck className="size-5" />
-              <span className="text-xs font-semibold uppercase tracking-[.18em]">115 Account Center</span>
+              <span className="text-xs font-semibold uppercase tracking-[.18em]">115 账号连接</span>
             </div>
-            <h2 className="mt-3 text-2xl font-bold tracking-tight">115 混合鉴权</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
-              两条通道各司其职：Cookie 接收分享，OAuth 管理文件；扫码完成后自动保存并维护登录态。
+            <h2 className="mt-3 text-2xl font-bold tracking-tight">连接你的 115 网盘</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+              两种登录方式配合使用，扫码即可自动完成：<b className="text-foreground/80">扫码登录</b>负责接收他人分享的资源，<b className="text-foreground/80">应用授权</b>负责转存后的改名与整理。
             </p>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-right backdrop-blur">
-            <p className="text-[11px] uppercase tracking-[.16em] text-slate-400">Ready channels</p>
-            <p className="mt-1 text-xl font-bold">{readyCount}<span className="ml-1 text-sm font-normal text-slate-400">/ 2</span></p>
+          <div className="rounded-lg border bg-background px-4 py-3 text-right">
+            <p className="text-[11px] uppercase tracking-[.16em] text-muted-foreground">已连接</p>
+            <p className="mt-1 text-xl font-bold">{readyCount}<span className="ml-1 text-sm font-normal text-muted-foreground">/ 2 种方式</span></p>
           </div>
         </div>
       </div>
 
       <CardContent className="space-y-5 p-5 sm:p-7">
         {statusError && (
-          <div role="alert" className="rounded-2xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm text-rose-200">
+          <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
             {statusError}
-            <Button size="sm" variant="ghost" className="ml-2 text-rose-100" onClick={() => void loadStatus()}>重新加载</Button>
+            <Button size="sm" variant="ghost" className="ml-2 text-destructive" onClick={() => void loadStatus()}>重新加载</Button>
           </div>
         )}
 
         <div className="grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-stretch">
           <ChannelCard
             icon={<Link2 className="size-5" />}
-            eyebrow="Share channel"
-            title="网页 Cookie"
+            eyebrow="方式一 · 接收分享必备"
+            title="扫码登录 115"
             state={status?.cookie.state ?? 'unknown'}
             configured={Boolean(status?.cookie.configured)}
-            description="浏览分享内容、接收分享文件，是影视转存链路的必需通道。"
-            detail={status?.cookie.configured ? `凭证来源：${status.cookie.source === 'file' ? '扫码或手动保存' : '环境变量'}` : '未配置时无法执行分享转存。'}
+            description="相当于在网页上登录 115，用来浏览并接收别人分享给你的资源，是影视转存必须完成的一步。"
+            detail={status?.cookie.configured ? '登录态会自动维护，过期时重新扫码即可' : '未登录时无法接收分享链接。'}
             danger={status?.cookie.error}
           />
           <div className="hidden items-center justify-center lg:flex">
-            <div className="grid size-9 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-400">+</div>
+            <div className="grid size-9 place-items-center rounded-full border bg-muted text-muted-foreground">+</div>
           </div>
           <ChannelCard
             icon={<FolderCog className="size-5" />}
-            eyebrow="File channel"
-            title="开放平台 OAuth"
+            eyebrow="方式二 · 改名整理"
+            title="授权文件管理"
             state={status?.oauth.state ?? 'unknown'}
             configured={Boolean(status?.oauth.configured)}
-            description="负责建目录、改名、移动与删除；令牌到期前自动刷新并持久化。"
-            detail={status?.oauth.configured ? `AppID ${status.oauth.app_id ?? ''} · 写操作优先走 OAuth` : '未授权时写操作临时回退 Cookie。'}
+            description="授权后才能在网盘里建文件夹、改名、移动文件；授权到期前会自动续期，无需反复操作。"
+            detail={status?.oauth.configured ? '已授权，转存后的整理操作会自动完成' : '暂未授权时，改名整理会临时改用方式一执行。'}
             danger={status?.oauth.error}
           >
             {status?.oauth.configured && (
-              <Button size="sm" variant="ghost" className="mt-2 h-7 px-2 text-xs text-rose-300 hover:bg-rose-400/10 hover:text-rose-200" onClick={() => void clearOauth()}>
-                <Trash2 className="size-3.5" />清除授权
+              <Button size="sm" variant="ghost" className="mt-2 h-7 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void clearOauth()}>
+                <Trash2 className="size-3.5" />取消授权
               </Button>
             )}
           </ChannelCard>
         </div>
 
         {status?.traffic?.cooling_down && (
-          <div className="rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">
-            115 接口正在风控冷却，约 {status.traffic.cooldown_remaining ?? 0} 秒后恢复。期间请求会自动等待，不会持续撞限流。
+          <div className="rounded-lg border border-amber-600/30 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+            115 暂时限制了操作频率，约 {status.traffic.cooldown_remaining ?? 0} 秒后自动恢复。期间系统会自动等待，不会反复重试，请放心。
           </div>
         )}
 
-        <section className="rounded-2xl border border-white/10 bg-[#211b29] p-4 sm:p-5">
+        <section className="rounded-lg border bg-muted/20 p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[.18em] text-fuchsia-300">Quick actions</p>
-              <h3 className="mt-1 text-base font-semibold">选择要建立的连接</h3>
+              <p className="text-xs font-semibold uppercase tracking-[.16em] text-primary">操作</p>
+              <h3 className="mt-1 text-base font-semibold">扫码连接网盘</h3>
             </div>
-            <p className="text-xs text-slate-400">推荐先完成 Cookie，再授权 OAuth</p>
+            <p className="text-xs text-muted-foreground">建议先扫码登录，再做应用授权</p>
           </div>
 
           <div className="mt-4 grid grid-cols-2 gap-3">
-            <Button className="h-auto min-h-20 flex-col gap-2 rounded-2xl border border-fuchsia-300/20 bg-fuchsia-400/10 py-4 text-fuchsia-50 hover:bg-fuchsia-400/20"
+            <Button variant="outline" className="h-auto min-h-20 flex-col gap-2 rounded-lg py-4"
                     disabled={Boolean(qrMode) || qrBusy !== null} onClick={() => void startQr('cookie')}>
               {qrBusy === 'cookie' ? <Loader2 className="size-5 animate-spin" /> : <ScanLine className="size-5" />}
-              <span>{qrMode === 'cookie' ? '等待扫码确认' : '扫码获取 Cookie'}</span>
+              <span>{qrMode === 'cookie' ? '等待你扫码确认' : '扫码登录 115'}</span>
             </Button>
-            <Button className="h-auto min-h-20 flex-col gap-2 rounded-2xl border border-violet-300/20 bg-violet-400/10 py-4 text-violet-50 hover:bg-violet-400/20"
+            <Button variant="outline" className="h-auto min-h-20 flex-col gap-2 rounded-lg py-4"
                     disabled={Boolean(qrMode) || qrBusy !== null} onClick={() => void startQr('oauth')}>
               {qrBusy === 'oauth' ? <Loader2 className="size-5 animate-spin" /> : <QrCode className="size-5" />}
-              <span>{qrMode === 'oauth' ? '等待扫码确认' : '授权开放平台'}</span>
+              <span>{qrMode === 'oauth' ? '等待你扫码确认' : '授权文件管理'}</span>
             </Button>
-            <Button variant="outline" className="h-12 rounded-2xl border-white/10 bg-white/5 text-slate-100 hover:bg-white/10 hover:text-white"
+            <Button variant="outline" className="h-12 rounded-lg"
                     disabled={pinging} onClick={() => void ping()}>
-              {pinging ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}立即探活
+              {pinging ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}检测连接是否正常
             </Button>
-            <Button variant="outline" className="h-12 rounded-2xl border-white/10 bg-white/5 text-slate-100 hover:bg-white/10 hover:text-white"
+            <Button variant="outline" className="h-12 rounded-lg"
                     onClick={() => void loadStatus()}>
               <Cloud className="size-4" />刷新状态
             </Button>
           </div>
 
           {qrUrl && qrUid && qrMode && (
-            <div className="mt-5 grid gap-4 rounded-2xl border border-white/10 bg-black/25 p-4 sm:grid-cols-[184px_1fr] sm:items-center">
-              <img src={qrImage} alt={qrMode === 'cookie' ? '115 Cookie 登录二维码' : '115 OAuth 授权二维码'}
+            <div className="mt-5 grid gap-4 rounded-lg border bg-background p-4 sm:grid-cols-[184px_1fr] sm:items-center">
+              <img src={qrImage} alt={qrMode === 'cookie' ? '115 登录二维码' : '115 授权二维码'}
                    className="mx-auto size-44 rounded-xl bg-white p-2 shadow-xl" />
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[.18em] text-fuchsia-300">Scan with 115 App</p>
-                <h4 className="mt-2 text-lg font-semibold">{qrMode === 'cookie' ? '获取分享转存 Cookie' : '授权文件管理能力'}</h4>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{qrMsg}</p>
-                <p className="mt-3 text-xs leading-5 text-slate-500">请直接扫描二维码，不要点击二维码内容。Cookie 登录默认绑定独立 TV 会话，减少与现有网页端登录冲突。</p>
+                <p className="text-xs font-semibold uppercase tracking-[.16em] text-primary">请用手机 115 App 扫码</p>
+                <h4 className="mt-2 text-lg font-semibold">{qrMode === 'cookie' ? '登录并接收分享' : '授权文件整理能力'}</h4>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">{qrMsg}</p>
+                <p className="mt-3 text-xs leading-5 text-muted-foreground">直接用 App 扫码即可，不要保存或转发二维码图片。扫码登录使用独立会话，不会影响你手机和网页上已登录的 115。</p>
               </div>
             </div>
           )}
         </section>
 
-        <details className="group rounded-2xl border border-white/10 bg-white/[0.035]">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 text-sm font-medium text-slate-200">
-            <span className="flex items-center gap-2"><KeyRound className="size-4 text-slate-400" />高级选项：手动更新 Cookie</span>
-            <ChevronDown className="size-4 text-slate-400 transition group-open:rotate-180" />
+        <details className="group rounded-lg border bg-card">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 text-sm font-medium text-foreground">
+            <span className="flex items-center gap-2"><KeyRound className="size-4 text-muted-foreground" />无法扫码？手动粘贴登录信息（高级）</span>
+            <ChevronDown className="size-4 text-muted-foreground transition group-open:rotate-180" />
           </summary>
-          <div className="border-t border-white/10 p-4">
-            <p className="mb-2 text-xs leading-5 text-slate-400">仅在扫码不可用时使用。粘贴包含 UID、CID、SEID、KID 的完整 Cookie，保存后会自动探活。</p>
+          <div className="border-t p-4">
+            <p className="mb-2 text-xs leading-5 text-muted-foreground">仅推荐有经验的用户在扫码失败时使用。从浏览器登录 115 后复制完整 Cookie 粘贴进来，保存后会自动检测是否有效。</p>
             <Textarea value={cookieText} onChange={(e) => setCookieText(e.target.value)}
                       placeholder="UID=...; CID=...; SEID=...; KID=..." spellCheck={false}
-                      className="min-h-24 border-white/10 bg-black/25 font-mono text-xs text-slate-100 placeholder:text-slate-600" />
+                      className="min-h-24 font-mono text-xs" />
             <div className="mt-3 flex justify-end">
               <Button size="sm" disabled={savingCookie} onClick={() => void saveCookie()}>
                 {savingCookie ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}保存并验证

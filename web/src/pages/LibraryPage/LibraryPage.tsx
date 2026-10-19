@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Search, Tv, Film, HardDrive } from 'lucide-react';
+import { Search, Tv, Film, HardDrive, Library } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -45,46 +45,52 @@ export default function LibraryPage() {
 
   return (
     <div className="mx-auto w-full max-w-5xl p-5 sm:p-8">
-      <PageHeader eyebrow="媒体库" title="已转存片名聚合" description="按片名/剧集聚合成媒体库视图，显示收录集数与体积，支持检索。" />
+      <PageHeader eyebrow="媒体库" title="已转存的影视作品" description="按片名把已入库的资源聚合成媒体库视图，可以快速查看收录了哪些剧集、各占多少空间。" />
       <div className="mt-6 grid gap-4 sm:grid-cols-3">
-        <Card className="rounded-md shadow-none sm:col-span-2">
-          <CardContent className="flex items-center gap-3 pt-6">
+        <Card className="rounded-xl border-border/70 shadow-sm sm:col-span-2">
+          <CardContent className="flex items-center gap-3 p-5">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="pl-9" placeholder="搜索片名…" value={q} onChange={(e) => setQ(e.target.value)} />
+              <Input className="h-10 rounded-lg pl-9" placeholder="搜索片名…" value={q} onChange={(e) => setQ(e.target.value)} />
             </div>
-            <NativeSelect className="w-32" value={mt} onChange={(e) => setMt(e.target.value)}>
-              <NativeSelectOption value="">全部</NativeSelectOption>
+            <NativeSelect className="h-10 w-32 rounded-lg" value={mt} onChange={(e) => setMt(e.target.value)}>
+              <NativeSelectOption value="">全部类型</NativeSelectOption>
               <NativeSelectOption value="tv">剧集</NativeSelectOption>
               <NativeSelectOption value="movie">电影</NativeSelectOption>
             </NativeSelect>
           </CardContent>
         </Card>
-        <Card className="rounded-md shadow-none"><CardContent className="pt-6">
-          <div className="text-xs text-muted-foreground">已完成估算体积</div>
-          <div className="mt-1 flex items-center gap-2 font-mono text-2xl font-semibold text-primary">
-            <HardDrive className="size-5" />{gb} GB
+        <Card className="rounded-xl border-border/70 shadow-sm"><CardContent className="p-5">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-muted-foreground">已入库估算体积</div>
+            <HardDrive className="size-4 text-primary" />
           </div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight text-primary">{gb} <span className="text-sm font-normal text-muted-foreground">GB</span></div>
         </CardContent></Card>
       </div>
-      <Card className="mt-4 rounded-md shadow-none">
+      <Card className="mt-4 overflow-hidden rounded-xl border-border/70 shadow-sm">
         <CardContent className="p-2">
-          {groups === null ? <Skeleton className="m-2 h-80" />
-            : groups.length === 0 ? <p className="p-10 text-center text-sm text-muted-foreground">没有匹配的已完成资源</p>
-            : (
-              <ul className="divide-y">
+          {groups === null ? <Skeleton className="m-2 h-96" />
+            : groups.length === 0 ? (
+              <div className="p-14 text-center">
+                <div className="mx-auto grid size-12 place-items-center rounded-full bg-muted text-muted-foreground"><Library className="size-6" /></div>
+                <p className="mt-3 text-sm font-medium">还没有已入库的资源</p>
+                <p className="mt-1 text-xs text-muted-foreground">完成转存的影视作品会自动汇总到这里</p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/60">
                 {groups.map((g) => (
-                  <li key={g.title} className="grid grid-cols-[auto_1fr_auto] items-center gap-4 px-3 py-3">
-                    <span className={`flex size-8 items-center justify-center rounded-md ${g.media_type === 'tv' ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-600'}`}>
-                      {g.media_type === 'tv' ? <Tv className="size-4" /> : <Film className="size-4" />}
+                  <li key={g.title} className="grid grid-cols-[auto_1fr_auto] items-center gap-4 rounded-lg px-3 py-3 transition-colors hover:bg-muted/50">
+                    <span className={`flex size-9 items-center justify-center rounded-xl ${g.media_type === 'tv' ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-600'}`}>
+                      {g.media_type === 'tv' ? <Tv className="size-[18px]" /> : <Film className="size-[18px]" />}
                     </span>
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{g.title} {g.year ? <span className="text-muted-foreground">({g.year})</span> : null}</div>
+                      <div className="truncate text-[13.5px] font-medium">{g.title} {g.year ? <span className="font-normal text-muted-foreground">({g.year})</span> : null}</div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
-                        {g.media_type === 'tv' ? `收录 ${g.episodes.length} 集：${epsText(g.episodes)}` : `${g.tasks} 个文件`}
+                        {g.media_type === 'tv' ? `已收录 ${g.episodes.length} 集：${epsText(g.episodes)}` : `${g.tasks} 个文件`}
                       </div>
                     </div>
-                    <span className="font-mono text-xs text-muted-foreground">{fmtGb(g.bytes)} GB</span>
+                    <span className="text-xs tabular-nums text-muted-foreground">{fmtGb(g.bytes)} GB</span>
                   </li>
                 ))}
               </ul>

@@ -1,89 +1,89 @@
 :root {
-  --button-outline: rgba(0,0,0, .10);
-  --badge-outline: rgba(0,0,0, .05);
+  --button-outline: rgba(15, 60, 55, .12);
+  --badge-outline: rgba(15, 60, 55, .08);
 
   /* Automatic computation of border around primary / danger buttons */
   --opaque-button-border-intensity: -8; /* In terms of percentages */
 
   /* Backgrounds applied on top of other backgrounds when hovered/active */
-  --elevate-1: rgba(0,0,0, .03);
-  --elevate-2: rgba(0,0,0, .08);
+  --elevate-1: rgba(13, 44, 40, .04);
+  --elevate-2: rgba(13, 44, 40, .08);
 
-  --background: hsl(210 20% 97%);
-  --foreground: hsl(215 31% 18%);
+  --background: hsl(168 24% 97.4%);
+  --foreground: hsl(182 24% 13%);
   --card: hsl(0 0% 100%);
-  --card-foreground: hsl(215 31% 18%);
-  --card-border: hsl(210 17% 87%);
+  --card-foreground: hsl(182 24% 13%);
+  --card-border: hsl(172 16% 89%);
   --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(215 31% 18%);
-  --primary: hsl(174 62% 31%);
-  --primary-foreground: hsl(168 44% 97%);
-  --secondary: hsl(212 26% 92%);
-  --secondary-foreground: hsl(215 31% 23%);
-  --muted: hsl(210 20% 94%);
-  --muted-foreground: hsl(215 13% 45%);
-  --accent: hsl(38 65% 92%);
-  --accent-foreground: hsl(31 68% 33%);
-  --info: hsl(211 56% 45%);
+  --popover-foreground: hsl(182 24% 13%);
+  --primary: hsl(173 56% 33%);
+  --primary-foreground: hsl(165 55% 98%);
+  --secondary: hsl(170 20% 94%);
+  --secondary-foreground: hsl(182 26% 19%);
+  --muted: hsl(170 20% 95.2%);
+  --muted-foreground: hsl(180 10% 43%);
+  --accent: hsl(36 70% 93%);
+  --accent-foreground: hsl(30 62% 30%);
+  --info: hsl(211 58% 46%);
   --info-foreground: hsl(210 100% 98%);
-  --destructive: hsl(4 62% 52%);
+  --destructive: hsl(3 60% 52%);
   --destructive-foreground: hsl(0 0% 100%);
-  --success: hsl(159 62% 35%);
+  --success: hsl(158 58% 35%);
   --success-foreground: hsl(152 60% 97%);
-  --warning: hsl(35 68% 48%);
-  --warning-foreground: hsl(38 100% 97%);
-  --border: hsl(210 17% 87%);
-  --input: hsl(210 17% 84%);
-  --ring: hsl(174 62% 31%);
-  --chart-1: hsl(174 62% 31%);
-  --chart-2: hsl(211 56% 45%);
-  --chart-3: hsl(35 68% 48%);
-  --chart-4: hsl(267 38% 48%);
-  --chart-5: hsl(4 62% 52%);
-  --sidebar: hsl(214 33% 17%);
-  --sidebar-foreground: hsl(210 21% 91%);
-  --sidebar-primary: hsl(174 62% 38%);
-  --sidebar-primary-foreground: hsl(168 44% 97%);
-  --sidebar-accent: hsl(213 29% 25%);
-  --sidebar-accent-foreground: hsl(174 40% 88%);
-  --sidebar-border: hsl(213 22% 27%);
-  --sidebar-ring: hsl(174 62% 38%);
+  --warning: hsl(33 72% 47%);
+  --warning-foreground: hsl(36 100% 97%);
+  --border: hsl(172 16% 89.5%);
+  --input: hsl(172 16% 86%);
+  --ring: hsl(173 56% 38%);
+  --chart-1: hsl(173 56% 36%);
+  --chart-2: hsl(211 58% 46%);
+  --chart-3: hsl(33 72% 47%);
+  --chart-4: hsl(267 40% 50%);
+  --chart-5: hsl(3 60% 52%);
+  --sidebar: hsl(186 30% 12.5%);
+  --sidebar-foreground: hsl(174 16% 82%);
+  --sidebar-primary: hsl(171 58% 45%);
+  --sidebar-primary-foreground: hsl(180 40% 98%);
+  --sidebar-accent: hsl(184 26% 20%);
+  --sidebar-accent-foreground: hsl(166 45% 90%);
+  --sidebar-border: hsl(185 20% 22%);
+  --sidebar-ring: hsl(171 58% 45%);
 
   /* Computed borders using hsl relative color syntax */
-  --primary-border: hsl(from hsl(221 83% 53%) h s calc(l + var(--opaque-button-border-intensity)));
-  --secondary-border: hsl(from hsl(220 14% 96%) h s calc(l + var(--opaque-button-border-intensity)));
+  --primary-border: hsl(from hsl(173 56% 33%) h s calc(l + var(--opaque-button-border-intensity)));
+  --secondary-border: hsl(from hsl(170 20% 94%) h s calc(l + var(--opaque-button-border-intensity)));
   --destructive-border: hsl(from hsl(2 84% 62%) h s calc(l + var(--opaque-button-border-intensity)));
-  --accent-border: hsl(from hsl(220 14% 96%) h s calc(l + var(--opaque-button-border-intensity)));
-  --muted-border: hsl(from hsl(220 14% 96%) h s calc(l + var(--opaque-button-border-intensity)));
+  --accent-border: hsl(from hsl(170 20% 94%) h s calc(l + var(--opaque-button-border-intensity)));
+  --muted-border: hsl(from hsl(170 20% 95%) h s calc(l + var(--opaque-button-border-intensity)));
   --font-sans:
-    '-apple-system',
-    'BlinkMacSystemFont', 'Helvetica Neue', 'Tahoma', 'PingFang SC',
-    'Microsoft Yahei', 'Arial', 'Hiragino Sans GB', 'sans-serif',
-    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    'Inter', '-apple-system', 'BlinkMacSystemFont', 'Helvetica Neue', 'Tahoma',
+    'PingFang SC', 'Microsoft Yahei', 'Arial', 'Hiragino Sans GB',
+    'sans-serif', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+    'Noto Color Emoji';
   --font-serif:
     'Geist', 'Geist Fallback', ui-serif, Georgia, Cambria, 'Times New Roman',
     Times, serif;
-  --font-mono: Source Code Pro, monospace;
-  --radius: 0.5rem;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Source Code Pro', ui-monospace, Menlo, Consolas, monospace;
+  --radius: 0.625rem;
   --shadow-x: 0px;
   --shadow-y: 2px;
   --shadow-blur: 12px;
   --shadow-spread: 0px;
   --shadow-opacity: 0.02;
-  --shadow-color: #000000;
-  --shadow-2xs: 0px 2px 12px 0px hsl(0 0% 0% / 0.01);
-  --shadow-xs: 0px 2px 12px 0px hsl(0 0% 0% / 0.01);
+  --shadow-color: #0b2b27;
+  --shadow-2xs: 0px 1px 2px 0px hsl(185 30% 10% / 0.03);
+  --shadow-xs: 0px 1px 3px 0px hsl(185 30% 10% / 0.04), 0px 1px 2px -1px hsl(185 30% 10% / 0.04);
   --shadow-sm:
-    0px 2px 12px 0px hsl(0 0% 0% / 0.02), 0px 1px 2px -1px hsl(0 0% 0% / 0.02);
+    0px 1px 3px 0px hsl(185 30% 12% / 0.05), 0px 1px 2px -1px hsl(185 30% 12% / 0.04);
   --shadow:
-    0px 2px 12px 0px hsl(0 0% 0% / 0.02), 0px 1px 2px -1px hsl(0 0% 0% / 0.02);
+    0px 2px 8px -2px hsl(185 30% 12% / 0.06), 0px 1px 3px -1px hsl(185 30% 12% / 0.05);
   --shadow-md:
-    0px 2px 12px 0px hsl(0 0% 0% / 0.02), 0px 2px 4px -1px hsl(0 0% 0% / 0.02);
+    0px 4px 14px -3px hsl(185 30% 12% / 0.08), 0px 2px 5px -2px hsl(185 30% 12% / 0.05);
   --shadow-lg:
-    0px 2px 12px 0px hsl(0 0% 0% / 0.02), 0px 4px 6px -1px hsl(0 0% 0% / 0.02);
+    0px 10px 26px -6px hsl(185 30% 12% / 0.10), 0px 4px 9px -4px hsl(185 30% 12% / 0.06);
   --shadow-xl:
-    0px 2px 12px 0px hsl(0 0% 0% / 0.02), 0px 8px 10px -1px hsl(0 0% 0% / 0.02);
-  --shadow-2xl: 0px 2px 12px 0px hsl(0 0% 0% / 0.05);
+    0px 18px 40px -10px hsl(185 30% 12% / 0.13), 0px 8px 16px -8px hsl(185 30% 12% / 0.07);
+  --shadow-2xl: 0px 24px 56px -12px hsl(185 30% 12% / 0.22);
   --tracking-normal: 0em;
   --spacing: 0.25rem;
 }
@@ -162,9 +162,48 @@
     }
   }
 
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
     background-color: var(--background);
+    background-image:
+      radial-gradient(1200px 480px at 88% -120px, hsl(173 50% 40% / 0.06), transparent 60%),
+      radial-gradient(900px 420px at -8% -80px, hsl(211 60% 50% / 0.045), transparent 55%);
+    background-attachment: fixed;
     color: var(--foreground);
+    font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: hsl(173 56% 36% / 0.16);
+  }
+
+  /* 统一、克制的细滚动条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(180 10% 72%) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: hsl(180 10% 78%);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: hsl(180 10% 66%);
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
   }
 }
 
@@ -185,7 +224,7 @@
  * - toggled or not
  * - focused or not (this is not handled with these utilities)
  *
- * Even without handling focused or not, this is six possible combinations that
+ * Even without handling focused or not, that is six possible combinations that
  * need to be distinguished from eachother visually.
  */
 @layer utilities {
