@@ -602,7 +602,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cloud.calls, [])
 
     async def test_worker_drains_parse_then_save_and_duplicate_tasks(self):
-        from reelay.providers.decision import DefaultDecision
+        from reelay.providers.decision import DefaultDecision, SubscriptionDecision
         class Parser:
             name = 'fake'
             async def parse(self, ctx):
@@ -611,6 +611,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
                                       season=1, episodes=[1], share_code='share')
         self.reg.add_provider('parser', Parser())
         self.reg.add_provider('decision', DefaultDecision())
+        self.reg.add_provider('decision', SubscriptionDecision())  # 默认决策
         self.pipeline.cfg['defaults'].update({'parser': 'fake', 'approval_mode': 'auto'})
         self.cloud.add_share('share', 'S01E01.mkv')
         for msg_id in ('a', 'b'):

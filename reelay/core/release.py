@@ -2,8 +2,10 @@
 
 LLM 在识别时一并抽取（strict schema + 本地校验）；规则从正文再抽一遍补上 LLM 漏掉的明确标记。
 同一集多个版本时由 ``compare`` 按用户偏好（``release`` 配置）择优：收件箱推荐版本与整理时的洗版
-用同一套比较，结论一致。比较依次看：偏好的字幕语言 → 清晰度 → HDR 偏好 → 偏好的音轨 → 偏好的
-片源 → 体积；字幕、音轨、片源只在双方都已知时参与比较，未标明不等于没有。
+用同一套比较。比较依次看：偏好的字幕语言 → 清晰度 → HDR 偏好 → 偏好的音轨 → 偏好的片源 → 体积。
+
+消息没写的项（如没提字幕）有两种处理：推荐版本时视为不符合偏好，明确符合偏好的版本优先；
+洗版会删除旧文件，用严格模式 —— 旧文件已知符合偏好而新文件未知时不替换，未知的一方不算更好。
 """
 from __future__ import annotations
 
@@ -180,33 +182,46 @@ def _rank_in(values: list[str], preferred: list[str]) -> int | None:
     return max(hits, default=0)
 
 
-def compare(a: dict, b: dict, prefs: dict | None = None) -> int:
-    """a、b 为 ``{"resolution", "release", "size"}``（size 为字节数或 None）；1 表示 a 更好，-1 表示 b 更好。"""
+def _resolution(item: dict) -> int:
+    return item["rank"] if type(item.get("rank")) is int else resolution_rank(item.get("resolution"))
+
+
+def compare(a: dict, b: dict, prefs: dict | None = None, *, strict: bool = False) -> int:
+    """a、b 为 ``{"resolution" 或 "rank", "release", "size"}``（size 为字节数或 None）；
+    1 表示 a 更好，-1 表示 b 更好，0 表示无法区分。
+
+    strict（洗版用，a 是新文件、b 是库中文件）：某项 b 已知而 a 未知时直接返回 0（不能确认新文件不更差），
+    a 已知而 b 未知时这一项跳过；非严格时未知按「不符合偏好」计。
+    """
     prefs = {**DEFAULT_PREFERENCES, **(prefs or {})}
     ra, rb = a.get("release") or {}, b.get("release") or {}
 
     def sign(x, y) -> int:
         return (x > y) - (x < y)
 
+    def ranked(key: str, preferred: list[str]):
+        values = [(r.get(key) if isinstance(r.get(key), list) else [r[key]] if r.get(key) else []) for r in (ra, rb)]
+        return tuple(_rank_in(v, preferred) for v in values)
+
     steps = []
     if prefs["prefer_subtitles"]:
-        steps.append((_rank_in(ra.get("subtitles") or [], prefs["prefer_subtitles"]),
-                      _rank_in(rb.get("subtitles") or [], prefs["prefer_subtitles"])))
-    steps.append((resolution_rank(a.get("resolution")), resolution_rank(b.get("resolution"))))
+        steps.append(ranked("subtitles", prefs["prefer_subtitles"]))
+    steps.append((_resolution(a), _resolution(b)))
     if prefs["hdr"] != "any":
         want = prefs["hdr"] == "prefer"
-        steps.append((bool(ra.get("hdr")) == want, bool(rb.get("hdr")) == want))
+        steps.append(tuple((bool(r.get("hdr")) == want) if (r.get("hdr") or not strict) else None for r in (ra, rb)))
     if prefs["prefer_audio"]:
-        steps.append((_rank_in(ra.get("audio") or [], prefs["prefer_audio"]),
-                      _rank_in(rb.get("audio") or [], prefs["prefer_audio"])))
+        steps.append(ranked("audio", prefs["prefer_audio"]))
     if prefs["prefer_sources"]:
-        sa, sb = ra.get("source"), rb.get("source")
-        steps.append((_rank_in([sa] if sa else [], prefs["prefer_sources"]),
-                      _rank_in([sb] if sb else [], prefs["prefer_sources"])))
+        steps.append(ranked("source", prefs["prefer_sources"]))
     steps.append((a.get("size"), b.get("size")))
     for x, y in steps:
+        if strict and y is not None and x is None:
+            return 0
         if x is None or y is None:
-            continue  # 一方未知：这一项不参与比较
+            if strict:
+                continue
+            x, y = x or 0, y or 0
         result = sign(x, y)
         if result:
             return result

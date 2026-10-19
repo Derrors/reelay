@@ -650,6 +650,18 @@ class Store:
                 series.setdefault((title, season or 1), set()).add(ep)
         return series
 
+    def library_titles(self, media_type: str) -> list[str]:
+        """已入库任务的片名（按识别出的媒体类型）。"""
+        return [r["title"] for r in self._conn.execute(
+            "SELECT DISTINCT title FROM tasks WHERE state=? AND title IS NOT NULL "
+            "AND json_extract(snapshot,'$.parsed.media_type')=?", (TaskState.DONE.value, media_type))]
+
+    def titles_for_tmdbid(self, tmdbid: int) -> list[str]:
+        """同一 TMDB 条目入库时用过的片名（规范名可能随语言设置变化）。"""
+        return [r["title"] for r in self._conn.execute(
+            "SELECT DISTINCT title FROM tasks WHERE title IS NOT NULL "
+            "AND json_extract(snapshot,'$.parsed.raw_fields.tmdbid')=?", (int(tmdbid),))]
+
     def source_watermark(self, source: str) -> int | None:
         """某来源已接收的最大消息 ID；重连后从这里补拉，首次监听返回 None。"""
         row = self._conn.execute(

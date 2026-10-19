@@ -401,26 +401,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     @app.post("/api/sources/test-parse")
     async def test_parse(payload: ParseTestPayload):
         """与真实管线一致：合并默认规则 → 解析 → after_parse 扩展 → 确定性置信度 → 决策；不落库。"""
-        from reelay.core import confidence
-        from reelay.core.contracts import RawMessage, PipelineContext
-        pipeline = service.pipeline
-        cfg = service.get_config()
-        raw = RawMessage(source=payload.source or "@test", msg_id="web-preview",
-                         text=payload.text, urls=payload.urls)
-        ctx = PipelineContext(raw=raw)
-        ctx.source_rule = pipeline._rule_for(raw.source)
-        ctx.ns("runtime").update(config=cfg)
-        parser = registry.get_provider("parser", ctx.source_rule.get("parser", cfg["defaults"]["parser"]))
-        with pipeline._scope(ctx):
-            ctx.parsed = await parser.parse(ctx)
-        await pipeline._run_hooks("after_parse", ctx)
-        confidence.apply(ctx)
-        decider = registry.get_provider("decision", ctx.source_rule.get("decision", cfg["defaults"]["decision"]))
-        with pipeline._scope(ctx):
-            decision = await decider.decide(ctx)
-        return {"parsed": ctx.parsed.__dict__ if ctx.parsed else None,
-                "decision": getattr(decision, "value", str(decision)),
-                "confidence": ctx.meta.get("confidence"), "trail": ctx.trail}
+        return await service.test_parse(payload.text, payload.urls, payload.source)
 
     # ------------------------------------------------------------------ #
     # 6) 任务高级检索：片名/剧集聚合 + 体积 + 支持批量操作的扩展筛选

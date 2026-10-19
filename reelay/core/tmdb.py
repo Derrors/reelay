@@ -128,6 +128,18 @@ def best_match(kind: str, title: str, year: int | None, *, language: str,
     return None, summary
 
 
+def tv_details(tv_id: int, *, language: str, timeout: float) -> dict:
+    """剧集条目的季列表（季号与集数），供订阅时选择季与填写总集数。"""
+    def load():
+        data = _request(f"/tv/{int(tv_id)}", {"language": language}, timeout=timeout)
+        return {"id": data.get("id"), "name": data.get("name"), "poster_path": data.get("poster_path"),
+                "first_air_date": data.get("first_air_date"),
+                "seasons": [{"season": s.get("season_number"), "episodes": s.get("episode_count"),
+                             "air_date": s.get("air_date")}
+                            for s in data.get("seasons") or [] if type(s.get("season_number")) is int]}
+    return _cached(("tv", int(tv_id), language), load)
+
+
 def season_episodes(tv_id: int, season: int, *, language: str, timeout: float) -> list[dict]:
     """某季的集列表（含 air_date），供追更检查计算已播集数。"""
     def load():

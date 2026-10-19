@@ -11,8 +11,9 @@ StorageProvider(转存) → **after_save(本 Hook：建目录 + 改名 + 移动)
   - manual（默认）：保留两份文件并转人工，不标记完成；
   - skip：保留库中已有文件，删除本次新转存的文件（进 115 回收站）；
   - suffix：新文件改名为「名称 (2).ext」并存；
-  - upgrade（洗版）：按画质等级、再按文件大小比较，新文件更好则删除旧文件（进回收站）
-    后入库，否则同 skip。删除前先记入扩展状态，中断后重放不会重复删除或误判。
+  - upgrade（洗版）：按 ``release`` 偏好比较（偏好的字幕 → 清晰度 → HDR → 音轨 → 片源 → 体积，
+    与收件箱推荐版本同一套比较），新文件更好则删除旧文件（进回收站）后入库，否则同 skip。
+    删除前先记入扩展状态，中断后重放不会重复删除或误判。
 
 命名模板取自 config.organize.naming（遵循 Jellyfin/Emby 通用 SxxEyy 规范）。
 dry-run 只生成整理计划；真实模式缺客户端则失败。
@@ -30,7 +31,7 @@ from ..core.contracts import PipelineContext
 from ..core.io import run_blocking
 from ..core.media import episode_of as _episode_of, resolution_rank
 from ..core.registry import register
-from ..core import runtime
+from ..core import release, runtime
 
 log = logging.getLogger("reelay.plugin.organizer")
 
@@ -139,8 +140,12 @@ class Organizer:
             # 清理失败不影响已完成的整理结果
             log.warning("清理暂存目录失败（已忽略）：%s", exc)
 
-    def _resolve_conflict(self, strategy, fs, target_cid, item, source_id, existing, quality, state):
-        """按策略处理同名不同 ID 的文件，返回 (动作, 本次文件的最终名称)。"""
+    def _resolve_conflict(self, strategy, fs, target_cid, item, source_id, existing, candidate, state):
+        """按策略处理同名不同 ID 的文件，返回 (动作, 本次文件的最终名称)。
+
+        candidate 是本次文件的 ``{"rank", "release", "size"}``；库中文件优先用入库时记下的信息，
+        没有记录时从文件名识别。
+        """
         name = item["target_name"]
         if strategy == "suffix":
             stem, dot, ext = name.rpartition(".")
@@ -154,9 +159,10 @@ class Organizer:
         if strategy in ("skip", "upgrade"):
             existing_id = int(existing["id"])
             recorded = state.get(f"file:{existing_id}") or {}
-            current = (recorded.get("rank") or resolution_rank(existing.get("name")),
-                       existing.get("size") or recorded.get("size") or 0)
-            if strategy == "upgrade" and quality > current:
+            current = {"rank": recorded.get("rank") or resolution_rank(existing.get("name")),
+                       "release": recorded.get("release") or release.from_text(existing.get("name")),
+                       "size": existing.get("size") or recorded.get("size") or 0}
+            if strategy == "upgrade" and release.compare(candidate, current, runtime.get("release"), strict=True) > 0:
                 state.set(f"replaced:{existing_id}", {"by": source_id, "name": name})
                 self._auth.delete([existing_id])
                 return "upgrade", name
@@ -277,10 +283,12 @@ class Organizer:
             target_name = item["target_name"]
             others = [x for x in fs.iterdir(target_cid)
                       if x.get("name") == target_name and int(x["id"]) != source_id]
+            candidate = {"rank": resolution_rank(item.get("src_name")) or new_rank,
+                         "release": release.fill(p.release, release.from_text(item.get("src_name"))),
+                         "size": current.get("size") or 0}
             if others:
-                quality = (resolution_rank(item.get("src_name")) or new_rank, current.get("size") or 0)
                 action, target_name = self._resolve_conflict(
-                    strategy, fs, target_cid, item, source_id, others[0], quality, state)
+                    strategy, fs, target_cid, item, source_id, others[0], candidate, state)
                 conflicts.append({"target": f"{item['target_dir']}/{item['target_name']}",
                                   "action": action, "existing_id": str(others[0]["id"])})
                 if action == "skip":
@@ -290,7 +298,7 @@ class Organizer:
                 auth.rename(source_id, target_name)
             if int(current["parent_id"]) != target_cid:
                 auth.move(source_id, target_cid)
-            state.set(f"file:{source_id}", {"rank": resolution_rank(item.get("src_name")) or new_rank,
+            state.set(f"file:{source_id}", {"rank": candidate["rank"], "release": candidate["release"],
                                             "size": current.get("size"), "name": item.get("src_name")})
             final = fs.get_attr(source_id, refresh=True)
             if int(final["parent_id"]) != target_cid or final["name"] != target_name:

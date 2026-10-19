@@ -159,8 +159,9 @@ class TestConfidence(Base):
         parser = LLMParser()
         parser._client = FakeAI(media(year=None))
         registry.add_provider("parser", parser)
-        from reelay.providers.decision import DefaultDecision
+        from reelay.providers.decision import DefaultDecision, SubscriptionDecision
         registry.add_provider("decision", DefaultDecision())
+        registry.add_provider("decision", SubscriptionDecision())  # 默认决策
         pipeline = self.pipeline({"save_dirs": {"默认": "1"},
                                   "defaults": {"save_to": "默认", "approval_mode": "auto",
                                                "confidence_threshold": 0.8}}, registry)
@@ -420,11 +421,12 @@ class TestSourceBackfillAndAlerts(Base):
         self.assertEqual(emitted, [str(i) for i in range(411, 416)])
 
     async def test_backfilled_tasks_skip_per_task_approval_cards(self):
-        from reelay.providers.decision import DefaultDecision
+        from reelay.providers.decision import DefaultDecision, SubscriptionDecision
         from reelay.providers.parser import RegexParser
         registry = Registry()
         registry.add_provider("parser", RegexParser())
         registry.add_provider("decision", DefaultDecision())
+        registry.add_provider("decision", SubscriptionDecision())  # 默认决策
         pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "providers": {"source": "telegram", "notify": ["console"]},
                                   "defaults": {"save_to": "默认", "parser": "regex"}}, registry)
         live, old = message(msg_id="1"), message(msg_id="2")

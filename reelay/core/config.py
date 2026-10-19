@@ -26,7 +26,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "dir_router": {},
     "providers": {"source": "telegram", "notify": ["console"]},
     "plugins": {},
-    "defaults": {"approval_mode": "manual", "parser": "llm", "decision": "default",
+    "defaults": {"approval_mode": "manual", "parser": "llm", "decision": "subscription",
                  "storage": "p115", "save_to": "默认", "confidence_threshold": 0.5,
                  "llm_response_format": "json_schema", "episodes_from": "share"},
     "sources": [],

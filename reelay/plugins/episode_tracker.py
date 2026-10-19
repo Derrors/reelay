@@ -21,7 +21,7 @@ import asyncio
 import logging
 import time
 
-from ..core import runtime, tmdb
+from ..core import runtime, subscriptions, tmdb
 from ..core.contracts import PipelineContext
 from ..core.registry import register
 
@@ -64,21 +64,7 @@ class _Base:
     ]
 
     def validate_config(self, cfg: dict) -> None:
-        section = cfg.get("episode_tracker", {})
-        if not isinstance(section, dict):
-            raise ValueError("episode_tracker 必须是对象")
-        subscriptions = section.get("subscriptions", [])
-        if not isinstance(subscriptions, list):
-            raise ValueError("episode_tracker.subscriptions 必须是数组")
-        for index, item in enumerate(subscriptions):
-            label = f"episode_tracker.subscriptions[{index}]"
-            if not isinstance(item, dict) or type(item.get("title")) is not str or not item["title"].strip():
-                raise ValueError(f"{label} 必须包含 title")
-            if set(item) - {"title", "season", "total"}:
-                raise ValueError(f"{label} 只支持 title/season/total")
-            for key, low in (("season", 0), ("total", 1)):
-                if key in item and (type(item[key]) is not int or not low <= item[key] <= 9999):
-                    raise ValueError(f"{label}.{key} 必须是不小于 {low} 的整数")
+        subscriptions.validate(cfg)
 
 
 @register(kind="event", event="on_saved")
@@ -114,11 +100,11 @@ class EpisodeTracker(_Base):
             for record in records.values():
                 if record.get("updated_at", 0) >= since:
                     targets[(record["title"], record["season"])] = {"tmdbid": record.get("tmdbid"), "from_first": True}
-        for item in config.get("subscriptions", []):
-            season = item.get("season", 1)
+        for item in subscriptions.items({"episode_tracker": config}):
+            season = item["season"]
             record = records.get(f"series:{item['title']}|S{season:02d}", {})
-            targets[(item["title"], season)] = {"tmdbid": record.get("tmdbid"), "total": item.get("total"),
-                                                "from_first": False}
+            targets[(item["title"], season)] = {"tmdbid": item["tmdbid"] or record.get("tmdbid"),
+                                                "total": item["total"], "from_first": False}
         today = time.strftime("%Y-%m-%d")
         report, lines = {}, []
         for (title, season), info in sorted(targets.items()):

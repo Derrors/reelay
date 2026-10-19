@@ -5,6 +5,9 @@
    （allow / deny / min_resolution，见 ``core/rules.py``）→ SKIP；清晰度未知无法核对 → ASK
 2. 低置信度（可配阈值）→ ASK（交人工兜底），避免 AI 误判直接放行
 3. 按来源的审批模式：manual → ASK；auto / default_pass → SAVE
+
+三个实现逐层叠加：``default`` 只按规则；``subscription``（默认）在规则之上让订阅剧集的新集
+自动放行；``llm`` 再按自然语言偏好筛选（只能否决或转人工，不能越过前面的闸门）。
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
-from ..core import ai, rules, runtime
+from ..core import ai, rules, runtime, subscriptions
 from ..core.contracts import ApprovalMode, Decision, PipelineContext
 from ..core.registry import register
 
@@ -74,6 +77,47 @@ class DefaultDecision:
         return Decision.SAVE   # auto / default_pass
 
 
+@register(kind="provider", ptype="decision")
+class SubscriptionDecision(DefaultDecision):
+    """订阅的剧（同一 tmdbid、同一季）的新集，从「待你确认」改为直接转存。
+
+    只在规则判断为 ASK 时生效，且要求：不是 LLM 降级结果、置信度达标、过滤规则没有疑问、
+    TMDB 匹配到订阅的条目、消息里的集还没全部入库。转存时照常以分享清单校验与去重。
+    """
+    name = "subscription"
+
+    def validate_config(self, cfg: dict) -> None:
+        subscriptions.validate(cfg)
+
+    async def decide(self, ctx: PipelineContext) -> Decision:
+        return self.promote(ctx, await super().decide(ctx))
+
+    @staticmethod
+    def promote(ctx: PipelineContext, decision: Decision) -> Decision:
+        p, rule = ctx.parsed, ctx.source_rule or {}
+        if decision != Decision.ASK or ctx.meta.get("parse", {}).get("fallback"):
+            return decision
+        if p.confidence < rule.get("confidence_threshold", CONFIDENCE_ASK_THRESHOLD):
+            return decision
+        if rules.check(rule.get("filters", {}) or {}, p):
+            return decision
+        item = subscriptions.match(subscriptions.items(runtime.get_config()), p, ctx.meta.get("tmdb", {}))
+        if not item:
+            return decision
+        season = p.season if p.season is not None else 1
+        if p.episodes:
+            try:
+                have = runtime.services().store.stored_series().get((p.title, season), set())
+            except RuntimeError:
+                have = set()
+            if set(p.episodes) <= have:
+                ctx.log(f"订阅《{item['title']}》：消息里的集都已入库，仍交给你确认")
+                return decision
+        ctx.ns("subscription").update(title=item["title"], season=season, tmdbid=item["tmdbid"])
+        ctx.log(f"订阅《{item['title']}》第 {season} 季：新集自动放行")
+        return Decision.SAVE
+
+
 def _resource(parsed) -> dict:
     return {key: value for key, value in asdict(parsed).items()
             if key not in {"share_code", "receive_code", "raw_fields"}}
@@ -107,8 +151,8 @@ _PREFERENCE_PROMPT = (
 
 
 @register(kind="provider", ptype="decision")
-class LLMDecision(DefaultDecision):
-    """自然语言偏好仅决定候选资源；不能覆盖硬过滤、低置信度和人工审批。"""
+class LLMDecision(SubscriptionDecision):
+    """自然语言偏好仅决定候选资源；不能覆盖硬过滤、低置信度和人工审批（订阅放行也可被偏好否决）。"""
     name = "llm"
 
     def __init__(self) -> None:

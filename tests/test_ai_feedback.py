@@ -450,7 +450,12 @@ class TestReleaseInfo(unittest.IsolatedAsyncioTestCase):
         def v(res, size=None, **rel):
             return {"resolution": res, "size": size, "release": {**release.empty(), **rel}}
         self.assertEqual(release.compare(v("1080p", subtitles=["chs"]), v("2160p", subtitles=["eng"])), 1)
-        self.assertEqual(release.compare(v("1080p"), v("2160p", subtitles=["eng"])), -1)  # 字幕未知不参与
+        self.assertEqual(release.compare(v("1080p", subtitles=["chs"]), v("2160p")), 1)  # 推荐：未写字幕不算符合偏好
+        self.assertEqual(release.compare(v("1080p"), v("2160p", subtitles=["eng"])), -1)
+        # 洗版：库中文件已知是中字、新文件没写字幕时不替换；新文件明确中字而库中未知时按清晰度比
+        self.assertEqual(release.compare(v("2160p"), v("1080p", subtitles=["chs"]), strict=True), 0)
+        self.assertEqual(release.compare(v("2160p", subtitles=["chs"]), v("1080p"), strict=True), 1)
+        self.assertEqual(release.compare(v("720p", subtitles=["chs"]), v("1080p"), strict=True), -1)
         self.assertEqual(release.compare(v("2160p", hdr=["hdr10"]), v("2160p"), {"hdr": "avoid"}), -1)
         self.assertEqual(release.compare(v("1080p", 5), v("1080p", 3)), 1)
         self.assertEqual(release.compare(v("1080p"), v("1080p")), 0)

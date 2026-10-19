@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .core.service import ConflictError, NotFoundError
 
@@ -30,6 +30,27 @@ class SourcePayload(BaseModel):
 class CompilePayload(BaseModel):
     text: str
     scope: str = "defaults"
+
+
+class TextPayload(BaseModel):
+    text: str
+
+
+class SubscriptionPayload(BaseModel):
+    title: str
+    season: int | None = None
+    tmdbid: int | None = None
+    total: int | None = None
+    auto: bool = True
+
+
+class TaskIdsPayload(BaseModel):
+    task_ids: list[str] = Field(default_factory=list)
+
+
+class DraftPayload(BaseModel):
+    bot: str
+    samples: list[str] = Field(default_factory=list)
 
 
 def register_ai(app, *, service) -> None:
@@ -59,3 +80,35 @@ def register_ai(app, *, service) -> None:
     @app.post("/api/ai/compile-rules")
     async def compile_rules(payload: CompilePayload):
         return await call(service.compile_rules, payload.text, payload.scope)
+
+    # 剧集订阅
+    @app.get("/api/subscriptions")
+    async def subscriptions():
+        return await call(service.list_subscriptions)
+
+    @app.post("/api/subscriptions/resolve")
+    async def resolve_subscription(payload: TextPayload):
+        return await call(service.resolve_subscription, payload.text)
+
+    @app.post("/api/subscriptions")
+    async def add_subscription(payload: SubscriptionPayload):
+        return await call(service.add_subscription, payload.model_dump())
+
+    @app.post("/api/subscriptions/from-task/{task_id}")
+    async def subscribe_from_task(task_id: str):
+        return await call(service.subscribe_from_task, task_id)
+
+    @app.post("/api/subscriptions/remove")
+    async def remove_subscription(payload: SubscriptionPayload):
+        await call(service.remove_subscription, payload.model_dump())
+        return {"ok": True}
+
+    # 收件箱建议：先返回规则写的理由，前端再请求 AI 措辞（按事实指纹缓存）
+    @app.post("/api/inbox/advice")
+    async def inbox_advice(payload: TaskIdsPayload):
+        return {"items": await call(service.phrase_advice, payload.task_ids)}
+
+    # 新来源接入向导
+    @app.post("/api/sources/draft")
+    async def draft_source(payload: DraftPayload):
+        return await call(service.draft_source, payload.bot, payload.samples)
