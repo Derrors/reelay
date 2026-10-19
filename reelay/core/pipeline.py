@@ -184,12 +184,18 @@ class Pipeline:
         return True
 
     def _stage(self, kind: str, event: str, target: str, ctx: PipelineContext) -> None:
-        sequence = ctx.meta.get("task", {}).get("approval_reminders", 0) if event == "pending_approval" else 0
-        generation = ctx.meta.get("task", {}).get("generation", 0)
+        # 投递键在同一轮内去重：审批提醒按提醒次数区分；on_failed 事件按失败次数区分，自动重试后的
+        # 每次失败都送到监听方（如失败解释要在重试用尽时通知）。通知渠道的「失败」消息每轮只发一次。
+        task = ctx.meta.get("task", {})
+        sequence = (task.get("approval_reminders", 0) if event == "pending_approval"
+                    else task.get("failures", 0) if kind == "event" and event == "on_failed" else 0)
+        generation = task.get("generation", 0)
         key = f"{generation}:{kind}:{event}:{target}:{sequence}"
         ctx.ns("deliveries")[key] = {"kind": kind, "event": event, "target": target}
 
     async def _emit(self, event: str, ctx: PipelineContext, *, persist: bool = True) -> None:
+        if event == "on_failed":
+            ctx.ns("task")["failures"] = ctx.ns("task").get("failures", 0) + 1
         for listener in self.reg.listeners_for(event, self.task_config(ctx)):
             self._stage("event", event, self.reg.extension_name(listener), ctx)
         if persist:

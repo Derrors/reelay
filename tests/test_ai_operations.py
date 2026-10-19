@@ -224,6 +224,28 @@ class TestFailureExplainer(Base):
         self.assertIn("自动重试 4 次后仍失败", (await self.run_on(ctx))["text"])
         self.assertEqual(len(self.notices()), 1)
 
+    async def test_every_failure_reaches_the_explainer_through_the_outbox(self):
+        ctx = tv_ctx()
+        ctx.state = TaskState.QUEUED
+        self.store.save_task(ctx)
+        await self.pl._fail(ctx, "转存准备失败：ConnectionError", retry_from=TaskState.QUEUED)
+        await self.pl.dispatch_deliveries()
+        self.assertEqual(self.store.state_get("failure_explainer", f"task:{ctx.task_id}")["action"], "retry")
+        self.assertEqual(self.notices(), [])  # 还会自动重试，不打扰
+        # 同一轮里再次失败（如自动重试后）：事件仍要送到，失败解释据此更新并通知
+        again = self.store.get_task(ctx.task_id)
+        await self.pl._fail(again, "转存前校验未通过，需人工处理：无法从文件名识别集号：a.mp4",
+                            retry_from=TaskState.QUEUED, auto_retry=False)
+        await self.pl.dispatch_deliveries()
+        explanation = self.store.state_get("failure_explainer", f"task:{ctx.task_id}")
+        self.assertEqual((explanation["action"], explanation["state"]), ("fix_and_retry", "failed"))
+        self.assertEqual(len(self.notices()), 1)
+        self.assertEqual(self.service.get_task(ctx.task_id)["explanation"]["action"], "fix_and_retry")
+        # 解释与当前状态不符时不显示（如任务已被重新排队）
+        self.store.set_state(ctx.task_id, TaskState.QUEUED, expected=TaskState.FAILED)
+        self.store.set_state(ctx.task_id, TaskState.NEED_MANUAL, expected=TaskState.QUEUED)
+        self.assertIsNone(self.service.get_task(ctx.task_id)["explanation"])
+
     async def test_expired_shares_are_explained_as_gone(self):
         ctx = tv_ctx()
         ctx.state = TaskState.FAILED

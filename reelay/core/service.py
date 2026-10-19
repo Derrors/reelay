@@ -196,7 +196,8 @@ class ManagementService:
                 "storage_phase": meta.get("storage", {}).get("phase"),
                 "has_landed": bool(meta.get("storage", {}).get("landed")),
                 "organize_error": meta.get("organize", {}).get("error"),
-                **(self._advice_fields(ctx, context) if pending else {"explanation": self.explanation(ctx.task_id)}),
+                **(self._advice_fields(ctx, context) if pending
+                   else {"explanation": self.explanation(ctx.task_id, ctx.state.value)}),
             })
         return {"items": items, "save_dirs": list(self.pipeline.cfg["save_dirs"]),
                 "save_dir_paths": self.pipeline.dir_paths()}
@@ -287,9 +288,10 @@ class ManagementService:
                                     "text": texts[entry["id"]], "source": "ai"}
         return out
 
-    def explanation(self, task_id: str) -> dict | None:
-        """失败解释扩展写下的原因与建议操作（见 plugins/failure_explainer.py）。"""
-        return self.store.state_get("failure_explainer", f"task:{task_id}")
+    def explanation(self, task_id: str, state: str | None = None) -> dict | None:
+        """失败解释扩展写下的原因与建议操作（见 plugins/failure_explainer.py）；与任务当前状态不符的旧解释不返回。"""
+        found = self.store.state_get("failure_explainer", f"task:{task_id}")
+        return found if found and (state is None or found.get("state") == state) else None
 
     def _auto_target(self, ctx: PipelineContext | None) -> dict[str, str | None]:
         """待审批任务不改目录时的去向：auto_dir 是「别名/分类」，auto_path 是网盘真实路径（未知时为 None）。"""
@@ -306,7 +308,7 @@ class ManagementService:
         ctx = self.store.get_task(task_id) if record["state"] == TaskState.PENDING_APPROVAL.value else None
         record.update(self._auto_target(ctx))
         if record["state"] in (TaskState.FAILED.value, TaskState.NEED_MANUAL.value):
-            record["explanation"] = self.explanation(task_id)
+            record["explanation"] = self.explanation(task_id, record["state"])
         return record
 
     async def approve(self, task_id: str, *, save_dir_alias: str | None = None) -> None:
