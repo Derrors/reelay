@@ -27,15 +27,45 @@ Reelay 有两类配置：
 | `save_to` | `默认` | 默认保存到的目录别名 |
 | `parser` | `llm` | `llm` 或 `regex`。LLM 不可用、超时重试后仍失败或输出非法时降级 regex 并强制人工确认 |
 | `llm_response_format` | `json_schema` | 不支持结构化输出的兼容接口改为 `json_object`（仍做本地严格校验） |
-| `decision` | `default` | `llm` 时按 `preferences` 的自然语言偏好决定是否收藏及目录 |
-| `preferences` | `""` | 例："只要 4K 或 1080p 的国产剧和日本动画，综艺不要" |
+| `decision` | `subscription` | `default` 只按规则；`subscription` 在规则之上让订阅剧集的新集自动放行；`llm` 再按 `preferences` 的自然语言偏好（并参考该来源近期的批准与忽略）决定是否收藏及目录，选出的目录不会被二级分类覆盖 |
+| `preferences` | `""` | 例："只要 4K 或 1080p 的国产剧和日本动画，综艺不要"。想让它变成确定性规则，用管理台「用一句话生成规则」 |
 | `confidence_threshold` | `0.5` | 低于该值转人工。置信度由标题/类型/年份是否齐全、TMDB 是否匹配计算，不采信 LLM 自报值 |
 | `episodes_from` | `share` | `share`：以分享内文件名为准，转存未入库的所有集；`message`：只转存消息声明的集 |
 | `filters.must_have` | `[]` | 正文或链接必须包含其一，否则跳过（且不调用 LLM） |
 | `filters.block_keywords` | `[]` | 正文命中任一则跳过（且不调用 LLM） |
+| `filters.allow` | `[]` | 条件列表，命中任一条才收；空表示不限。条件字段 `media_type`（movie/tv/anime）、`genre_ids`（TMDB 类型 ID）、`origin_country`（两位代码），写法同二级分类：同一条件内为"且"，逗号分隔为"或" |
+| `filters.deny` | `[]` | 条件列表，命中任一条就不收 |
+| `filters.min_resolution` | 不限 | `480p` / `720p` / `1080p` / `2160p`；低于则不收，清晰度未知时转人工 |
 | `forward` | 继承全局 | 来源级转发覆盖，见下 |
 
-无论哪种确认方式，低置信度、TMDB 已启用但无可信匹配、LLM 降级的资源都会转人工。
+无论哪种确认方式，低置信度、TMDB 已启用但无可信匹配、LLM 降级的资源都会转人工。`allow` / `deny` / `min_resolution` 在识别与 TMDB 补全之后按字段判断，管理台「用一句话生成规则」会把一句话偏好起草成这些规则，确认后才写入。
+
+### AI 能力（`ai`）
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `ai.examples` | `3` | 识别时取同一来源最近几条人工修正作为提示词示例（0–10，0 关闭） |
+| `ai.history` | `20` | `decision: llm` 时附上同一来源最近几条人工批准与忽略（0–100，0 关闭） |
+| `ai.assist` | `true` | 分享清单按规则无法确定要转存哪些文件时（文件名认不出集号、多季没指定、同一集多个文件、电影多个正片候选），先让 AI 给方案；方案按同一套规则校验，不过才转人工 |
+| `ai.advice` | `true` | 待审批附建议动作（批准 / 忽略 / 需要你看一下）与理由；动作由规则决定，AI 只负责措辞 |
+| `ai.suggest_auto.min_decisions` | `20` | 某来源人工确认满这么多次后才评估是否建议改为自动转存 |
+| `ai.suggest_auto.approve_rate` | `0.9` | 批准率不低于该值 |
+| `ai.suggest_auto.max_correct_rate` | `0.1` | 被修正识别结果的比例不高于该值 |
+
+建议只是提示，切换确认方式需要你在管理台确认。
+
+### 版本偏好（`release`）
+
+同一集（或同一部电影）有多个版本时，待审批的推荐版本与洗版（`organize.conflict: upgrade`）都按这里比较：偏好的字幕 → 清晰度 → HDR → 偏好的音轨 → 偏好的片源 → 体积。列表顺序即优先级。
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `release.prefer_subtitles` | `[chs, cht]` | `chs` 简体 / `cht` 繁体 / `eng` / `jpn` / `kor`；空表示不看字幕 |
+| `release.prefer_audio` | `[]` | `mandarin` / `cantonese` / `english` / `japanese` / `korean` |
+| `release.hdr` | `any` | `any` 不在意 / `prefer` 优先 HDR、杜比视界 / `avoid` 避开 |
+| `release.prefer_sources` | `[]` | `remux` / `bluray` / `web-dl` / `webrip` / `hdtv` / `dvd` |
+
+消息没写的项：推荐版本时按"不符合偏好"计；洗版会删除旧文件，用严格比较——库中文件已知符合偏好而新文件没写时不替换。
 
 ### 转发、审批提醒、定时
 
@@ -55,7 +85,7 @@ Reelay 有两类配置：
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `organize.naming.movie` / `tv` | 见示例 | 受限 Jinja2 路径模板。变量：`title` `year` `season` `episode` `resolution` `ext` `media_type` `genre_ids` `origin_country` `tmdb_id` `original_name`；过滤器：`default` `lower` `upper` `replace` `trim` `join` `length` `pad2` |
-| `organize.conflict` | `manual` | 目标已有同名不同文件时：`manual` 转人工；`skip` 保留旧文件、新文件进回收站；`suffix` 新文件加「 (2)」并存；`upgrade` 洗版——按画质再按大小比较，新文件更好则替换（旧文件进回收站），否则同 skip |
+| `organize.conflict` | `manual` | 目标已有同名不同文件时：`manual` 转人工；`skip` 保留旧文件、新文件进回收站；`suffix` 新文件加「 (2)」并存；`upgrade` 洗版——按 `release` 版本偏好比较，新文件更好则替换（旧文件进回收站），否则同 skip |
 | `dir_router.categories` | MoviePilot 风格默认策略 | `movie`/`tv` → `一级/二级` 路径 → 条件（`genre_ids`、`origin_country`，逗号分隔为"或"，同一分类内多个条件为"且"，空条件为兜底且须放最后） |
 
 一级分类名与某个 `save_dirs` 别名相同时，转存根目录跟随分类；否则在来源指定目录下创建完整的二级路径。审批时（管理台、MCP）手动选择的目录优先：与分类结果不同时直接存入该目录，不再套用二级分类子目录；不选则按分类自动存放，待审批卡片与 Telegram 审批卡片显示网盘中的实际路径（如 `/测试/剧集/国产剧集`；主进程读取到目录路径之前显示「别名/分类」）。
@@ -69,7 +99,8 @@ Reelay 有两类配置：
 | `tmdb.language` / `tmdb.timeout` | `zh-CN` / `10` | TMDB 匹配语言与超时秒数 |
 | `episode_tracker.track_all` | `true` | 自动跟踪最近有新集入库的剧，只报告断档和 TMDB 已播未入库的新集 |
 | `episode_tracker.lookback_days` | `30` | 自动跟踪的时间窗口 |
-| `episode_tracker.subscriptions` | `[]` | 显式订阅 `{title, season?, total?}`，从第 1 集开始检查 |
+| `episode_tracker.subscriptions` | `[]` | 剧集订阅 `{title, season?, total?, tmdbid?, auto?}`：缺集巡检从第 1 集开始检查；`auto`（默认 `true`）时，`decision` 为 `subscription` 或 `llm` 的来源里同一 tmdbid（没有时按 TMDB 规范片名）、同一季的新集直接转存。仍要求 TMDB 匹配、置信度达标、过滤规则无疑问、消息里的集未全部入库。管理台「追剧订阅」与待审批「追这部剧」会写入这里 |
+| `daily_report.narrative` | `true` | 配置了 AI 时，日报开头附一段 AI 按统计事实写的提醒，数字版保留 |
 | `strm.output_dir` | — | STRM 输出目录（本机路径），启用 `strm` 时必填 |
 | `strm.base_url` | — | 媒体服务器能访问到的 Reelay 地址，如 `http://192.168.1.10:28080` |
 

@@ -71,7 +71,10 @@ python -m reelay.main    # 监听 + 后台 Worker + 控制 Bot
 
 ## 5. 之后可以做的事
 
-- 对信任的来源改用 `approval_mode: auto`，配合 `decision: llm` 和自然语言 `preferences`，只把拿不准的资源留给人工——见 [配置参考](configuration.md)。
+- 在「待审批」里对在追的剧点「追这部剧」，之后的新集自动转存；按建议批量处理其余条目。
+- 在「设置 → 基础」用一句话描述想收什么、不要什么，AI 起草成规则，确认后生效。
+- 人工确认得多了，「监听来源」和总览会提示哪些来源可以改为自动转存；也可以对信任的来源直接改用 `approval_mode: auto`，配合 `decision: llm` 和自然语言 `preferences`，只把拿不准的资源留给人工——见 [配置参考](configuration.md)。
+- 配置了控制 Bot 后，直接给它发消息：「待审批里有什么」「我有哪些 4K 日本动画」「把《X》这几集都批了」。
 - 配置 TMDB，让分类、命名和 `[tmdbid=…]` 更准确。
 - 打开 `strm` 扩展生成 STRM，或用 [插件开发指南](plugins.md) 写自己的扩展。
 - 通过 [MCP](../README.md#mcp) 让 Claude 等 agent 帮你查询和审批。

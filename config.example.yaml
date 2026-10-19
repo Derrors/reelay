@@ -11,7 +11,8 @@ plugins:
   tmdb_enrich: true
   dir_router: true
   organizer: true
-  daily_report: true      # 每日日报（on_daily 事件）
+  daily_report: true      # 每日日报（on_daily 事件）；配置了 AI 时开头附一段提醒（daily_report.narrative）
+  failure_explainer: true # 失败解释：任务停下来等人处理时说明原因与建议操作
   episode_tracker: true   # 缺集追更巡检
   strm: false             # STRM 生成，默认关闭；开启需配置下方 strm
 
@@ -70,12 +71,30 @@ approval:
 schedule:
   daily_hour: 9
 
-# 缺集追更：自动跟踪最近有更新的剧，订阅的剧从第 1 集开始检查
+# 缺集追更与剧集订阅：自动跟踪最近有更新的剧；订阅的剧从第 1 集开始检查缺集，
+# auto 为 true（默认）时新集自动转存（decision 为 subscription 或 llm 的来源生效）。
+# 管理台「追剧订阅」与待审批「追这部剧」会写入这里。
 episode_tracker:
   track_all: true
   lookback_days: 30
   subscriptions: []
-  # - {title: 一瓯春, season: 1, total: 36}
+  # - {title: 一瓯春, season: 1, total: 36, tmdbid: 12345}
+  # - {title: 只想提醒缺集的剧, season: 2, auto: false}
+
+# AI 能力：人工裁决回流、转人工前兜底、审批建议与「改为自动转存」建议
+ai:
+  examples: 3                # 识别时参考同一来源最近几条人工修正（0 关闭）
+  history: 20                # decision=llm 时参考同一来源最近几条批准与忽略（0 关闭）
+  assist: true               # 分享里的文件按规则无法确定时先让 AI 给方案，方案经同一套规则校验
+  advice: true               # 待审批附建议动作与理由（动作由规则决定，AI 只措辞）
+  suggest_auto: {min_decisions: 20, approve_rate: 0.9, max_correct_rate: 0.1}
+
+# 同一集多个版本时的偏好：收件箱推荐版本与洗版共用，列表顺序即优先级
+release:
+  prefer_subtitles: [chs, cht]   # chs | cht | eng | jpn | kor
+  prefer_audio: []               # mandarin | cantonese | english | japanese | korean
+  hdr: any                       # any | prefer | avoid
+  prefer_sources: []             # remux | bluray | web-dl | webrip | hdtv | dvd
 
 # STRM（plugins.strm 开启时必填）：output_dir 是本机目录，base_url 是媒体服务器能访问到的 Reelay 地址
 # strm:
@@ -87,7 +106,7 @@ defaults:
   approval_mode: manual      # manual | auto | default_pass
   parser: llm                # llm | regex；LLM 异常/非法输出降级后必须人工确认
   llm_response_format: json_schema # 不支持 schema 的兼容接口可显式用 json_object，仍严格本地校验
-  decision: default          # default | llm（自然语言偏好）
+  decision: subscription     # default（只按规则）| subscription（规则 + 订阅放行）| llm（再加自然语言偏好）
   storage: p115
   confidence_threshold: 0.5  # 置信度由标题/类型/年份/TMDB 匹配等确定性信号计算，不采信 LLM 自报值
   preferences: ""            # decision=llm 时，例如：只收 4K 电影，动画放入动漫目录
@@ -101,6 +120,10 @@ sources:
     filters:
       must_have: ["115.com", "115.cn"]
       block_keywords: ["广告", "招商", "投稿", "频道"]
+      # 结构化规则（可用管理台「用一句话生成规则」起草）：识别与 TMDB 补全后按字段判断
+      # allow: [{origin_country: "CN,HK,TW"}]     # 命中任一条才收
+      # deny: [{genre_ids: "10764,10767"}]        # 真人秀、脱口秀不收
+      # min_resolution: 1080p                     # 清晰度未知时转人工
 
   # 高度信任的源：自动审批 + 自然语言偏好；低置信度、TMDB 未匹配和 LLM 降级仍会转人工
   - bot: "@example_tv_bot"

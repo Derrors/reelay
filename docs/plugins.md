@@ -51,7 +51,7 @@ class MyListener: ...
 | 属性 | 含义 |
 | --- | --- |
 | `raw` | 原始消息：`source`、`msg_id`、`text`、`urls`（含超链接真实 URL） |
-| `parsed` | 识别结果 `ParsedResource`：标题、年份、类型、季集、类型 ID、国家、分享码等 |
+| `parsed` | 识别结果 `ParsedResource`：标题、年份、类型、季集、类型 ID、国家、版本信息（`release`：字幕、音轨、HDR、片源等，见 `reelay/core/release.py`）、分享码等 |
 | `state` / `decision` | 当前状态与决策（save / ask / skip） |
 | `save_dir_alias` / `save_dir_cid` | 目标目录 |
 | `source_rule` | 合并了 `defaults` 的来源规则 |
@@ -108,6 +108,35 @@ class MyListener:
 | `notify` | `async notify(ctx, event)`；event 为 identified / pending_approval / saved / transfer_uncertain / organize_failed / failed | `async notice(text)`：系统通知（告警、汇总、日报） |
 
 Provider 由配置选择：`providers.source`、`providers.notify`，以及 `defaults`/`sources[]` 中的 `parser`、`decision`、`storage`。
+
+内置的三个 `decision` 逐层叠加：`default` 只按规则；`subscription`（新安装的默认值）在其上让订阅剧集的新集自动放行；`llm` 再按自然语言偏好筛选。自定义决策器想保留订阅放行，可以继承 `SubscriptionDecision`。无论决策器返回什么，LLM 降级的识别结果都只能转人工。
+
+## 调用 AI
+
+扩展需要调用 AI 时用 `reelay/core/ai.py`，与内置能力共用客户端配置、退避重试与调用记录：
+
+```python
+from reelay.core import ai
+
+class MyListener:
+    def __init__(self):
+        self._client, self._model = ai.make_client()   # 未配置时为 None，测试可直接替换 _client
+
+    async def handle(self, ctx):
+        if self._client is None:
+            return                                     # 按规则降级
+        try:
+            result, _ = await ai.complete_json(
+                self._client, model=self._model, purpose="my_plugin", task_id=ctx.task_id,
+                messages=[...], schema={...}, name="my_output", validate=my_validate)
+        except ai.AIError:
+            return                                     # 拒答、非法输出、网络错误：按规则降级
+```
+
+- `validate` 必须做本地严格校验并在不合格时抛 `ValueError`（非法输出会重试一次）；
+- 每次请求记入调用记录（`purpose` 会显示在管理台「统计 → AI 调用」）；
+- 送给 AI 的消息正文先用 `ai.scrub()` 去掉链接与访问码；
+- AI 的输出只作提议：涉及写操作的决定交给规则校验或用户确认。
 
 ## 元数据补全约定
 
