@@ -199,7 +199,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
               ) : null}
               <div className="text-xs text-muted-foreground">
                 {detail.context.save_dir_alias ? <>保存到「{detail.context.save_dir_alias}」 · </>
-                  : detail.auto_dir ? <>将存到「{detail.auto_dir}」 · </> : null}
+                  : detail.auto_dir ? <>将存到「{detail.auto_path ?? detail.auto_dir}」 · </> : null}
                 <span title={fullTime(detail.updated_at)}>更新于 {relativeTime(detail.updated_at)}</span>
               </div>
             </div>
@@ -215,7 +215,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
           {can.chooseDir && dirs.length ? (
             <Section title="保存到">
               <Select value={targetDir} onValueChange={setTargetDir} options={dirs.map((d) => ({ value: d, label: d }))}
-                placeholder={detail.state === 'pending_approval' ? `自动 · ${detail.auto_dir ?? '按分类'}`
+                placeholder={detail.state === 'pending_approval' ? `自动 · ${detail.auto_path ?? detail.auto_dir ?? '按分类'}`
                   : `保持当前目录「${detail.context.save_dir_alias ?? '默认'}」`} />
               {targetDir && targetDir !== (detail.state === 'pending_approval' ? detail.auto_dir?.split('/')[0] : detail.context.save_dir_alias)
                 ? <p className="mt-1.5 text-xs text-muted-foreground">直接存入「{targetDir}」，不再套用分类子目录。</p> : null}

@@ -62,7 +62,7 @@ export const api = {
     return request<{ items: ITaskSummary[] }>(`tasks${suffix}`);
   },
   inbox: (state: 'pending_approval' | 'need_manual' = 'pending_approval') =>
-    request<{ items: IInboxItem[]; save_dirs: string[] }>(`inbox?state=${state}`),
+    request<{ items: IInboxItem[]; save_dirs: string[]; save_dir_paths: Record<string, string> }>(`inbox?state=${state}`),
   task: (taskId: string) => request<ITaskDetail>(`tasks/${taskId}`),
   action: (taskId: string, action: 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile', body?: unknown) =>
     request<{ ok: boolean }>(`tasks/${taskId}/${action}`, {

@@ -120,6 +120,13 @@ class P115Storage:
     def _cookie_client(self):
         return None if self._dry_run else self._auth.cookie_client()
 
+    def dir_path(self, cid: str) -> str | None:
+        """目录在网盘中的完整路径（如 /测试/剧集），供管理台显示真实去向；模拟模式返回 None。"""
+        if self._dry_run:
+            return None
+        from p115client import P115FileSystem
+        return P115FileSystem(self._cookie_client()).get_path(int(cid))
+
     @property
     def live(self) -> bool:
         return not self._dry_run and self._auth.has_cookie

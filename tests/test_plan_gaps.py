@@ -575,6 +575,43 @@ class TestManualDirectoryChoice(Base):
         await console.notify(self.store.get_task(task_id), "pending_approval")
         self.assertIn("是否转存到「剧集/国产剧集」", sent[0])
 
+    async def test_targets_show_real_drive_paths_once_recorded(self):
+        self.store.state_set("kernel", "save_dir_paths", {
+            "测试": {"cid": "3", "path": "/测试"}, "剧集": {"cid": "2", "path": "/测试/剧集"},
+            "电影": {"cid": "999", "path": "/旧位置/电影"}})  # CID 已改的记录不用
+        task_id = await self.pending()
+        body = self.service.inbox()
+        self.assertEqual(body["save_dir_paths"], {"测试": "/测试", "剧集": "/测试/剧集"})
+        self.assertEqual((body["items"][0]["auto_dir"], body["items"][0]["auto_path"]), ("剧集/国产剧集", "/测试/剧集/国产剧集"))
+        self.assertEqual(self.service.get_task(task_id)["auto_path"], "/测试/剧集/国产剧集")
+        self.assertEqual(self.store.get_task(task_id).meta["dir_router"]["preview"], "/测试/剧集/国产剧集")
+        self.assertEqual(self.pl.display_target("测试/其他/综艺节目"), "/测试/其他/综艺节目")
+        self.assertEqual((self.pl.display_target("测试"), self.pl.display_target("电影/欧美电影")), ("/测试", "电影/欧美电影"))
+
+    async def test_worker_records_drive_paths_and_tolerates_failures(self):
+        class Storage:
+            name = "p115"
+            fail = False
+
+            def dir_path(self, cid):
+                if self.fail:
+                    raise ConnectionError("down")
+                return {"2": "/测试/剧集", "3": "/测试", "4": "/测试/电影"}[cid]
+
+        registry = Registry()
+        storage = Storage()
+        registry.add_provider("storage", storage)
+        pipeline = self.pipeline(self.CFG, registry)
+        worker = Worker(pipeline, self.store)
+        storage.fail = True
+        await worker.record_dir_paths()  # 失败只影响展示，不抛出
+        self.assertEqual(pipeline.dir_paths(), {})
+        self.assertGreater(worker._next_dir_paths, time.time())
+        storage.fail = False
+        await worker.record_dir_paths()
+        self.assertEqual(pipeline.dir_paths(), {"剧集": "/测试/剧集", "测试": "/测试", "电影": "/测试/电影"})
+        self.assertEqual(worker._dir_paths_revision, pipeline.revision)
+
     async def test_approval_without_choice_follows_category(self):
         ctx = await self.approve_and_route(await self.pending())
         self.assertEqual(ctx.save_dir_alias, "剧集")

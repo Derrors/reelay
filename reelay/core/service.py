@@ -162,20 +162,29 @@ class ManagementService:
                 "tmdb_matched": meta.get("tmdb", {}).get("matched"),
                 "poster_path": p.raw_fields.get("poster_path"),
                 "save_dir_alias": ctx.save_dir_alias,
-                "auto_dir": self.pipeline.target_preview(ctx) if state == TaskState.PENDING_APPROVAL.value else None,
-                "preview":"\n".join(line for line in lines if line)[:400],
+                **self._auto_target(ctx if state == TaskState.PENDING_APPROVAL.value else None),
+                "preview": "\n".join(line for line in lines if line)[:400],
                 "storage_phase": meta.get("storage", {}).get("phase"),
                 "has_landed": bool(meta.get("storage", {}).get("landed")),
                 "organize_error": meta.get("organize", {}).get("error"),
             })
-        return {"items": items, "save_dirs": list(self.pipeline.cfg["save_dirs"])}
+        return {"items": items, "save_dirs": list(self.pipeline.cfg["save_dirs"]),
+                "save_dir_paths": self.pipeline.dir_paths()}
+
+    def _auto_target(self, ctx: PipelineContext | None) -> dict[str, str | None]:
+        """待审批任务不改目录时的去向：auto_dir 是「别名/分类」，auto_path 是网盘真实路径（未知时为 None）。"""
+        if not ctx:
+            return {"auto_dir": None, "auto_path": None}
+        label = self.pipeline.target_preview(ctx)
+        path = self.pipeline.display_target(label)
+        return {"auto_dir": label, "auto_path": path if path != label else None}
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         record = self.store.get_task_record(task_id)
         if not record:
             raise NotFoundError("任务不存在")
         ctx = self.store.get_task(task_id) if record["state"] == TaskState.PENDING_APPROVAL.value else None
-        record["auto_dir"] = self.pipeline.target_preview(ctx) if ctx else None
+        record.update(self._auto_target(ctx))
         return record
 
     async def approve(self, task_id: str, *, save_dir_alias: str | None = None) -> None:

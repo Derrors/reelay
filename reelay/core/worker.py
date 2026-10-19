@@ -46,6 +46,8 @@ class Worker:
         # 非空表示转存/整理暂停及原因；只有 _monitor 和鉴权失败会修改它。
         self.storage_paused: str | None = None
         self._next_auth_check = 0.0
+        self._dir_paths_revision: str | None = None  # 已记录目录路径的配置版本
+        self._next_dir_paths = 0.0
 
     async def run(self, *, drain: bool = False) -> None:
         self.store.acquire_worker()
@@ -77,6 +79,27 @@ class Worker:
             finally:
                 self.store.release_worker()
 
+    async def record_dir_paths(self) -> None:
+        """记录各目录别名在网盘中的路径，管理台与审批卡片据此显示真实去向。
+
+        启动和配置变更后各读一次；失败时 60 秒后重试，期间页面退回显示别名。
+        """
+        revision, cfg = self.pipeline.revision, self.pipeline.cfg
+        paths = {}
+        try:
+            storage = self.pipeline.reg.get_provider("storage", cfg["defaults"].get("storage", "p115"))
+            for alias, cid in cfg["save_dirs"].items() if hasattr(storage, "dir_path") else ():
+                path = await asyncio.to_thread(storage.dir_path, str(cid))
+                if path:
+                    paths[alias] = {"cid": str(cid), "path": path}
+        except Exception as exc:  # noqa: BLE001 - 只影响展示
+            if self._next_dir_paths == 0.0:
+                log.warning("读取保存目录的网盘路径失败，页面暂时显示目录别名：%s", exc)
+            self._next_dir_paths = time.time() + 60
+            return
+        self.store.state_set("kernel", "save_dir_paths", paths)
+        self._dir_paths_revision, self._next_dir_paths = revision, 0.0
+
     async def _refresh_metadata(self) -> None:
         """启动时补跑一次元数据补全：刚配好 TMDB 时，已有任务也能补上规范元数据与海报。"""
         try:
@@ -106,6 +129,8 @@ class Worker:
                                  paused=self.storage_paused)
             if time.time() >= self._next_auth_check:
                 await self.check_auth()
+            if self._dir_paths_revision != self.pipeline.revision and time.time() >= self._next_dir_paths:
+                await self.record_dir_paths()
             try:
                 await self.pipeline.emit_daily()
             except Exception as exc:  # noqa: BLE001 - 日报失败不影响主链路

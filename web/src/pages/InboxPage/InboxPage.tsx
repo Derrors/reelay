@@ -54,6 +54,8 @@ function ConfidenceBar({ value }: { value: number }) {
 interface CardProps {
   item: IInboxItem;
   dirs: string[];
+  /** 目录别名 → 网盘真实路径，用于在选项里注明位置。 */
+  dirPaths: Record<string, string>;
   selected: boolean;
   busy: boolean;
   onToggle: () => void;
@@ -61,9 +63,10 @@ interface CardProps {
   onAct: (action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string) => void;
 }
 
-function InboxCard({ item, dirs, selected, busy, onToggle, onOpen, onAct }: CardProps) {
+function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onAct }: CardProps) {
   const [dir, setDir] = useState('');  // 空值 = 按自动分类存放
   const manual = item.state === 'need_manual';
+  const autoTarget = item.auto_path ?? item.auto_dir ?? '按分类';
   return (
     <article className={cn(
       'group relative flex gap-4 rounded-xl border border-card-border bg-card p-4 shadow-xs transition-shadow hover:shadow-md',
@@ -118,9 +121,10 @@ function InboxCard({ item, dirs, selected, busy, onToggle, onOpen, onAct }: Card
             <>
               {dirs.length > 1 ? (
                 <Select value={dir} onValueChange={setDir} aria-label="保存目录" className="mr-auto min-w-0 max-w-56 flex-1"
-                  title={dir && dir !== item.auto_dir?.split('/')[0] ? `直接存入「${dir}」，不套用分类子目录`
-                    : `按分类存入「${item.auto_dir ?? '自动'}」`}
-                  placeholder={`自动 · ${item.auto_dir ?? '按分类'}`} options={dirs.map((d) => ({ value: d, label: d }))} />
+                  title={dir && dir !== item.auto_dir?.split('/')[0] ? `直接存入「${dirPaths[dir] ?? dir}」，不套用分类子目录`
+                    : `按分类存入「${autoTarget}」`}
+                  placeholder={`自动 · ${autoTarget}`}
+                  options={dirs.map((d) => ({ value: d, label: dirPaths[d] ? `${d}（${dirPaths[d]}）` : d }))} />
               ) : null}
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAct('reject')} aria-label="忽略"
                 className="shrink-0 px-2 text-muted-foreground hover:text-destructive sm:px-3">
@@ -149,6 +153,7 @@ export default function InboxPage() {
   const [tab, setTab] = useState<Tab>('pending_approval');
   const [data, setData] = useState<Record<Tab, IInboxItem[] | null>>({ pending_approval: null, need_manual: null });
   const [dirs, setDirs] = useState<string[]>([]);
+  const [dirPaths, setDirPaths] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<Sort>('newest');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -159,6 +164,7 @@ export default function InboxPage() {
   const apply = useCallback(([pending, manual]: InboxData) => {
     setData({ pending_approval: pending.items, need_manual: manual.items });
     setDirs(pending.save_dirs);
+    setDirPaths(pending.save_dir_paths ?? {});
     // 已不在列表中的选择自动清除
     const ids = new Set(pending.items.map((i) => i.task_id));
     setSelected((prev) => new Set([...prev].filter((id) => ids.has(id))));
@@ -301,6 +307,7 @@ export default function InboxPage() {
               key={item.task_id}
               item={item}
               dirs={dirs}
+              dirPaths={dirPaths}
               selected={selected.has(item.task_id)}
               busy={busy.has(item.task_id)}
               onToggle={() => setSelected((prev) => {

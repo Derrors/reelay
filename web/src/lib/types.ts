@@ -128,8 +128,10 @@ export interface IInboxItem {
   tmdb_matched: boolean | null;
   poster_path: string | null;
   save_dir_alias: string | null;
-  /** 待审批任务不手动改目录时将存入的位置，如「剧集/国产剧集」。 */
+  /** 待审批任务不手动改目录时将存入的位置，如「剧集/国产剧集」（目录别名/分类）。 */
   auto_dir: string | null;
+  /** 同一位置在网盘中的真实路径，如「/测试/剧集/国产剧集」；尚未读取到时为 null。 */
+  auto_path: string | null;
   preview: string;
   storage_phase: string | null;
   has_landed: boolean;
@@ -160,6 +162,7 @@ export interface ITaskContext {
 export interface ITaskDetail extends ITaskSummary {
   context: ITaskContext;
   auto_dir?: string | null;
+  auto_path?: string | null;
 }
 
 export interface IExtensionField {

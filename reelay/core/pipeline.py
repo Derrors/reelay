@@ -114,7 +114,7 @@ class Pipeline:
                         log.warning("补跑 %s 失败：%s", self.reg.extension_name(hook), exc)
                 if state == TaskState.PENDING_APPROVAL:
                     confidence.apply(fresh)
-                    fresh.ns("dir_router")["preview"] = self.target_preview(fresh)
+                    fresh.ns("dir_router")["preview"] = self.display_target(self.target_preview(fresh))
                     ctx = fresh
                 else:
                     poster = fresh.parsed.raw_fields.get("poster_path")
@@ -124,6 +124,20 @@ class Pipeline:
                 if self.store.refresh_snapshot(ctx, updated_at=row["updated_at"]):
                     refreshed += 1
         return refreshed
+
+    def dir_paths(self) -> dict[str, str]:
+        """各目录别名在网盘中的路径（Worker 读取后记录）；目录 CID 已改过的记录不用。"""
+        saved = self.store.state_get("kernel", "save_dir_paths", {}) or {}
+        return {alias: item["path"] for alias, item in saved.items()
+                if str(self.cfg["save_dirs"].get(alias)) == item.get("cid")}
+
+    def display_target(self, label: str) -> str:
+        """把「别名/分类」换成网盘真实路径，如「剧集/国产剧集」→「/测试/剧集/国产剧集」；未知时原样返回。"""
+        alias, _, rest = label.partition("/")
+        root = self.dir_paths().get(alias)
+        if not root:
+            return label
+        return f"{root.rstrip('/')}/{rest}" if rest else root
 
     def target_preview(self, ctx: PipelineContext) -> str:
         """不手动改目录时任务将存入的位置（含二级分类），供审批卡片与管理台展示。"""
@@ -305,7 +319,8 @@ class Pipeline:
 
         if ctx.decision == Decision.ASK:
             ctx.state = TaskState.PENDING_APPROVAL
-            ctx.ns("dir_router")["preview"] = self.target_preview(ctx)  # 审批卡片展示实际去向
+            # 审批卡片展示实际去向（网盘真实路径）
+            ctx.ns("dir_router")["preview"] = self.display_target(self.target_preview(ctx))
             ctx.log("转人工确认（审批态已落库，可跨重启）")
         else:
             ctx.state = TaskState.QUEUED
