@@ -85,6 +85,7 @@ class ManagementService:
 
     def connection_status(self) -> dict[str, dict[str, Any]]:
         import os
+        import time
 
         connections = {
             "telegram": {
@@ -109,11 +110,15 @@ class ManagementService:
             },
         }
         health = self.store.health_status()
+        observed_as = {"telegram": "source", "p115": "p115_cookie"}
         for key, conn in connections.items():
             conn["status"] = "unverified" if conn["configured"] else "not_configured"
-            observation = health.get("source" if key == "telegram" else key)
-            if observation:
-                conn["status"] = "stale" if observation["stale"] else observation.get("status", "unverified")
+            observation = health.get(observed_as.get(key, key))
+            if observation and observation.get("status") != "unknown":
+                stale = observation["stale"]
+                if observation.get("check_interval"):  # 定时探活：超过两个探活周期没有新结果才算过期
+                    stale = time.time() - observation["updated_at"] > 2 * observation["check_interval"]
+                conn["status"] = "stale" if stale else observation.get("status", "unverified")
                 conn["observed_at"] = observation["updated_at"]
         return connections
 

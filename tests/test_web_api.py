@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -145,6 +146,22 @@ class TestManagementApi(unittest.TestCase):
             self.assertEqual(dashboard["connections"]["telegram"]["status"], "connected")
             self.assertEqual(dashboard["connections"]["p115"]["status"], "unverified")
         self.assertIn("worker", self.client.get("/api/health").json()["runtime"])
+
+    def test_dashboard_reports_115_cookie_probe_within_its_check_interval(self):
+        store = self.app.state.store
+
+        def p115_status():
+            return self.client.get("/api/dashboard").json()["connections"]["p115"]["status"]
+
+        store.heartbeat("p115_cookie", status="unknown", error="未配置 cookie", check_interval=300)
+        self.assertIn(p115_status(), {"unverified", "not_configured"})
+        store.heartbeat("p115_cookie", status="active", error="", check_interval=300)
+        with patch("time.time", return_value=time.time() + 120):  # 普通心跳 30 秒即过期，探活按自身间隔
+            self.assertEqual(p115_status(), "active")
+        with patch("time.time", return_value=time.time() + 601):
+            self.assertEqual(p115_status(), "stale")
+        store.heartbeat("p115_cookie", status="expired", error="登录失效", check_interval=30)
+        self.assertEqual(p115_status(), "expired")
 
     def test_failed_delivery_can_be_requeued_without_mutating_resource_task(self):
         from reelay.core.contracts import PipelineContext, RawMessage, TaskState

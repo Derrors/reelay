@@ -4,6 +4,7 @@ import type { TaskState } from '@/lib/types';
 export const connectionLabels: Record<string, string> = {
   connected: '已连接', connecting: '连接中', disconnected: '连接中断', failed: '连接失败', stopped: '已停止',
   stale: '状态已过期', unverified: '已填写，待验证', not_configured: '未配置', unobserved: '未观察到状态',
+  expired: '登录已失效', error: '探活失败',
 };
 
 // 系统运行模式：simulation / live / not_configured / not_running

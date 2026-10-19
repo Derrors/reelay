@@ -115,7 +115,6 @@ class Worker:
             asyncio.to_thread(auth.ping_cookie, True),
             asyncio.to_thread(auth.ping_oauth, True),
         )
-        self.store.heartbeat("p115_cookie", status=cookie_state, error=auth.cookie_error)
         self.store.heartbeat("p115_oauth", status=oauth_state, error=auth.oauth_error,
                              configured=auth.has_oauth)
         if self.pipeline.cfg["defaults"].get("storage", "p115") == "p115" and not auth.has_cookie:
@@ -127,6 +126,8 @@ class Worker:
             self.resume_storage()
         interval = 30 if self.storage_paused else max(30, int(os.getenv("REELAY_115_AUTH_CHECK_SEC", "300")))
         self._next_auth_check = time.time() + interval
+        # 探活按间隔进行，带上间隔供管理台判断这条观察是否过期
+        self.store.heartbeat("p115_cookie", status=cookie_state, error=auth.cookie_error, check_interval=interval)
 
     def pause_storage(self, reason: str) -> None:
         if not self.storage_paused:
