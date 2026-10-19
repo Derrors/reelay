@@ -624,6 +624,46 @@ class TestExternalPlugins(unittest.TestCase):
                                for h in registry.hooks_for("after_save", {"plugins": {"strm": True}})])
 
 
+class TestEntrypointsLoadEnvFirst(unittest.TestCase):
+    """本地直接运行时，.env 里的日志与监听配置必须在被读取之前加载。"""
+
+    def test_main_loads_env_before_setting_up_logging(self):
+        from reelay import main as entry
+        seen = {}
+
+        def fake_run(coro):
+            coro.close()
+            return 0
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, ".env").write_text("REELAY_LOG_FILE=data/reelay.log\nREELAY_LOG_LEVEL=DEBUG\n",
+                                          encoding="utf-8")
+            cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                with patch.dict(os.environ, {}, clear=True), patch("sys.argv", ["reelay"]), \
+                        patch.object(entry, "_setup_log", lambda: seen.update(os.environ)), \
+                        patch.object(entry.asyncio, "run", fake_run), self.assertRaises(SystemExit):
+                    entry.main()
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(seen.get("REELAY_LOG_FILE"), "data/reelay.log")
+        self.assertEqual(seen.get("REELAY_LOG_LEVEL"), "DEBUG")
+
+    def test_web_main_reads_host_and_port_from_env_file(self):
+        try:
+            import uvicorn  # noqa: F401
+        except ImportError:  # pragma: no cover
+            self.skipTest("未安装 web 可选依赖")
+        from reelay import web
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, ".env").write_text("REELAY_WEB_HOST=0.0.0.0\nREELAY_WEB_PORT=28181\n", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True), patch.object(web, "PROJECT_ROOT", Path(root)), \
+                    patch("uvicorn.run") as run:
+                web.main()
+        self.assertEqual((run.call_args.kwargs["host"], run.call_args.kwargs["port"]), ("0.0.0.0", 28181))
+
+
 @unittest.skipIf(TestClient is None, "未安装 web 可选依赖")
 class TestWebAuthGuard(unittest.TestCase):
     def setUp(self):

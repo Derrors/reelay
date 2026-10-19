@@ -164,7 +164,6 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
 
 
 async def _run_live() -> int:
-    load_env()
     cfg = load_config()
     reg = discover()
     reg.validate_config(cfg)
@@ -217,10 +216,12 @@ async def _run_live() -> int:
 
 
 def main() -> None:
-    _setup_log()
     ap = argparse.ArgumentParser(prog="reelay")
     ap.add_argument("--dry-run", action="store_true", help="无依赖端到端冒烟")
     args = ap.parse_args()
+    if not args.dry_run:
+        load_env()  # 须早于 _setup_log，否则 .env 中的 REELAY_LOG_FILE / REELAY_LOG_LEVEL 不生效
+    _setup_log()
     async def run_with_signals():
         import signal
         loop = asyncio.get_running_loop()

@@ -343,6 +343,7 @@ def main() -> None:
         import uvicorn
     except ImportError as exc:
         raise RuntimeError('Web 管理服务未安装，请执行 pip install -e ".[web]"') from exc
+    load_env(str(PROJECT_ROOT / ".env"))  # 监听地址与端口也可以写在 .env 里
     uvicorn.run(
         "reelay.web:create_app",
         factory=True,
