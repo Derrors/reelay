@@ -85,7 +85,9 @@ class EventBus:
         first = True
         while True:
             try:
-                changed, signature = await asyncio.to_thread(self._snapshot)
+                # 在事件循环线程上直接读库：几条带索引的小查询；放进线程池会在关闭时与
+                # store.close() 竞争同一连接（取消协程不会停止线程），可导致进程崩溃。
+                changed, signature = self._snapshot()
                 now = time.monotonic()
                 if first or changed:
                     self._broadcast({"type": "state", "changed": changed, "ts": int(time.time())})
@@ -102,7 +104,7 @@ class EventBus:
             await asyncio.sleep(WATCH_INTERVAL)
 
     # ------------------------------------------------------------------ #
-    # SQLite 轻量快照（在线程池中执行，避免阻塞事件循环）
+    # SQLite 轻量快照（与其他接口一样在事件循环线程读取共享连接）
     # ------------------------------------------------------------------ #
     def _snapshot(self) -> tuple[list[str], tuple]:
         store = self._store

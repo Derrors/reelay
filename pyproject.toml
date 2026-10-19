@@ -30,6 +30,8 @@ dependencies = [
 full = [
     "telethon>=1.36",
     "p115client==0.0.9.6.5.1",
+    # p115client 未给传递依赖设上限；0.1.9 起移除了它导入的 threadpool_map
+    "python-concurrenttools==0.1.8",
     "qrcode>=7.4,<9",
     "openai>=1.40",
     "PyYAML>=6.0",
@@ -43,6 +45,8 @@ agent = ["mcp>=1.2"]
 all = [
     "telethon>=1.36",
     "p115client==0.0.9.6.5.1",
+    # p115client 未给传递依赖设上限；0.1.9 起移除了它导入的 threadpool_map
+    "python-concurrenttools==0.1.8",
     "qrcode>=7.4,<9",
     "openai>=1.40",
     "PyYAML>=6.0",
