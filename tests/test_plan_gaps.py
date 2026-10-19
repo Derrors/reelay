@@ -651,3 +651,74 @@ class TestWebAuthGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(TestClient is None, "未安装 web 可选依赖")
+class TestConsoleApi(unittest.TestCase):
+    """新管理台用到的聚合接口：收件箱、带媒体字段的任务列表、扩展目录去重。"""
+
+    def setUp(self):
+        from reelay.web import create_app
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.env = patch.dict(os.environ, {"REELAY_115_OAUTH_FILE": str(root / "cred.json")}, clear=True)
+        self.env.start()
+        self.loader = patch("reelay.web.load_env")
+        self.loader.start()
+        (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "1", "剧集": "2"},
+                                                      "defaults": {"save_to": "默认"}}), encoding="utf-8")
+        self.app = create_app(db_path=str(root / "t.db"), config_path=str(root / "config.yaml"))
+        self.client = TestClient(self.app)
+        self.client.__enter__()
+        store = self.app.state.store
+        for index, state in enumerate((TaskState.PENDING_APPROVAL, TaskState.PENDING_APPROVAL,
+                                       TaskState.NEED_MANUAL, TaskState.QUEUED, TaskState.DONE)):
+            ctx = message(msg_id=str(index), text=f"剧 第{index}集\n{SHARE}")
+            ctx.parsed = ParsedResource(is_media=True, title=f"剧{index}", media_type="tv", season=1,
+                                        episodes=[index], resolution="4K", size="1 GB", share_code="abc",
+                                        raw_fields={"poster_path": f"/p{index}.jpg"})
+            ctx.state = state
+            ctx.ns("confidence").update(score=0.4, caps=["tmdb_unmatched"])
+            store.save_task(ctx, error="同名冲突" if state == TaskState.NEED_MANUAL else None)
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+        self.loader.stop()
+        self.env.stop()
+        self.temp.cleanup()
+
+    def test_inbox_returns_card_fields_without_links(self):
+        body = self.client.get("/api/inbox").json()
+        self.assertEqual(body["save_dirs"], ["默认", "剧集"])
+        self.assertEqual(len(body["items"]), 2)
+        item = body["items"][0]
+        self.assertEqual((item["media_type"], item["resolution"], item["confidence_caps"]), ("tv", "4K", ["tmdb_unmatched"]))
+        self.assertTrue(item["poster_path"].startswith("/p"))
+        self.assertEqual(item["save_dir_alias"], "默认")
+        self.assertNotIn("http", item["preview"])
+        manual = self.client.get("/api/inbox?state=need_manual").json()["items"]
+        self.assertEqual([m["error"] for m in manual], ["同名冲突"])
+        self.assertEqual(self.client.get("/api/inbox?state=done").status_code, 422)
+
+    def test_task_list_supports_multiple_states_paging_and_media_fields(self):
+        items = self.client.get("/api/tasks?state=pending_approval,queued&limit=2").json()["items"]
+        self.assertEqual(len(items), 2)
+        self.assertTrue({i["state"] for i in items} <= {"pending_approval", "queued"})
+        self.assertEqual(items[0]["episodes"], [int(items[0]["title"][-1])])
+        rest = self.client.get("/api/tasks?state=pending_approval,queued&limit=2&offset=2").json()["items"]
+        self.assertEqual(len(rest), 1)
+
+    def test_batch_approve_can_redirect_target_directory(self):
+        ids = [i["task_id"] for i in self.client.get("/api/inbox").json()["items"]]
+        result = self.client.post("/api/tasks/batch", json={"task_ids": ids, "action": "approve",
+                                                             "save_dir_alias": "剧集"}).json()
+        self.assertEqual(result["done"], 2)
+        store = self.app.state.store
+        self.assertEqual({store.get_task(i).save_dir_alias for i in ids}, {"剧集"})
+
+    def test_dashboard_has_recent_counts_and_catalog_merges_multi_event_extensions(self):
+        self.assertEqual(self.client.get("/api/dashboard").json()["recent"]["received_24h"], 5)
+        events = self.client.get("/api/extensions").json()["events"]
+        tracker = [e for e in events if e["name"] == "episode_tracker"]
+        self.assertEqual(len(tracker), 1)
+        self.assertEqual(set(tracker[0]["slot"].split(",")), {"on_saved", "on_daily"})

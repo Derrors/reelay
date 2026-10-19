@@ -37,7 +37,7 @@ def render(summary: dict, date: str) -> str | None:
 class DailyReport:
     name = "daily_report"
     ui_label = "每日日报"
-    ui_description = "每天按 schedule.daily_hour 推送新收、入库与积压概况；没有动静的日子不发送。"
+    ui_description = "每天定时（默认 9 点）推送新收、入库与积压概况；没有动静的日子不发送。"
     event = "on_daily"
 
     async def handle(self, ctx: PipelineContext) -> None:

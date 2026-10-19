@@ -133,7 +133,8 @@ class Registry:
             'providers': {kind: [describe(obj, 'provider', kind) for obj in entries.values()]
                           for kind, entries in self.providers.items()},
             'hooks': [describe(obj, 'hook', slot) for slot, entries in self.hooks.items() for obj in entries],
-            'events': [describe(obj, 'event', slot) for slot, entries in self.listeners.items() for obj in entries],
+            'events': _merge_by_name([describe(obj, 'event', slot) for slot, entries in self.listeners.items()
+                                      for obj in entries]),
             'load_errors': list(self.load_errors),
         }
 
@@ -165,6 +166,17 @@ def register(kind: str, **kw: Any) -> Callable[[type], type]:
         return cls
 
     return deco
+
+
+def _merge_by_name(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同名扩展共用一个开关，在目录里只展示一项，slot 合并为逗号分隔。"""
+    merged: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if item['name'] in merged:
+            merged[item['name']]['slot'] += f",{item['slot']}"
+        else:
+            merged[item['name']] = dict(item)
+    return list(merged.values())
 
 
 def _is_under(module: str, names: set[str]) -> bool:

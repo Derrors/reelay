@@ -99,6 +99,15 @@ class ParseTestPayload(BaseModel):
     source: str | None = None
 
 
+class CookiePayload(BaseModel):
+    cookies: str
+
+class BatchPayload(BaseModel):
+    task_ids: list[str] = Field(default_factory=list)
+    action: str = ""  # approve | reject | retry
+    save_dir_alias: str | None = None  # 仅 approve：统一改投到该目录
+
+
 def register_extras(app, *, project_root: Path, store, service, registry) -> None:
     # ------------------------------------------------------------------ #
     # 1) 鉴权
@@ -221,8 +230,6 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # ------------------------------------------------------------------ #
     from .core.auth115 import get_store
 
-    class CookiePayload(BaseModel):
-        cookies: str
 
     @app.get("/api/auth115/status")
     async def auth115_status():
@@ -437,7 +444,13 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
             key = p.get("title") or "(未识别)"
             g = groups.setdefault(key, {"title": key, "media_type": p.get("media_type"),
                                         "year": p.get("year"), "episodes": [], "tasks": 0,
-                                        "bytes": 0})
+                                        "bytes": 0, "poster_path": None, "save_dir_alias": None,
+                                        "files": [], "updated_at": r["updated_at"]})
+            g["poster_path"] = g["poster_path"] or (p.get("raw_fields") or {}).get("poster_path")
+            g["save_dir_alias"] = g["save_dir_alias"] or snap.get("save_dir_alias")
+            plan = ((snap.get("meta") or {}).get("organize") or {}).get("plan") or []
+            g["files"] = (g["files"] + ["/".join(x for x in (i.get("target_dir"), i.get("target_name")) if x)
+                                        for i in plan])[:100]
             eps = p.get("episodes") or []
             g["episodes"] = sorted(set(g["episodes"] + [int(e) for e in eps if isinstance(e, int)]))
             g["tasks"] += 1
@@ -467,9 +480,6 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
                 ("id", "name", "size", "sha1", "parent_id", "is_dir", "pickcode",
                  "ctime", "mtime")}
 
-    class BatchPayload(BaseModel):
-        task_ids: list[str] = Field(default_factory=list)
-        action: str = ""  # approve | reject | retry
 
     @app.post("/api/tasks/batch")
     async def batch_actions(payload: BatchPayload | None = None):
@@ -480,7 +490,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         for tid in payload.task_ids:
             try:
                 if payload.action == "approve":
-                    await service.approve(tid)
+                    await service.approve(tid, save_dir_alias=payload.save_dir_alias)
                 elif payload.action == "reject":
                     await service.reject(tid)
                 elif payload.action == "retry":

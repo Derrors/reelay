@@ -88,6 +88,8 @@ class TmdbEnrich:
             p.year = year
         ns.update(matched=True, tmdbid=hit.get("id"), kind=hit["_kind"], score=hit["_score"])
         p.raw_fields["tmdbid"] = hit.get("id")
+        if hit.get("poster_path"):
+            p.raw_fields["poster_path"] = hit["poster_path"]  # 管理台卡片展示海报
         p.raw_fields.setdefault("genre", "")
         p.genre_ids = [int(value) for value in hit.get("genre_ids") or []
                        if type(value) is int and value > 0]

@@ -427,16 +427,19 @@ class Store:
         self,
         *,
         state: TaskState | None = None,
+        states: list[TaskState] | None = None,
         source: str | None = None,
         query: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """管理端任务列表；返回轻量摘要，不泄露完整分享链接与凭证。"""
+        """管理端任务列表；返回轻量摘要（含展示用的媒体字段），不泄露完整分享链接与凭证。"""
         clauses: list[str] = []
         params: list[Any] = []
-        if state:
-            clauses.append("state=?")
-            params.append(state.value)
+        wanted = [*(states or []), *([state] if state else [])]
+        if wanted:
+            clauses.append(f"state IN ({','.join('?' * len(wanted))})")
+            params.extend(item.value for item in wanted)
         if source:
             clauses.append("source=?")
             params.append(source)
@@ -445,13 +448,26 @@ class Store:
             like = f"%{query}%"
             params.extend((like, like, like, like))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        params.append(max(1, min(limit, 500)))
+        params.extend((max(1, min(limit, 500)), max(0, offset)))
         rows = self._conn.execute(
-            "SELECT task_id, state, source, msg_id, title, error, retries, "
-            f"created_at, updated_at FROM tasks{where} ORDER BY updated_at DESC LIMIT ?",
+            "SELECT task_id, state, source, msg_id, title, error, retries, created_at, updated_at, "
+            "json_extract(snapshot,'$.parsed.media_type') AS media_type, "
+            "json_extract(snapshot,'$.parsed.year') AS year, "
+            "json_extract(snapshot,'$.parsed.season') AS season, "
+            "json_extract(snapshot,'$.parsed.episodes') AS episodes, "
+            "json_extract(snapshot,'$.parsed.resolution') AS resolution, "
+            "json_extract(snapshot,'$.parsed.size') AS size, "
+            "json_extract(snapshot,'$.parsed.raw_fields.poster_path') AS poster_path, "
+            "json_extract(snapshot,'$.save_dir_alias') AS save_dir_alias "
+            f"FROM tasks{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
             tuple(params),
         ).fetchall()
-        return [dict(row) for row in rows]
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["episodes"] = json.loads(item["episodes"]) if item["episodes"] else []
+            items.append(item)
+        return items
 
     def get_task_record(self, task_id: str) -> dict[str, Any] | None:
         """管理端任务详情：数据库列 + 经过脱敏的上下文快照。"""

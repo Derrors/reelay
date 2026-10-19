@@ -71,11 +71,17 @@ class ManagementService:
             "connections": connections,
             "runtime": health,
             "alerts": self.store.active_alerts(),
+            "recent": self._recent(),
             "deliveries": self.store.delivery_counts(),
             "config_revision": self.pipeline.revision,
             "simulation": dry_run,
             "mode": "simulation" if dry_run else ("live" if live_running else ("not_running" if live_ready else "not_configured")),
         }
+
+    def _recent(self) -> dict[str, int]:
+        import time
+        summary = self.store.summary_since(time.time() - 86400)
+        return {"received_24h": summary["received"], "done_24h": summary["done_count"]}
 
     def connection_status(self) -> dict[str, dict[str, Any]]:
         import os
@@ -118,9 +124,42 @@ class ManagementService:
         return get_store().has_cookie
 
     def list_tasks(self, **filters: Any) -> list[dict[str, Any]]:
+        """state 可以是逗号分隔的多个状态，如 "received,queued,saving"。"""
         state_value = filters.pop("state", None)
-        state = TaskState(state_value) if state_value else None
-        return self.store.list_tasks(state=state, **filters)
+        states = [TaskState(item.strip()) for item in str(state_value).split(",") if item.strip()] \
+            if state_value else None
+        return self.store.list_tasks(states=states, **filters)
+
+    def inbox(self, state: str = TaskState.PENDING_APPROVAL.value, limit: int = 200) -> dict[str, Any]:
+        """待处理收件箱：一次返回卡片需要的全部字段，前端无需逐条请求详情。"""
+        import re
+        if state not in (TaskState.PENDING_APPROVAL.value, TaskState.NEED_MANUAL.value):
+            raise ValueError("收件箱只支持 pending_approval 与 need_manual")
+        items = []
+        for row in self.store.list_tasks(states=[TaskState(state)], limit=limit):
+            ctx = self.store.get_task(row["task_id"])
+            if not ctx:
+                continue
+            p = ctx.parsed or ParsedResource()
+            meta = ctx.meta
+            lines = [re.sub(r"https?://\S+", "", line).strip() for line in (ctx.raw.text or "").splitlines()]
+            items.append({
+                **{key: row[key] for key in ("task_id", "state", "source", "created_at", "updated_at", "error")},
+                "title": p.title, "year": p.year, "media_type": p.media_type, "season": p.season,
+                "episodes": p.episodes, "resolution": p.resolution, "size": p.size, "reason": p.reason,
+                "confidence": p.confidence,
+                "confidence_caps": meta.get("confidence", {}).get("caps", []),
+                "fallback": bool(meta.get("parse", {}).get("fallback")),
+                "tmdb_matched": meta.get("tmdb", {}).get("matched"),
+                "poster_path": p.raw_fields.get("poster_path"),
+                "save_dir_alias": (ctx.save_dir_alias or ctx.source_rule.get("save_to")
+                                   or self.pipeline.cfg["defaults"].get("save_to")),
+                "preview": "\n".join(line for line in lines if line)[:400],
+                "storage_phase": meta.get("storage", {}).get("phase"),
+                "has_landed": bool(meta.get("storage", {}).get("landed")),
+                "organize_error": meta.get("organize", {}).get("error"),
+            })
+        return {"items": items, "save_dirs": list(self.pipeline.cfg["save_dirs"])}
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         record = self.store.get_task_record(task_id)

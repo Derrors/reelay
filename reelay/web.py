@@ -186,9 +186,18 @@ def create_app(
         source: str | None = None,
         query: str | None = None,
         limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
     ):
         try:
-            return {"items": service.list_tasks(state=state, source=source, query=query, limit=limit)}
+            return {"items": service.list_tasks(state=state, source=source, query=query,
+                                                limit=limit, offset=offset)}
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @app.get("/api/inbox")
+    async def inbox(state: str = "pending_approval", limit: int = Query(default=200, ge=1, le=500)):
+        try:
+            return service.inbox(state, limit)
         except Exception as exc:
             raise _error(exc) from exc
 
