@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.2.1] - 2026-10-19
+
+0.2.0 全新安装后无法使用 115 转存，请直接使用本版本。
+
+### 修复
+
+- 全新安装（含 Docker 镜像）时 `p115client` 无法导入：其传递依赖 `python-concurrenttools` 0.1.9 移除了 `threadpool_map`，现固定为 0.1.8。
+- 管理台关闭时 SSE 观察线程可能与数据库关闭竞争同一连接导致进程崩溃（Linux 上表现为段错误），改为在事件循环线程读取。
+
+### 变更
+
+- CI 使用的 GitHub Actions 升级到最新大版本。
+
 ## [0.2.0] - 2026-10-19
 
 首个公开版本。
@@ -30,8 +43,6 @@
 
 ### 修复
 
-- 全新安装时 `p115client` 无法导入：其传递依赖 `python-concurrenttools` 0.1.9 移除了 `threadpool_map`，现固定为 0.1.8。
-- 管理台关闭时 SSE 观察线程可能与数据库关闭竞争同一连接导致进程崩溃，改为在事件循环线程读取。
 - 任务快照漏存 `genre_ids` / `origin_country`，导致二级分类在 Worker 中不生效。
 - 来源解析预览未把解析结果交给决策，结果恒为"跳过"。
 - 统计接口的任务计数恒为空、已完成体积估算错误；统计与高级检索不再另开且不关闭数据库连接。
@@ -46,5 +57,6 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
+[0.2.1]: https://github.com/Derrors/reelay/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Derrors/reelay/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Derrors/reelay/commits/v0.2.0
