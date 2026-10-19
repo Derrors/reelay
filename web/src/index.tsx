@@ -8,7 +8,7 @@ import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter basename={import.meta.env.APP_CLIENT_BASE_PATH || '/'}>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <ErrorBoundary FallbackComponent={ErrorFallback}>
         <App />
       </ErrorBoundary>

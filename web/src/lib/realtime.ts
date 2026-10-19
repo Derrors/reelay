@@ -7,6 +7,8 @@
  * - 所有取数逻辑仍走原 REST，事件只负责「通知该刷新了」，不改数据契约。
  */
 
+import { apiUrl } from '@/api/client';
+
 export type ChangeScope = 'counts' | 'deliveries' | 'runtime' | 'tasks';
 
 export interface RealtimeOptions {
@@ -72,7 +74,7 @@ export class Realtime {
       this.startPolling();
       return;
     }
-    const es = new EventSource('/api/events');
+    const es = new EventSource(apiUrl('events'));
     this.es = es;
 
     es.addEventListener('hello', () => {

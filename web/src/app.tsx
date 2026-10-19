@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import LoginGate from '@/components/LoginGate';
@@ -9,17 +9,19 @@ import OrganizePage from '@/pages/OrganizePage/OrganizePage';
 import LogsPage from '@/pages/LogsPage/LogsPage';
 import StoragePage from '@/pages/StoragePage/StoragePage';
 import SourcesPage from '@/pages/SourcesPage/SourcesPage';
-import StatsPage from '@/pages/StatsPage/StatsPage';
 import LibraryPage from '@/pages/LibraryPage/LibraryPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 import { extras } from '@/api/extras';
+
+// 统计页依赖 echarts（体积占主包大半），按需加载。
+const StatsPage = lazy(() => import('@/pages/StatsPage/StatsPage'));
 
 export default function App() {
   const [needAuth, setNeedAuth] = useState<boolean | null>(null);
 
   useEffect(() => {
     extras.authStatus()
-      .then((s) => setNeedAuth(s.auth_required))
+      .then((s) => setNeedAuth(s.auth_required && !s.authenticated))
       .catch(() => setNeedAuth(false));
   }, []);
 
@@ -44,7 +46,7 @@ export default function App() {
         <Route path="logs" element={<LogsPage />} />
         <Route path="storage" element={<StoragePage />} />
         <Route path="sources" element={<SourcesPage />} />
-        <Route path="stats" element={<StatsPage />} />
+        <Route path="stats" element={<Suspense fallback={null}><StatsPage /></Suspense>} />
         <Route path="library" element={<LibraryPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />

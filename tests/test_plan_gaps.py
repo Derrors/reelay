@@ -571,7 +571,9 @@ class TestWebAuthGuard(unittest.TestCase):
     def test_login_grants_access_and_forged_or_expired_sessions_fail(self):
         from reelay import web_extras
         self.assertEqual(self.client.get("/api/events", cookies={"reelay_session": "forged"}).status_code, 401)
+        self.assertEqual(self.client.get("/api/auth/status").json(), {"auth_required": True, "authenticated": False})
         self.assertEqual(self.client.post("/api/auth/login", json={"password": "pw"}).status_code, 200)
+        self.assertEqual(self.client.get("/api/auth/status").json()["authenticated"], True)
         self.assertEqual(self.client.get("/api/config").status_code, 200)
         for token in web_extras._SESSIONS:
             web_extras._SESSIONS[token] = time.time() - 1

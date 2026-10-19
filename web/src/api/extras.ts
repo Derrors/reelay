@@ -1,12 +1,13 @@
 // ===== 控制台增强 API：鉴权 / 日志 / 115 浏览 / 源测试 / 统计 =====
 import type { IParsedResource } from '@/lib/types';
+import { apiUrl } from './client';
 
 function authHeaders(): Record<string, string> {
   return {}; // cookie 由浏览器自动携带
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`/api/${path.replace(/^\//, '')}`, {
+  const r = await fetch(apiUrl(path), {
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...init?.headers, ...authHeaders() },
     ...init,
@@ -24,7 +25,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-export interface IAuthStatus { auth_required: boolean }
+export interface IAuthStatus { auth_required: boolean; authenticated?: boolean }
 export interface ILogResp { lines: string[]; path: string; exists: boolean }
 export interface IDirItem { id: string; name: string; pid?: string | null }
 
@@ -88,12 +89,12 @@ export const extras = {
   auth115CookieQrStatus: (uid: string) =>
     req<IQrStatus>(`auth115/cookie/qr?uid=${encodeURIComponent(uid)}`),
   auth115CookieQrImageUrl: (uid: string) =>
-    `/api/auth115/cookie/qr/image?uid=${encodeURIComponent(uid)}`,
+    apiUrl(`auth115/cookie/qr/image?uid=${encodeURIComponent(uid)}`),
   auth115QrStart: () => req<IQrStart>('auth115/oauth/qr', { method: 'POST' }),
   auth115QrStatus: (uid: string) =>
     req<IQrStatus>(`auth115/oauth/qr?uid=${encodeURIComponent(uid)}`),
   auth115QrImageUrl: (uid: string) =>
-    `/api/auth115/oauth/qr/image?uid=${encodeURIComponent(uid)}`,
+    apiUrl(`auth115/oauth/qr/image?uid=${encodeURIComponent(uid)}`),
   auth115ClearOauth: () => req<{ ok: boolean }>('auth115/oauth', { method: 'DELETE' }),
   logs: (limit = 400, q?: string) => {
     const p = new URLSearchParams({ limit: String(limit) });

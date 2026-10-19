@@ -226,4 +226,4 @@ schedule:
 
 本地验证命令：`python3 -m unittest discover -s tests -v`、`python3 -m reelay.main --dry-run`，以及前端 `npm run typecheck`、`npm run lint:eslint`、`npm run build`。回归覆盖目录穿越、并发转存、重复排队、进程中断、部分落地、回执丢失、整理冲突策略及检查点恢复；AI 非法输出/降级、预过滤、缓存与重试；确定性置信度、审批汇总、鉴权暂停与退避调度、补拉与断线告警、TMDB 打分；Web 全部接口的登录保护；日报、追更、STRM 与外部扩展加载。转存与整理测试经由真实的凭证中心 cookie 读写路径，只把 SDK 客户端替换为内存网盘。
 
-> 本项目仅作技术实现探讨。userbot 与网盘操作请遵守相关平台规则及当地法律法规；凭证妥善保管。
+> 使用前请阅读 [免责声明](DISCLAIMER.md)：本项目不提供任何内容来源；以个人账号监听 Telegram 可能导致封号，115 接口高频调用可能触发风控。本项目以 [MIT 许可证](LICENSE) 开源。

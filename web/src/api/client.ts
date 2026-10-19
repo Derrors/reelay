@@ -9,7 +9,10 @@ import type {
   TaskState,
 } from '@/lib/types';
 
-const BASE = `${(import.meta.env.APP_CLIENT_BASE_PATH || '').replace(/\/$/, '')}/`;
+const BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
+
+/** 拼接 API 地址；部署在子路径（VITE_BASE_PATH）时自动带上前缀。 */
+export const apiUrl = (path: string) => `${BASE}api/${path.replace(/^\//, '')}`;
 
 export class ApiError extends Error {
   status: number;
@@ -21,7 +24,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE}api/${path.replace(/^\//, '')}`, {
+  const response = await fetch(apiUrl(path), {
     ...init,
     headers: {
       'Content-Type': 'application/json',

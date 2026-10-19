@@ -137,8 +137,9 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         return resp
 
     @app.get("/api/auth/status")
-    async def auth_status():
-        return {"auth_required": auth_enabled()}
+    async def auth_status(request: Request):
+        # authenticated 让前端刷新后保留已登录状态，而不是每次都显示登录页。
+        return {"auth_required": auth_enabled(), "authenticated": is_authenticated(request)}
 
     @app.get('/api/extensions')
     async def extensions_catalog():

@@ -1,7 +1,7 @@
 """FastAPI 管理服务。
 
-开发期通过 Vite 代理访问 ``/api``；生产构建后若 ``web/dist/output`` 存在，会由同一个
-Python 服务托管 SPA。默认只绑定本机，部署到局域网/公网时应在外层加访问控制。
+开发期通过 Vite 代理访问 ``/api``；生产构建后若 ``web/dist`` 存在，会由同一个
+Python 服务托管 SPA。默认只绑定本机；暴露到其他机器时必须设置 REELAY_WEB_PASSWORD。
 """
 
 from __future__ import annotations
@@ -302,8 +302,8 @@ def create_app(
         except Exception as exc:
             raise _error(exc)
 
-    frontend = Path(frontend_dir or PROJECT_ROOT / "web" / "dist" / "output").resolve()
-    frontend_assets = PROJECT_ROOT / "web" / "dist" / "output_resource" / "assets"
+    frontend = Path(frontend_dir or PROJECT_ROOT / "web" / "dist").resolve()
+    frontend_assets = frontend / "assets"
     if frontend.exists():
         if frontend_assets.exists():
             app.mount("/assets", StaticFiles(directory=frontend_assets), name="assets")
