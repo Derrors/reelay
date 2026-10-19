@@ -112,3 +112,24 @@ def register_ai(app, *, service) -> None:
     @app.post("/api/sources/draft")
     async def draft_source(payload: DraftPayload):
         return await call(service.draft_source, payload.bot, payload.samples)
+
+    # 来源质量：规则统计 + AI 调整建议（建议的规则改动需用户确认后经配置接口写入）
+    @app.get("/api/sources/quality")
+    async def source_quality(days: int = Query(default=30, ge=1, le=365)):
+        return await call(service.source_quality, days)
+
+    @app.post("/api/sources/quality/advice")
+    async def source_quality_advice(days: int = Query(default=30, ge=1, le=365)):
+        return await call(service.source_quality_advice, days)
+
+    # 媒体库问答（控制 Bot 的查询工具同样使用）
+    @app.get("/api/library/query")
+    async def library_query(q: str | None = None, media_type: str | None = None,
+                            min_resolution: str | None = None, origin_country: str | None = None,
+                            genre_id: int | None = None, limit: int = Query(default=30, ge=1, le=100)):
+        return await call(service.library_query, query=q, media_type=media_type, min_resolution=min_resolution,
+                          origin_country=origin_country, genre_id=genre_id, limit=limit)
+
+    @app.get("/api/library/missing")
+    async def library_missing(title: str | None = None):
+        return await call(service.missing_episodes, title)

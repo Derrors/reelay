@@ -650,6 +650,33 @@ class Store:
                 series.setdefault((title, season or 1), set()).add(ep)
         return series
 
+    def done_snapshots(self, query: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
+        """已入库任务的快照（媒体库问答用），最近入库在前。"""
+        where, args = "state=?", [TaskState.DONE.value]
+        if query:
+            where += " AND title LIKE ?"
+            args.append(f"%{query}%")
+        return [json.loads(r["snapshot"]) for r in self._conn.execute(
+            f"SELECT snapshot FROM tasks WHERE {where} ORDER BY updated_at DESC LIMIT ?", (*args, limit))]
+
+    def snapshots_since(self, since: float, limit: int = 20000) -> list[dict[str, Any]]:
+        """时间窗口内新收任务的快照与当前状态（来源质量统计用）。"""
+        out = []
+        for r in self._conn.execute(
+                "SELECT state, source, snapshot FROM tasks WHERE created_at>=? AND task_id NOT LIKE 'daily-%' "
+                "ORDER BY created_at DESC LIMIT ?", (since, limit)):
+            snap = json.loads(r["snapshot"])
+            snap["state"], snap["source"] = r["state"], r["source"]
+            out.append(snap)
+        return out
+
+    def titles_since(self, since: float) -> list[dict[str, Any]]:
+        """时间窗口内收到的影视资源按片名汇总（不含广告与被过滤的），供日报写「本周新收几部剧」。"""
+        return [dict(r) for r in self._conn.execute(
+            "SELECT title, json_extract(snapshot,'$.parsed.media_type') media_type, COUNT(*) count, "
+            "SUM(state='done') done FROM tasks WHERE created_at>=? AND title IS NOT NULL "
+            "AND state NOT IN ('rejected','skipped') GROUP BY title ORDER BY count DESC", (since,))]
+
     def library_titles(self, media_type: str) -> list[str]:
         """已入库任务的片名（按识别出的媒体类型）。"""
         return [r["title"] for r in self._conn.execute(

@@ -109,27 +109,46 @@ class EpisodeTracker(_Base):
         report, lines = {}, []
         for (title, season), info in sorted(targets.items()):
             have = stored.get((title, season), set())
-            aired = await self._aired(info.get("tmdbid"), season, today)
+            aired, air_dates = await self._aired(info.get("tmdbid"), season, today)
             missing = missing_episodes(have, total=info.get("total"), aired=aired, from_first=info["from_first"])
             if not missing:
                 continue
-            report[f"{title}|S{season:02d}"] = {"have": sorted(have), "missing": missing, "aired": aired}
+            overdue = overdue_episodes(missing, air_dates, today)
+            report[f"{title}|S{season:02d}"] = {"have": sorted(have), "missing": missing, "aired": aired,
+                                                "overdue": overdue}
             suffix = f"（TMDB 已播 {aired} 集）" if aired else ""
-            lines.append(f"• {title} S{season:02d}：已入库 {len(have)} 集，缺 {format_episodes(missing)}{suffix}")
+            late = "；" + "、".join(f"E{x['episode']:02d} 已播 {x['days']} 天" for x in overdue[:3]) if overdue else ""
+            lines.append(f"• {title} S{season:02d}：已入库 {len(have)} 集，缺 {format_episodes(missing)}{suffix}{late}")
         state.set("last_report", {"date": today, "series": report})
         if lines:
             services.notify("📺 追更检查：\n" + "\n".join(lines[:30]), key="episode_tracker")
 
     @staticmethod
-    async def _aired(tmdbid, season: int, today: str) -> int | None:
+    async def _aired(tmdbid, season: int, today: str) -> tuple[int | None, dict[int, str]]:
+        """返回 (TMDB 已播出的最大集号, 已播出各集的播出日期)。"""
         if not tmdbid or not tmdb.api_key():
-            return None
+            return None, {}
         try:
             episodes = await asyncio.to_thread(
                 tmdb.season_episodes, int(tmdbid), season,
                 language=runtime.get("tmdb.language", "zh-CN"), timeout=runtime.get("tmdb.timeout", 10))
         except Exception as exc:  # noqa: BLE001 - TMDB 不可用时只按已入库断档检查
             log.warning("TMDB 季信息获取失败：%s", exc)
-            return None
-        aired = [e["episode"] for e in episodes if e.get("air_date") and e["air_date"] <= today]
-        return max(aired, default=0) or None
+            return None, {}
+        aired = {e["episode"]: e["air_date"] for e in episodes if e.get("air_date") and e["air_date"] <= today}
+        return max(aired, default=0) or None, aired
+
+
+def overdue_episodes(missing: list[int], air_dates: dict[int, str], today: str, *, grace: int = 1) -> list[dict]:
+    """已经播出超过 grace 天仍未入库的集（播出当天、次日的资源常常还没出现），最近播出的在前。"""
+    import datetime
+    now = datetime.date.fromisoformat(today)
+    out = []
+    for episode in missing:
+        try:
+            days = (now - datetime.date.fromisoformat(air_dates[episode])).days
+        except (KeyError, ValueError):
+            continue
+        if days > grace:
+            out.append({"episode": episode, "days": days})
+    return sorted(out, key=lambda item: item["days"])
