@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .core.config import load_config, load_env
 from .core.contracts import TaskState
 from .core.pipeline import Pipeline
@@ -201,7 +202,11 @@ def build_server(tools: ReelayTools, *, readonly: bool):
     # SDK 构造时会按 log_level 配置根日志；默认 WARNING，避免 stderr 被 INFO 刷屏。
     level = os.getenv("REELAY_LOG_LEVEL", "WARNING").upper()
     level = level if level in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"} else "WARNING"
-    server = _server_class()("reelay", instructions=_INSTRUCTIONS, log_level=level)
+    cls = _server_class()
+    options = {"instructions": _INSTRUCTIONS, "log_level": level}
+    if cls.__name__ == "MCPServer":  # 1.x 的 FastMCP 没有 version 参数
+        options["version"] = __version__
+    server = cls("reelay", **options)
 
     async def status() -> dict[str, Any]:
         """Reelay 运行概况：各状态任务数、待处理/执行中/失败/完成数、运行模式、通知投递与 worker/消息源/115 健康状态。

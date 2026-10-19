@@ -393,11 +393,14 @@ class Pipeline:
                 ns["phase"] = "receiving"
                 self.store.save_task(ctx)  # 必须在远端写请求之前提交
                 try:
-                    receipt = await storage.save(ctx)
+                    with self._scope(ctx):
+                        receipt = await storage.save(ctx)
                 except Exception:
-                    receipt = await storage.reconcile(ctx)
+                    with self._scope(ctx):
+                        receipt = await storage.reconcile(ctx)
             elif ns["phase"] == "receiving":
-                receipt = await storage.reconcile(ctx)
+                with self._scope(ctx):
+                    receipt = await storage.reconcile(ctx)
             else:
                 raise TransferUncertain("转存检查点状态异常，需人工核验")
             if receipt.get("storage_verified") is not True or not receipt.get("landed"):

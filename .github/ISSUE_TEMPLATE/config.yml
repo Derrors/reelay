@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题（私密报告）
+    url: https://github.com/Derrors/reelay/security/advisories/new
+    about: 可能导致凭证泄露或越权操作的问题请私下报告

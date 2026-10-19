@@ -167,14 +167,21 @@ def register(kind: str, **kw: Any) -> Callable[[type], type]:
     return deco
 
 
-def _instantiate(registry: Registry, errors: list[dict[str, str]] | None = None) -> None:
+def _is_under(module: str, names: set[str]) -> bool:
+    return any(module == name or module.startswith(name + ".") for name in names)
+
+
+def _instantiate(registry: Registry, errors: list[dict[str, str]] | None = None,
+                 active: set[str] | None = None) -> None:
+    """active 为本次配置下的外部模块；之前其他配置加载过的外部扩展不会被实例化。"""
     for kind, kw, cls in _DECLARATIONS:
+        if _is_under(cls.__module__, _EXTERNAL_MODULES) and not _is_under(cls.__module__, active or set()):
+            continue
         try:
             obj = cls()
         except Exception as exc:  # noqa: BLE001
             # 内置扩展构造失败是缺陷，照常抛出；外部扩展失败隔离。
-            if not any(cls.__module__ == name or cls.__module__.startswith(name + ".")
-                       for name in _EXTERNAL_MODULES):
+            if not _is_under(cls.__module__, _EXTERNAL_MODULES):
                 raise
             log.exception("外部扩展实例化失败：%s", cls.__name__)
             if errors is not None:
@@ -193,8 +200,9 @@ def _instantiate(registry: Registry, errors: list[dict[str, str]] | None = None)
             registry.add_listener(obj)
 
 
-def _load_external(errors: list[dict[str, str]]) -> None:
-    """导入外部扩展目录与 entry point；同一文件在进程内只执行一次。"""
+def _load_external(errors: list[dict[str, str]]) -> set[str]:
+    """导入外部扩展目录与 entry point，返回本次配置涉及的模块名；同一文件在进程内只执行一次。"""
+    active: set[str] = set()
     for directory in filter(None, os.getenv("REELAY_PLUGIN_DIRS", "").split(os.pathsep)):
         root = Path(directory).expanduser()
         if not root.is_dir():
@@ -209,6 +217,7 @@ def _load_external(errors: list[dict[str, str]]) -> None:
             digest = hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:8]
             module_name = f"reelay_ext_{digest}_{path.stem}"
             if module_name in sys.modules:
+                active.add(module_name)
                 continue
             try:
                 spec = importlib.util.spec_from_file_location(
@@ -218,6 +227,7 @@ def _load_external(errors: list[dict[str, str]]) -> None:
                 sys.modules[module_name] = module
                 _EXTERNAL_MODULES.add(module_name)
                 spec.loader.exec_module(module)
+                active.add(module_name)
             except Exception as exc:  # noqa: BLE001 - 外部扩展失败隔离
                 sys.modules.pop(module_name, None)
                 log.exception("外部扩展加载失败：%s", path)
@@ -231,9 +241,11 @@ def _load_external(errors: list[dict[str, str]]) -> None:
         try:
             _EXTERNAL_MODULES.add(point.module)
             point.load()
+            active.add(point.module)
         except Exception as exc:  # noqa: BLE001
             log.exception("entry point 扩展加载失败：%s", point.name)
             errors.append({"source": f"entry_point:{point.name}", "error": f"{type(exc).__name__}: {exc}"[:300]})
+    return active
 
 
 def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins")) -> Registry:
@@ -248,8 +260,8 @@ def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins"))
                 continue
             importlib.import_module(f"{pkg_name}.{mod.name}")
     errors: list[dict[str, str]] = []
-    _load_external(errors)
+    active = _load_external(errors)
     registry = Registry()
-    _instantiate(registry, errors)
+    _instantiate(registry, errors, active)
     registry.load_errors = errors
     return registry

@@ -540,6 +540,9 @@ class TestExternalPlugins(unittest.TestCase):
         self.assertIn("audit_hook", names)
         self.assertEqual(sum(1 for h in again.hooks["after_parse"] if h.name == "audit_hook"), 1)
         self.assertTrue(any("broken.py" in e["source"] for e in registry.load_errors))
+        with patch.dict(os.environ, {}, clear=True):
+            plain = discover()
+        self.assertNotIn("audit_hook", [h.name for h in plain.hooks.get("after_parse", [])])
 
     def test_opt_in_extensions_default_disabled(self):
         with patch.dict(os.environ, {}, clear=True):

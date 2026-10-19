@@ -1,0 +1,48 @@
+# Changelog
+
+本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+## [0.2.0] - 2026-10-19
+
+首个公开版本。
+
+### 新增
+
+- 确定性置信度：由标题、类型、年份、TMDB 匹配等信号计算，替代 LLM 自报值。
+- LLM 成本控制：调用前确定性预过滤、相同正文缓存、瞬时错误退避重试、非法输出重试一次。
+- 分享清单作为集数的事实来源：剔除样片/预告/花絮，排除已入库的集；新增 `episodes_from`。
+- 整理冲突策略 `organize.conflict`：manual / skip / suffix / upgrade（洗版）。
+- TMDB 候选按标题相似度与年份打分，anime 先剧集后电影，结果缓存；支持 v4 Token；默认命名模板写入 `[tmdbid=…]`。
+- 审批超时汇总提醒（`approval.reminder` / `max_reminders`）。
+- 115 凭证缺失或失效时暂停转存与整理并告警，恢复后自动继续；消息源断线告警；重连后按消息 ID 水位补拉。
+- 系统通知与告警通道、每日 `on_daily` 事件；内置日报、缺集追更、STRM 生成扩展。
+- 外部插件目录 `REELAY_PLUGIN_DIRS` 与 `reelay.plugins` entry point；扩展可默认关闭、自校验配置，并通过 `runtime.services()` 发送通知与读写私有状态。
+- MCP server（`python -m reelay.mcp_server`），支持只读模式。
+- Web：SSE 实时推送、115 目录选择器、运行总览展示进行中的告警。
+- 版本化数据库迁移（`PRAGMA user_version`），拒绝打开更新版本创建的数据库。
+- CI（后端测试与 ruff、前端 typecheck/eslint/vitest/build、Docker 构建冒烟）、pre-commit、示例插件、完整文档与免责声明。
+
+### 变更
+
+- 失败重试改为写入下次执行时间，退避期间不再占用并发槽。
+- 前端改用标准 Vite 构建（`web/dist`），支持 `VITE_BASE_PATH` 子路径部署；删除未使用的组件与依赖，统计页按需加载。
+- 依赖统一由 `pyproject.toml` 声明，新增 `agent`、`dev` 可选依赖。
+
+### 修复
+
+- 任务快照漏存 `genre_ids` / `origin_country`，导致二级分类在 Worker 中不生效。
+- 来源解析预览未把解析结果交给决策，结果恒为"跳过"。
+- 统计接口的任务计数恒为空、已完成体积估算错误；统计与高级检索不再另开且不关闭数据库连接。
+- 设置管理台密码后刷新页面总要重新登录。
+- 电影的 TMDB 匹配会清空 AI 从正文得到的国家/地区。
+
+### 安全
+
+- 设置 `REELAY_WEB_PASSWORD` 后，所有 `/api/*` 接口（含 SSE）统一要求有效会话；会话服务端过期，登录失败限流；健康检查不再向未登录者暴露运行细节。
+
+## [0.1.0] - 2026-09-27
+
+未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
+
+[0.2.0]: https://github.com/Derrors/reelay/releases/tag/v0.2.0
+[0.1.0]: https://github.com/Derrors/reelay/commits/v0.2.0

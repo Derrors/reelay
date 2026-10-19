@@ -1,3 +1,3 @@
-"""Reelay —— Telegram 资源 Bot → AI 识别 → 115 转存整理 的可扩展内核骨架。"""
+"""Reelay：Telegram → AI 识别 → 115 转存与媒体库整理的自托管管线。"""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

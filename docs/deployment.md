@@ -11,7 +11,7 @@ cp .env.example .env
 mkdir -p deploy/config deploy/plugins
 cp config.example.yaml deploy/config/config.yaml
 # 编辑 .env 和 deploy/config/config.yaml，填写凭证、来源与实际目录 CID。
-docker compose build
+docker compose build   # 国内网络可加 --build-arg NPM_REGISTRY=https://registry.npmmirror.com/ --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 # 镜像以 UID 10001 运行；让共享目录和数据卷可写。
 docker compose run --rm --no-deps --user root worker chown -R 10001:10001 /app/config /app/data
 # 首次在交互终端登录个人 Telegram 账号，验证码/密码直接交给 Telethon。

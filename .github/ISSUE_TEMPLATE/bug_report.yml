@@ -1,0 +1,37 @@
+name: Bug 报告
+description: 报告运行错误或与文档不符的行为
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请**去掉所有凭证、cookie、分享链接、真实频道/Bot 名称和目录 CID**。安全问题请按 SECURITY.md 私下报告。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 版本号或提交哈希
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 运行方式
+      options: [Docker Compose, 本地运行, 其他]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么，期望是什么
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+  - type: textarea
+    id: logs
+    attributes:
+      label: 任务轨迹或日志（已脱敏）
+      render: text

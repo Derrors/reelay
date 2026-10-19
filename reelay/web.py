@@ -26,6 +26,7 @@ from .core.registry import discover
 from .core.service import ConflictError, ManagementService, NotFoundError
 from .core.store import Store
 from .core.worker import Worker
+from . import __version__
 from .realtime import EventBus, event_stream
 from .web_extras import api_guard, is_authenticated, register_extras
 
@@ -111,7 +112,7 @@ def create_app(
             store.close()
 
     # 鉴权挂在应用级依赖上：新增路由默认受保护，公开接口在 web_extras.PUBLIC_PATHS 显式列出。
-    app = FastAPI(title="Reelay Management API", version="0.2.0", lifespan=lifespan,
+    app = FastAPI(title="Reelay Management API", version=__version__, lifespan=lifespan,
                   dependencies=[Depends(api_guard)])
     app.add_middleware(
         CORSMiddleware,
