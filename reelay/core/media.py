@@ -15,6 +15,29 @@ def episode_of(filename: str) -> tuple[int | None, int | None]:
     return (None, int(stem)) if stem.isdigit() else (None, None)
 
 
+def summarize_pairs(pairs) -> tuple[int | None, list[int]]:
+    """（季, 集）列表 →（唯一的季，跨多季时为 None；去重排序的集号）。"""
+    seasons = {season for season, _ in pairs}
+    return (seasons.pop() if len(seasons) == 1 else None), sorted({ep for _, ep in pairs})
+
+
+def multi_season(pairs) -> list[list[int]] | None:
+    """只在跨多季时返回（季, 集）列表，供界面显示「S01–S03 · 30 集」；单季返回 None，沿用季与集。"""
+    pairs = [list(pair) for pair in pairs or []]
+    return pairs if len({season for season, _ in pairs}) > 1 else None
+
+
+def pairs_label(pairs) -> str:
+    """跨多季的（季, 集）→「S01–S03 共 30 集」；季不连续时用顿号分隔。"""
+    seasons = sorted({season for season, _ in pairs})
+    if not seasons:
+        return ''
+    contiguous = seasons == list(range(seasons[0], seasons[-1] + 1))
+    head = (f'S{seasons[0]:02d}–S{seasons[-1]:02d}' if contiguous and len(seasons) > 1
+            else '、'.join(f'S{s:02d}' for s in seasons))
+    return f'{head} 共 {len(set(map(tuple, pairs)))} 集'
+
+
 _EXTRA_RE = re.compile(
     r'(?i)(?<![a-z])(sample|trailer|teaser|featurette|preview|extras?|'
     r'behind[ ._-]?the[ ._-]?scenes|making[ ._-]?of)(?![a-z])|预告|花絮|片花|样片|彩蛋|特辑|幕后')

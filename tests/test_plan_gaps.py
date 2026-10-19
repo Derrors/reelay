@@ -752,8 +752,11 @@ class TestShareProbe(Base):
     def test_describe_share_flags_problems_before_approval(self):
         from reelay.providers.storage import describe_share
         multi = FakeShareFS({0: [share_dir(1), share_dir(2)], 1: [share_file("A.S01E01.mkv")], 2: [share_file("A.S02E01.mkv")]})
-        self.assertEqual(describe_share(multi, self.parsed)["status"], "issue")
-        self.assertIn("多季", describe_share(multi, self.parsed)["note"])
+        result = describe_share(multi, self.parsed)  # 跨多季按季转存，不再转人工
+        self.assertEqual((result["status"], result["season"], result["pairs"]), ("ok", None, [[1, 1], [2, 1]]))
+        bare = FakeShareFS({0: [share_file("A.S01E01.mkv"), share_file("A.S02E01.mkv"), share_file("A.E03.mkv")]})
+        self.assertEqual(describe_share(bare, self.parsed)["status"], "issue")
+        self.assertIn("不带季号", describe_share(bare, self.parsed)["note"])
         gone = describe_share(FakeShareFS(error=OSError(5, {"state": False, "error": "访问码错误"})), self.parsed)
         self.assertEqual(gone["status"], "unavailable")
         self.assertIn("访问码错误", gone["note"])
@@ -811,6 +814,31 @@ class TestShareProbe(Base):
         self.assertEqual((item["season"], item["episodes"], item["size"]), (1, list(range(1, 11)), "71.1 GB"))
         self.assertEqual(item["share"], {"status": "ok", "note": None, "videos": 10, "from_share": True})
 
+    async def test_multi_season_pairs_reach_inbox_task_list_and_library(self):
+        from reelay.core.service import ManagementService
+        pending = message(msg_id="1")
+        pending.parsed, pending.state = self.parsed, TaskState.PENDING_APPROVAL
+        pending.ns("share").update(status="ok", videos=4, season=None, episodes=[1, 2],
+                                   pairs=[[1, 1], [1, 2], [2, 1], [2, 2]])
+        self.store.save_task(pending)
+        single = message(msg_id="2")
+        single.parsed = ParsedResource(is_media=True, title="单季", media_type="tv", season=1, episodes=[3], share_code="x")
+        single.state = TaskState.PENDING_APPROVAL
+        self.store.save_task(single)
+        service = ManagementService(self.store, self.pipeline(), config_path=str(Path(self.temp.name) / "c.yaml"))
+        inbox = {i["title"]: i for i in service.inbox()["items"]}
+        self.assertEqual(inbox["剧"]["episode_pairs"], [[1, 1], [1, 2], [2, 1], [2, 2]])
+        self.assertIsNone(inbox["单季"]["episode_pairs"])
+
+        done = message(msg_id="3")
+        done.parsed = ParsedResource(is_media=True, title="剧", media_type="tv", episodes=[1, 2], share_code="d")
+        done.state = TaskState.DONE
+        done.ns("storage")["manifest"] = {"pairs": [[1, 1], [1, 2], [2, 1], [2, 2]]}
+        self.store.save_task(done)
+        rows = {r["task_id"]: r for r in service.list_tasks()}
+        self.assertEqual(rows[done.task_id]["episode_pairs"], [[1, 1], [1, 2], [2, 1], [2, 2]])
+        self.assertIsNone(rows[single.task_id]["episode_pairs"])
+
     async def test_pending_tasks_are_read_once_at_startup(self):
         from reelay.plugins import share_probe
         ctx = message()
@@ -822,7 +850,11 @@ class TestShareProbe(Base):
                 patch.object(share_probe, "PROBE_INTERVAL", 0), patch.object(share_probe.ShareProbe, "_describe", describe):
             self.assertEqual(await pipeline.refresh_metadata(), 1)
             self.assertEqual(await pipeline.refresh_metadata(), 0)
-        self.assertEqual(self.store.get_task(ctx.task_id).meta["share"]["status"], "unavailable")
+            stored = self.store.get_task(ctx.task_id)
+            self.assertEqual(stored.meta["share"]["status"], "unavailable")
+            stored.meta["share"]["version"] = share_probe.PROBE_VERSION - 1  # 按旧规则读取的结果在启动时重读
+            self.store.save_task(stored)
+            self.assertEqual(await pipeline.refresh_metadata(), 1)
 
 
 class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
@@ -917,6 +949,16 @@ class TestDailyAndEpisodeTracker(Base):
         text = json.loads(self.store._conn.execute(
             "SELECT snapshot FROM outbox WHERE kind='notice'").fetchone()[0])["text"]
         self.assertIn("一瓯春 S01：已入库 3 集，缺 E22", text)
+
+    async def test_recorder_tracks_each_season_of_a_multi_season_pack(self):
+        recorder = EpisodeRecorder()
+        pipeline = self.pipeline()
+        ctx = message()
+        ctx.parsed = ParsedResource(is_media=True, title="毒枭", media_type="tv", episodes=[1, 2], share_code="s")
+        ctx.ns("storage")["manifest"] = {"pairs": [[1, 1], [1, 2], [3, 1]]}
+        with pipeline._scope(pipeline.cfg):
+            await recorder.handle(ctx)
+        self.assertEqual(sorted(self.store.state_items("episode_tracker")), ["series:毒枭|S01", "series:毒枭|S03"])
 
     def test_subscription_config_is_validated(self):
         with self.assertRaises(ValueError):
@@ -1157,6 +1199,20 @@ class TestConsoleApi(unittest.TestCase):
         self.assertEqual(result["done"], 2)
         store = self.app.state.store
         self.assertEqual({store.get_task(i).save_dir_alias for i in ids}, {"剧集"})
+
+    def test_library_counts_multi_season_pack_by_season_and_episode(self):
+        store = self.app.state.store
+        for msg_id, pairs in (("m1", [[1, 1], [1, 2], [2, 1], [2, 2]]), ("m2", [[3, 1]])):
+            ctx = message(msg_id=msg_id)
+            ctx.parsed = ParsedResource(is_media=True, title="多季剧", media_type="tv", share_code="abc",
+                                        season=None if len(pairs) > 1 else 3, episodes=sorted({e for _, e in pairs}))
+            ctx.state = TaskState.DONE
+            ctx.ns("storage")["manifest"] = {"pairs": pairs}
+            store.save_task(ctx)
+        group = next(g for g in self.client.get("/api/tasks/advanced").json()["groups"] if g["title"] == "多季剧")
+        self.assertEqual(group["episode_pairs"], [[1, 1], [1, 2], [2, 1], [2, 2], [3, 1]])
+        single = next(g for g in self.client.get("/api/tasks/advanced").json()["groups"] if g["title"] == "剧4")
+        self.assertIsNone(single["episode_pairs"])
 
     def test_dashboard_has_recent_counts_and_catalog_merges_multi_event_extensions(self):
         self.assertEqual(self.client.get("/api/dashboard").json()["recent"]["received_24h"], 5)

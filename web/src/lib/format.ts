@@ -39,8 +39,18 @@ export function compactEpisodes(episodes: number[] = [], maxParts = 3): string {
   return parts.length > maxParts ? `${parts.slice(0, maxParts).join(', ')} 等` : parts.join(', ');
 }
 
-/** 季 + 集的紧凑标签，如 "S01 · E05–E06"；电影返回空串。 */
-export function episodeLabel(season?: number | null, episodes?: number[] | null): string {
+/** 跨多季的（季, 集）→ "S01–S03 · 30 集"；季不连续时用顿号分隔。 */
+export function seasonsLabel(pairs: number[][]): string {
+  const seasons = [...new Set(pairs.map(([s]) => s))].sort((a, b) => a - b);
+  const pad = (n: number) => `S${String(n).padStart(2, '0')}`;
+  const contiguous = seasons.every((s, i) => s === seasons[0] + i);
+  const head = contiguous ? `${pad(seasons[0])}–${pad(seasons[seasons.length - 1])}` : seasons.map(pad).join('、');
+  return `${head} · ${new Set(pairs.map(([s, e]) => `${s}:${e}`)).size} 集`;
+}
+
+/** 季 + 集的紧凑标签，如 "S01 · E05–E06"；pairs 跨多季时显示 "S01–S03 · 30 集"；电影返回空串。 */
+export function episodeLabel(season?: number | null, episodes?: number[] | null, pairs?: number[][] | null): string {
+  if (pairs && new Set(pairs.map(([s]) => s)).size > 1) return seasonsLabel(pairs);
   const eps = episodes ?? [];
   if (season == null && !eps.length) return '';
   const s = season != null ? `S${String(season).padStart(2, '0')}` : '';

@@ -112,7 +112,7 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
             />
           ) : null}
         </div>
-        <MediaMeta mediaType={item.media_type} season={item.season} episodes={item.episodes}
+        <MediaMeta mediaType={item.media_type} season={item.season} episodes={item.episodes} pairs={item.episode_pairs}
           resolution={item.resolution} size={item.size} className="mt-0.5" />
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span className="min-w-0 truncate">{item.source} · <span title={fullTime(item.created_at)}>{relativeTime(item.created_at)}</span></span>

@@ -15,6 +15,7 @@ from typing import Any
 from .config import normalize_config
 from .validation import validate_resource
 from .contracts import ParsedResource, PipelineContext, TaskState
+from .media import multi_season
 from .pipeline import Pipeline
 from .store import Store
 from ..plugins.organizer import Organizer
@@ -155,11 +156,13 @@ class ManagementService:
             # 消息没写集数时，用读取分享得到的季、集与大小展示（不改识别结果，转存仍以分享为准）
             share = meta.get("share") or {}
             from_share = not p.episodes and bool(share.get("episodes"))
+            pairs = share.get("pairs") if from_share else [list(pair) for pair in ctx.episode_pairs()]
             items.append({
                 **{key: row[key] for key in ("task_id", "state", "source", "created_at", "updated_at", "error")},
                 "title": p.title, "year": p.year, "media_type": p.media_type,
                 "season": share.get("season") if from_share else p.season,
                 "episodes": share["episodes"] if from_share else p.episodes,
+                "episode_pairs": multi_season(pairs),
                 "resolution": p.resolution, "size": p.size or share.get("size_text"), "reason": p.reason,
                 "share": {"status": share.get("status"), "note": share.get("note"), "videos": share.get("videos"),
                           "from_share": from_share} if share else None,

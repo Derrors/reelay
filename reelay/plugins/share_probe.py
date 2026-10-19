@@ -16,12 +16,15 @@ import time
 
 from ..core.auth115 import get_store
 from ..core.contracts import PipelineContext, TaskState
+from ..core.media import pairs_label
 from ..core.registry import register
 from .episode_tracker import format_episodes
 
 log = logging.getLogger("reelay.plugin.share_probe")
 
 PROBE_INTERVAL = 2.0
+# 选集规则变化时加一，启动时重读按旧规则得出的结果（2：跨多季的合集按季转存，不再转人工）
+PROBE_VERSION = 2
 
 
 def size_text(size: int) -> str:
@@ -50,9 +53,11 @@ class ShareProbe:
                     and ctx.source_rule.get("storage", "p115") == "p115")
 
     def needs_refresh(self, ctx: PipelineContext) -> bool:
-        """启动时补读：仍待审批、还没读过或上次读取出错的条目。"""
+        """启动时补读：仍待审批、还没读过、上次读取出错或按旧规则读取的条目。"""
+        share = ctx.meta.get("share", {})
+        stale = share.get("status") in (None, "error") or share.get("version") != PROBE_VERSION
         return (not self._dry_run and ctx.state == TaskState.PENDING_APPROVAL and self._wanted(ctx)
-                and ctx.meta.get("share", {}).get("status") in (None, "error") and get_store().has_cookie)
+                and stale and get_store().has_cookie)
 
     async def run(self, ctx: PipelineContext) -> bool:
         if self._dry_run or not self._wanted(ctx) or not get_store().has_cookie:
@@ -70,7 +75,7 @@ class ShareProbe:
                 self._last = time.monotonic()
         if result.get("size"):
             result["size_text"] = size_text(result["size"])
-        result["probed_at"] = time.time()
+        result.update(probed_at=time.time(), version=PROBE_VERSION)
         ns = ctx.ns("share")
         ns.clear()
         ns.update(result)
@@ -87,8 +92,9 @@ class ShareProbe:
     @staticmethod
     def _summary(result: dict) -> str:
         if result["status"] == "ok":
-            return (f"读取分享：{result['videos']} 个视频 {result.get('size_text', '')}，"
-                    f"S{result['season']:02d} {format_episodes(result['episodes'])}")
+            episodes = (pairs_label(result["pairs"]) if result["season"] is None
+                        else f"S{result['season']:02d} {format_episodes(result['episodes'])}")
+            return f"读取分享：{result['videos']} 个视频 {result.get('size_text', '')}，{episodes}"
         if result["status"] == "error":
             return f"读取分享失败（{result['note']}），稍后重试"
         return f"读取分享：{result['note']}"

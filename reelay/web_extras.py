@@ -18,6 +18,8 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .core.media import multi_season
+
 # 会话保存在内存即可：单实例个人工具，重启后要求重新登录。token -> 过期时间
 _SESSIONS: dict[str, float] = {}
 # 登录失败记录：客户端地址 -> 最近失败时间；窗口内失败过多则拒绝尝试。
@@ -443,7 +445,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
             p = snap.get("parsed") or {}
             key = p.get("title") or "(未识别)"
             g = groups.setdefault(key, {"title": key, "media_type": p.get("media_type"),
-                                        "year": p.get("year"), "episodes": [], "tasks": 0,
+                                        "year": p.get("year"), "episodes": [], "pairs": set(), "tasks": 0,
                                         "bytes": 0, "poster_path": None, "save_dir_alias": None,
                                         "files": [], "updated_at": r["updated_at"]})
             g["poster_path"] = g["poster_path"] or (p.get("raw_fields") or {}).get("poster_path")
@@ -453,9 +455,16 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
                                         for i in plan])[:100]
             eps = p.get("episodes") or []
             g["episodes"] = sorted(set(g["episodes"] + [int(e) for e in eps if isinstance(e, int)]))
+            # 跨多季的合集按（季, 集）计数，否则各季的同号集会被当成一集
+            manifest = ((snap.get("meta") or {}).get("storage") or {}).get("manifest") or {}
+            season = p.get("season") if p.get("season") is not None else 1
+            g["pairs"] |= {(int(s), int(e)) for s, e in manifest.get("pairs") or []} or {
+                (season, int(e)) for e in eps if isinstance(e, int)}
             g["tasks"] += 1
             size = p.get("size")
             g["bytes"] += int(_parse_size_gb(size) * 1024 ** 3)
+        for g in groups.values():
+            g["episode_pairs"] = multi_season(sorted(g.pop("pairs")))
         return {
             "groups": sorted(groups.values(), key=lambda x: -x["tasks"]),
             "total_done": len(rows),

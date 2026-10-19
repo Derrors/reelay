@@ -8,7 +8,7 @@ import { Select } from '@/components/app/Select';
 import { Sheet } from '@/components/app/Sheet';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { compactEpisodes, fullTime, mediaTypeLabel, relativeTime } from '@/lib/format';
+import { compactEpisodes, fullTime, mediaTypeLabel, relativeTime, seasonsLabel } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 type Sort = 'recent' | 'title' | 'size';
@@ -37,10 +37,23 @@ function gbText(bytes: number): string {
   return gb >= 100 ? `${gb.toFixed(0)} GB` : `${gb.toFixed(1)} GB`;
 }
 
+/** 已收录集数：跨多季时按（季, 集）计，否则各季的同号集会被当成一集。 */
+function episodeCount(group: ITitleGroup): number {
+  return group.episode_pairs?.length ?? group.episodes.length;
+}
+
+/** 按季归并已收录的集；单季作品只有一组（季为 null）。 */
+function seasonGroups(group: ITitleGroup): Array<[number | null, number[]]> {
+  if (!group.episode_pairs) return [[null, group.episodes]];
+  const bySeason = new Map<number, number[]>();
+  for (const [season, ep] of group.episode_pairs) bySeason.set(season, [...(bySeason.get(season) ?? []), ep]);
+  return [...bySeason].sort((a, b) => a[0] - b[0]).map(([season, eps]) => [season, eps.sort((a, b) => a - b)]);
+}
+
 /** 海报角标：剧集显示已收录集数，电影不显示。 */
 function summary(group: ITitleGroup): string {
   if (group.media_type === 'movie') return group.year ? String(group.year) : '电影';
-  const eps = group.episodes.length;
+  const eps = episodeCount(group);
   return [group.year, eps ? `${eps} 集` : ''].filter(Boolean).join(' · ');
 }
 
@@ -66,14 +79,21 @@ function GroupSheet({ group, onClose }: { group: ITitleGroup | null; onClose: ()
           </div>
           {group.media_type !== 'movie' && group.episodes.length ? (
             <section className="space-y-2">
-              <h3 className="text-[13px] font-semibold">已收录 {group.episodes.length} 集</h3>
-              <div className="flex flex-wrap gap-1.5">
-                {group.episodes.map((ep) => (
-                  <span key={ep} className="min-w-9 rounded-md bg-primary/10 px-1.5 py-0.5 text-center text-xs font-medium tabular-nums text-primary">
-                    {String(ep).padStart(2, '0')}
-                  </span>
-                ))}
-              </div>
+              <h3 className="text-[13px] font-semibold">已收录 {episodeCount(group)} 集</h3>
+              {seasonGroups(group).map(([season, eps]) => (
+                <div key={season ?? 'all'} className="flex items-start gap-2">
+                  {season !== null ? (
+                    <span className="w-9 shrink-0 pt-0.5 text-xs font-medium tabular-nums text-muted-foreground">S{String(season).padStart(2, '0')}</span>
+                  ) : null}
+                  <div className="flex flex-wrap gap-1.5">
+                    {eps.map((ep) => (
+                      <span key={ep} className="min-w-9 rounded-md bg-primary/10 px-1.5 py-0.5 text-center text-xs font-medium tabular-nums text-primary">
+                        {String(ep).padStart(2, '0')}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </section>
           ) : null}
           <section className="space-y-2">
@@ -210,7 +230,8 @@ export default function LibraryPage() {
                 </div>
                 <div className="truncate text-xs text-muted-foreground">
                   {mediaTypeLabel(g.media_type)}
-                  {g.media_type !== 'movie' && g.episodes.length ? ` · ${g.episodes.length} 集：${compactEpisodes(g.episodes, 4)}` : ''}
+                  {g.media_type !== 'movie' && g.episodes.length
+                    ? ` · ${g.episode_pairs ? seasonsLabel(g.episode_pairs) : `${g.episodes.length} 集：${compactEpisodes(g.episodes, 4)}`}` : ''}
                 </div>
               </div>
               <span className="hidden w-16 shrink-0 text-xs text-muted-foreground sm:block">{g.save_dir_alias ?? ''}</span>

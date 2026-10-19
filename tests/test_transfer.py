@@ -284,6 +284,40 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute(b)).state, TaskState.SKIPPED)
         self.assertEqual([x[3] for x in self.cloud.receives()], [['500', '501']])
 
+    def path_of(self, fid):
+        parts = []
+        while fid in self.cloud.items and fid != 1:  # 1 = 默认目录
+            parts.append(self.cloud.items[fid]['name'])
+            fid = self.cloud.items[fid]['parent_id']
+        return '/'.join(reversed(parts))
+
+    async def test_multi_season_share_is_received_and_organized_by_season(self):
+        self.cloud.add_share('pack', 'Show.S01E01.mkv', 'Show.S01E02.mkv', 'Show.S02E01.mkv', 'Show.S02E02.mkv')
+        ctx = self.task('pack', episodes=())
+        ctx.parsed.season = None
+        self.store.save_task(ctx)
+        done = await self.execute(ctx)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual((done.parsed.season, done.parsed.episodes), (None, [1, 2]))
+        self.assertEqual(sorted(self.path_of(int(x['id'])) for x in done.ns('storage')['landed']), [
+            '剧集 (2026)/Season 01/剧集 - S01E01.mkv', '剧集 (2026)/Season 01/剧集 - S01E02.mkv',
+            '剧集 (2026)/Season 02/剧集 - S02E01.mkv', '剧集 (2026)/Season 02/剧集 - S02E02.mkv'])
+        self.assertEqual(self.store.stored_episode_pairs('剧集', '1'), [[1, 1], [1, 2], [2, 1], [2, 2]])
+        self.assertTrue(any('按季分别转存与整理' in line for line in done.trail))
+
+        # 另一个分享里 S02E02 已入库，只转存 S03E01；占位同样按（季, 集）
+        self.cloud.add_share('next', 'Show.S02E02.mkv', 'Show.S03E01.mkv')
+        later = self.task('next', episodes=())
+        later.parsed.season = None
+        self.store.save_task(later)
+        done = await self.execute(later)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual([x[3] for x in self.cloud.receives()][-1], ['501'])
+        self.assertEqual((done.parsed.season, done.parsed.episodes), (3, [1]))
+        self.assertEqual(self.path_of(int(done.ns('storage')['landed'][0]['id'])),
+                         '剧集 (2026)/Season 03/剧集 - S03E01.mkv')
+        self.assertEqual(done.ns('storage')['content_keys'], ['p115:1:episode:剧集|S03|E01'])
+
     async def test_message_scope_only_receives_new_declared_episodes(self):
         self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
         a, b = self.task(episodes=(1,)), self.task(episodes=(1, 2))

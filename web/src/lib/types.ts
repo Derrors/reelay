@@ -100,6 +100,8 @@ export interface ITaskSummary {
   year?: number | null;
   season?: number | null;
   episodes?: number[];
+  /** 跨多季合集的（季, 集）；单季为 null。 */
+  episode_pairs?: number[][] | null;
   resolution?: string | null;
   size?: string | null;
   poster_path?: string | null;
@@ -140,6 +142,8 @@ export interface IInboxItem {
   auto_dir: string | null;
   /** 同一位置在网盘中的真实路径，如「/测试/剧集/国产剧集」；尚未读取到时为 null。 */
   auto_path: string | null;
+  /** 跨多季合集的（季, 集）；单季为 null。 */
+  episode_pairs: number[][] | null;
   /** 消息没写集数的剧集读取分享的结果；from_share 表示 season/episodes/size 来自分享。 */
   share: IShareProbe | null;
   preview: string;

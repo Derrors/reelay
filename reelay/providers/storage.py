@@ -17,7 +17,7 @@ from ..core.auth115 import get_store
 from ..core.contracts import AlreadyStored, NeedsManual, PipelineContext, TransferUncertain
 from ..core.io import run_blocking
 from ..core.registry import register
-from ..core.media import episode_of, is_extra
+from ..core.media import episode_of, is_extra, summarize_pairs
 
 VIDEO_EXT = {'.mp4', '.mkv', '.ts', '.avi', '.mov', '.flv', '.wmv', '.webm',
              '.m2ts', '.mpg', '.mpeg', '.rmvb', '.iso'}
@@ -34,8 +34,10 @@ MOVIE_EXTRA_RATIO = 0.15
 def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: str = 'share') -> dict:
     """确定本次转存的文件。分享清单是集数的事实来源，消息/LLM 给出的集数只作提示。
 
-    返回 ``{'files', 'episodes', 'season'}``；无法确定时抛 NeedsManual（转存前停止），
-    内容全部已入库时抛 AlreadyStored。``stored`` 为已入库的 ``[季, 集]``。
+    返回 ``{'files', 'episodes', 'season', 'pairs'}``：每个文件带自己的季与集，``pairs`` 为
+    本次转存的 ``[季, 集]``。消息指定了季时只取该季；没指定而分享跨多季时按文件名中的季号逐季
+    转存，此时 ``season`` 为 None、``episodes`` 为各季集号的并集。无法确定时抛 NeedsManual（转存前
+    停止），内容全部已入库时抛 AlreadyStored。``stored`` 为已入库的 ``[季, 集]``。
     """
     videos = [x for x in video_items if not is_extra(x.get('name', ''))]
     if not videos:
@@ -55,32 +57,39 @@ def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: st
     unknown = [x.get('name', '') for x, _, ep in detected if ep is None]
     if unknown:
         raise NeedsManual(f'无法从文件名识别集号：{"、".join(unknown[:5])}')
-    season = parsed.season
-    if season is None:
-        seasons = {s for _, s, _ in detected if s is not None}
-        if len(seasons) > 1:
-            raise NeedsManual(f'分享包含多季 {sorted(seasons)}，需先指定季号')
-        season = seasons.pop() if seasons else 1
-    by_episode: dict[int, dict] = {}
-    for item, detected_season, ep in detected:
-        if detected_season not in (None, season):
-            continue
-        if ep in by_episode:
-            raise NeedsManual(f'分享内第 {ep} 集有多个文件，需人工选择')
-        by_episode[ep] = item
-    if not by_episode:
+    marked = {s for _, s, _ in detected if s is not None}
+    if parsed.season is not None or len(marked) <= 1:
+        # 单季：消息指定的季，或分享里唯一的季；文件名不带季号的视为该季
+        season = parsed.season if parsed.season is not None else (marked.pop() if marked else 1)
+        picked = [(item, season, ep) for item, s, ep in detected if s in (None, season)]
+    else:
+        # 跨多季的合集：按文件名中的季号逐季转存；不带季号的文件无法判断属于哪一季
+        bare = [item.get('name', '') for item, s, _ in detected if s is None]
+        if bare:
+            raise NeedsManual(f'分享包含多季 {sorted(marked)}，但有文件名不带季号：{"、".join(bare[:5])}')
+        if scope == 'message' and parsed.episodes:
+            raise NeedsManual(f'分享包含多季 {sorted(marked)}，消息只写了集数，需先指定季号')
+        season, picked = None, detected
+    by_pair: dict[tuple[int, int], dict] = {}
+    for item, s, ep in picked:
+        if (s, ep) in by_pair:
+            raise NeedsManual(f'分享内第 {ep} 集有多个文件，需人工选择' if season is not None
+                              else f'分享内第 {s} 季第 {ep} 集有多个文件，需人工选择')
+        by_pair[(s, ep)] = item
+    if not by_pair:
         raise NeedsManual(f'分享内没有第 {season} 季的视频')
     if scope == 'message' and parsed.episodes:
-        missing = set(parsed.episodes) - set(by_episode)
+        missing = set(parsed.episodes) - {ep for _, ep in by_pair}
         if missing:
             raise NeedsManual(f'分享内未找到消息声明的集数 {sorted(missing)}')
-        by_episode = {ep: by_episode[ep] for ep in parsed.episodes}
-    stored_episodes = {ep for stored_season, ep in stored if stored_season == season}
-    wanted = sorted(set(by_episode) - stored_episodes)
+        by_pair = {(season, ep): by_pair[(season, ep)] for ep in parsed.episodes}
+    wanted = sorted(set(by_pair) - {(s, ep) for s, ep in stored})
     if not wanted:
-        raise AlreadyStored(f'分享内第 {season} 季的 {len(by_episode)} 集均已入库')
-    files = [{**by_episode[ep], 'season': season, 'episode': ep} for ep in wanted]
-    return {'files': files, 'episodes': wanted, 'season': season}
+        raise AlreadyStored(f'分享内第 {season} 季的 {len(by_pair)} 集均已入库' if season is not None
+                            else f'分享内 {len({s for s, _ in by_pair})} 季共 {len(by_pair)} 集均已入库')
+    files = [{**by_pair[pair], 'season': pair[0], 'episode': pair[1]} for pair in wanted]
+    season, episodes = summarize_pairs(wanted)
+    return {'files': files, 'episodes': episodes, 'season': season, 'pairs': [list(pair) for pair in wanted]}
 
 
 # 只读描述分享时最多列出的目录数：逐集一个目录的大合集要几百次请求，容易触发 115 风控。
@@ -123,7 +132,7 @@ def describe_share(share_fs, parsed, *, max_dirs: int = DESCRIBE_MAX_DIRS) -> di
                               'size': sum(x['size'] for x in videos if type(x.get('size')) is int)}
     try:
         selection = _select_video_items(videos, parsed, scope='share')
-        result.update(season=selection['season'], episodes=selection['episodes'])
+        result.update(season=selection['season'], episodes=selection['episodes'], pairs=selection['pairs'])
     except NeedsManual as exc:
         result.update(status='issue', note=str(exc))
     return result

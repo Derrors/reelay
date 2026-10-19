@@ -132,6 +132,8 @@ export const extras = {
 export interface ITitleGroup {
   title: string; media_type: string | null; year: number | null;
   episodes: number[]; tasks: number; bytes: number;
+  /** 跨多季时按（季, 集）列出已收录的集；单季为 null。 */
+  episode_pairs: number[][] | null;
   poster_path: string | null; save_dir_alias: string | null; files: string[]; updated_at: number;
 }
 export interface IAdvancedResp {

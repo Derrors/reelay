@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import PipelineContext, RawMessage, ParsedResource, TaskState
+from .media import multi_season
 
 
 # 三层去重的 kind
@@ -320,9 +321,11 @@ class Store:
         with self._lock, self._conn:
             self._write_task(ctx)
             keys = [(DEDUP_SHARE, f"{prefix}:{identity['share_code']}")]
+            # 跨多季的合集按（季, 集）逐个记录；旧记录没有 pairs，按单季的季与集
+            pairs = identity.get("pairs") or [[identity["season"], ep] for ep in identity["episodes"]]
             keys += [
-                (DEDUP_EPISODE, f"{prefix}:{self.episode_key(identity['title'] or '', identity['season'], ep)}")
-                for ep in identity["episodes"] if identity["title"]
+                (DEDUP_EPISODE, f"{prefix}:{self.episode_key(identity['title'] or '', season, ep)}")
+                for season, ep in pairs if identity["title"]
             ]
             self._conn.executemany(
                 "INSERT OR IGNORE INTO dedup VALUES (?,?,?,?)",
@@ -458,7 +461,8 @@ class Store:
             "json_extract(snapshot,'$.parsed.resolution') AS resolution, "
             "json_extract(snapshot,'$.parsed.size') AS size, "
             "json_extract(snapshot,'$.parsed.raw_fields.poster_path') AS poster_path, "
-            "json_extract(snapshot,'$.save_dir_alias') AS save_dir_alias "
+            "json_extract(snapshot,'$.save_dir_alias') AS save_dir_alias, "
+            "json_extract(snapshot,'$.meta.storage.manifest.pairs') AS episode_pairs "
             f"FROM tasks{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
             tuple(params),
         ).fetchall()
@@ -466,6 +470,8 @@ class Store:
         for row in rows:
             item = dict(row)
             item["episodes"] = json.loads(item["episodes"]) if item["episodes"] else []
+            # 跨多季的合集附带（季, 集），界面显示「S01–S03 · 30 集」
+            item["episode_pairs"] = multi_season(json.loads(item["episode_pairs"]) if item["episode_pairs"] else [])
             items.append(item)
         return items
 

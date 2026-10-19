@@ -5,6 +5,8 @@ interface MediaMetaProps {
   mediaType?: string | null;
   season?: number | null;
   episodes?: number[] | null;
+  /** 跨多季合集的（季, 集），有值时显示「S01–S03 · 30 集」。 */
+  pairs?: number[][] | null;
   resolution?: string | null;
   size?: string | null;
   showType?: boolean;
@@ -12,10 +14,10 @@ interface MediaMetaProps {
 }
 
 /** 媒体信息行：类型 · 季集 · 清晰度 · 大小，缺失的项自动省略。 */
-export function MediaMeta({ mediaType, season, episodes, resolution, size, showType = true, className }: MediaMetaProps) {
+export function MediaMeta({ mediaType, season, episodes, pairs, resolution, size, showType = true, className }: MediaMetaProps) {
   const parts = [
     showType && mediaType ? mediaTypeLabel(mediaType) : '',
-    mediaType === 'movie' ? '' : episodeLabel(season, episodes),
+    mediaType === 'movie' ? '' : episodeLabel(season, episodes, pairs),
     resolution ?? '',
     size ?? '',
   ].filter(Boolean);

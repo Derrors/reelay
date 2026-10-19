@@ -31,6 +31,7 @@ from .contracts import (
 from .registry import Registry
 from .store import Store, _load_ctx
 from .config import config_revision, load_config, merge_config, normalize_config
+from .media import pairs_label, summarize_pairs
 from . import confidence, runtime
 
 log = logging.getLogger("reelay.pipeline")
@@ -513,17 +514,22 @@ class Pipeline:
         return bool(p.title) and (p.media_type in ("tv", "anime") or bool(p.episodes))
 
     def _content_keys(self, storage_name: str, ctx: PipelineContext) -> list[str]:
-        p = ctx.parsed
-        return [f"{storage_name}:{ctx.save_dir_cid}:episode:{self.store.episode_key(p.title or '', p.season, ep)}"
-                for ep in p.episodes if p.title]
+        title = ctx.parsed.title
+        return [f"{storage_name}:{ctx.save_dir_cid}:episode:{self.store.episode_key(title, season, ep)}"
+                for season, ep in ctx.episode_pairs() if title]
 
     @staticmethod
     def _adopt_manifest(ctx: PipelineContext, manifest: dict) -> None:
-        """分享清单是集数的事实来源；记录与消息提示的差异，去重身份随之更新。"""
+        """分享清单是集数的事实来源；记录与消息提示的差异，去重身份随之更新。
+
+        跨多季时识别结果的季记为 None、集为各季集号的并集；按季区分的（季, 集）以清单的 pairs 为准。
+        """
         if not manifest.get("episodes"):
             return
         p = ctx.parsed
-        if p.episodes and sorted(p.episodes) != manifest["episodes"]:
+        if manifest.get("season") is None and manifest.get("pairs"):
+            ctx.log(f"分享跨多季（{pairs_label(manifest['pairs'])}），按季分别转存与整理")
+        elif p.episodes and sorted(p.episodes) != manifest["episodes"]:
             ctx.log(f"集数以分享文件为准：消息提示 {p.episodes} → 本次转存 {manifest['episodes']}")
         p.episodes = list(manifest["episodes"])
         p.season = manifest["season"]
@@ -532,6 +538,8 @@ class Pipeline:
         identity = ctx.ns("storage").get("identity")
         if identity is not None:
             identity.update(episodes=list(p.episodes), season=p.season)
+            if manifest.get("pairs"):
+                identity["pairs"] = [list(pair) for pair in manifest["pairs"]]
 
     async def _recheck_manifest(self, ctx: PipelineContext, storage, provider_name: str) -> bool:
         ns = ctx.ns("storage")
@@ -548,9 +556,11 @@ class Pipeline:
                 reason = "分享内的集数均已由其他任务入库"
             elif len(remaining) < len(manifest["files"]):
                 manifest["files"] = remaining
-                manifest["episodes"] = [f["episode"] for f in remaining]
+                manifest["pairs"] = [[f["season"], f["episode"]] for f in remaining]
+                manifest["season"], manifest["episodes"] = summarize_pairs(manifest["pairs"])
                 self._adopt_manifest(ctx, manifest)
-                ctx.log(f"部分集已由其他任务入库，本次只转存 {manifest['episodes']}")
+                ctx.log("部分集已由其他任务入库，本次只转存 "
+                        + (str(manifest["episodes"]) if manifest["season"] is not None else pairs_label(manifest["pairs"])))
                 self.store.save_task(ctx)
         if reason is None:
             return True

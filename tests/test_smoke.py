@@ -314,14 +314,37 @@ class TestStorageEpisodeSelection(unittest.TestCase):
             _select_video_items([{"id": "a", "name": "Film.CD1.mkv", "size": 9_000},
                                  {"id": "b", "name": "Film.CD2.mkv", "size": 8_000}], movie)
 
-    def test_multi_season_share_needs_explicit_season(self):
-        from reelay.core.contracts import NeedsManual
+    MULTI = [{"id": "11", "name": "Show.S01E01.mkv"}, {"id": "12", "name": "Show.S01E02.mkv"},
+             {"id": "21", "name": "Show.S02E01.mkv"}, {"id": "22", "name": "Show.S02E02.mkv"}]
+
+    def test_multi_season_share_is_received_season_by_season(self):
         from reelay.providers.storage import _select_video_items
-        items = [{"id": "1", "name": "S01E01.mkv"}, {"id": "2", "name": "S02E01.mkv"}]
-        with self.assertRaises(NeedsManual):
-            _select_video_items(items, ParsedResource(media_type="tv"))
-        selected = _select_video_items(items, ParsedResource(media_type="tv", season=2))
-        self.assertEqual([x["id"] for x in selected["files"]], ["2"])
+        selected = _select_video_items(self.MULTI, ParsedResource(media_type="tv"), stored=[[1, 1]])
+        self.assertEqual([(x["id"], x["season"], x["episode"]) for x in selected["files"]],
+                         [("12", 1, 2), ("21", 2, 1), ("22", 2, 2)])
+        self.assertEqual((selected["season"], selected["episodes"], selected["pairs"]),
+                         (None, [1, 2], [[1, 2], [2, 1], [2, 2]]))
+
+    def test_message_season_still_restricts_multi_season_share(self):
+        from reelay.providers.storage import _select_video_items
+        selected = _select_video_items(self.MULTI, ParsedResource(media_type="tv", season=2))
+        self.assertEqual(([x["id"] for x in selected["files"]], selected["season"], selected["pairs"]),
+                         (["21", "22"], 2, [[2, 1], [2, 2]]))
+
+    def test_ambiguous_multi_season_shares_still_stop_before_transfer(self):
+        from reelay.core.contracts import AlreadyStored, NeedsManual
+        from reelay.providers.storage import _select_video_items
+        cases = {
+            "有文件名不带季号": [*self.MULTI, {"id": "9", "name": "Show.E03.mkv"}],
+            "第 2 季第 1 集有多个文件": [*self.MULTI, {"id": "23", "name": "Show.S02E01.1080p.mkv"}],
+        }
+        for reason, items in cases.items():
+            with self.subTest(reason), self.assertRaisesRegex(NeedsManual, reason):
+                _select_video_items(items, ParsedResource(media_type="tv"))
+        with self.assertRaisesRegex(NeedsManual, "消息只写了集数"):
+            _select_video_items(self.MULTI, ParsedResource(media_type="tv", episodes=[1]), scope="message")
+        with self.assertRaisesRegex(AlreadyStored, "2 季共 4 集"):
+            _select_video_items(self.MULTI, ParsedResource(media_type="tv"), stored=[[1, 1], [1, 2], [2, 1], [2, 2]])
 
 
 class TestTelegramUserbotGuard(unittest.TestCase):

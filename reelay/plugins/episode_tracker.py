@@ -87,15 +87,15 @@ class EpisodeRecorder(_Base):
 
     async def handle(self, ctx: PipelineContext) -> None:
         p = ctx.parsed
-        if not p or not p.title or not p.episodes:
+        if not p or not p.title:
             return
         state = runtime.services().state(self.name)
-        season = p.season if p.season is not None else 1
-        key = f"series:{p.title}|S{season:02d}"
-        record = state.get(key, {})
-        record.update(title=p.title, season=season, updated_at=time.time(),
-                      tmdbid=p.raw_fields.get("tmdbid") or record.get("tmdbid"))
-        state.set(key, record)
+        for season in sorted({season for season, _ in ctx.episode_pairs()}):  # 跨多季的合集每季各记一条
+            key = f"series:{p.title}|S{season:02d}"
+            record = state.get(key, {})
+            record.update(title=p.title, season=season, updated_at=time.time(),
+                          tmdbid=p.raw_fields.get("tmdbid") or record.get("tmdbid"))
+            state.set(key, record)
 
 
 @register(kind="event", event="on_daily")

@@ -156,6 +156,14 @@ class PipelineContext:
         """取某插件的私有命名空间字典。"""
         return self.meta.setdefault(plugin, {})
 
+    def episode_pairs(self) -> list[tuple[int, int]]:
+        """本任务涉及的（季, 集）。有转存清单时以清单为准（可跨多季），否则按识别结果，未写季视为第 1 季。"""
+        pairs = (self.meta.get("storage", {}).get("manifest") or {}).get("pairs")
+        if pairs:
+            return [(int(season), int(ep)) for season, ep in pairs]
+        p = self.parsed
+        return [(p.season if p.season is not None else 1, ep) for ep in p.episodes] if p else []
+
 
 # --------------------------------------------------------------------------- #
 # A 类：能力槽 Provider（可替换）

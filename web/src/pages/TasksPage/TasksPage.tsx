@@ -51,7 +51,7 @@ function TaskRow({ item, onOpen }: { item: ITaskSummary; onOpen: () => void }) {
           <span className={cn('truncate text-sm font-medium', unrecognized && 'text-muted-foreground')}>{title}</span>
           {item.year ? <span className="shrink-0 text-xs text-muted-foreground">{item.year}</span> : null}
         </div>
-        <MediaMeta mediaType={item.media_type} season={item.season} episodes={item.episodes}
+        <MediaMeta mediaType={item.media_type} season={item.season} episodes={item.episodes} pairs={item.episode_pairs}
           resolution={item.resolution} size={item.size} className="mt-0.5" />
         {item.error ? <p className="mt-0.5 truncate text-xs text-destructive">{item.error}</p> : null}
         <p className="mt-0.5 truncate text-xs text-muted-foreground md:hidden">

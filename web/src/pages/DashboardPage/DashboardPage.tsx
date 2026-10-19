@@ -66,7 +66,7 @@ function PendingRow({ item, busy, onOpen, onAct }: {
           {item.title || '尚未识别片名'}
           {item.year ? <span className="ml-1.5 text-xs font-normal text-muted-foreground">{item.year}</span> : null}
         </div>
-        <MediaMeta mediaType={item.media_type} season={item.season} episodes={item.episodes} resolution={item.resolution}
+        <MediaMeta mediaType={item.media_type} season={item.season} episodes={item.episodes} pairs={item.episode_pairs} resolution={item.resolution}
           size={item.size} className="mt-0.5" />
         <div className="mt-0.5 truncate text-xs text-muted-foreground">{item.source} · {relativeTime(item.created_at)}</div>
       </button>
