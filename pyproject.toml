@@ -28,6 +28,7 @@ web = [
     "httpx2>=0.1",
     "PyYAML>=6.0",
 ]
+agent = ["mcp>=1.2"]
 all = [
     "telethon>=1.36",
     "p115client==0.0.9.6.5.1",
@@ -37,11 +38,13 @@ all = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx2>=0.1",
+    "mcp>=1.2",
 ]
 
 [project.scripts]
 reelay = "reelay.main:main"
 reelay-web = "reelay.web:main"
+reelay-mcp = "reelay.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["reelay*"]
