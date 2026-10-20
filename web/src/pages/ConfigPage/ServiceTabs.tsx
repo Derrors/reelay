@@ -1,6 +1,6 @@
 /** 系统配置里的服务与运行参数：AI 与 TMDB、Telegram、115 请求限速、运行与安全。 */
-import { useState } from 'react';
-import { Bot, CircleAlert, CircleCheck, Film, Gauge, Info, List, Loader2, PlugZap, Send, ServerCog, ShieldCheck, Sparkles } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Bot, CircleAlert, CircleCheck, Film, Gauge, Info, Loader2, PlugZap, RefreshCw, Send, ServerCog, ShieldCheck, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { ai, type ILlmTest } from '@/api/ai';
 import { Panel } from '@/components/app/Panel';
@@ -40,44 +40,61 @@ const EFFORTS = [
 ];
 const errorText = (e: unknown) => (e instanceof Error ? e.message : '请求失败');
 
-/** 模型：可以手填，也可以从接口获取列表后选择；测试用表单里当前的地址、模型与推理强度（不必先保存）。 */
+/** 模型：只能从接口返回的列表里选。打开页面时用已保存的密钥自动获取一次；改了接口地址后点「刷新列表」。
+ * 测试用表单里当前的地址、模型与推理强度（不必先保存）。 */
 function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; keySet: boolean }) {
-  const [models, setModels] = useState<string[] | null>(null);
+  // url：这份列表是用哪个接口地址取的；地址改了就提示刷新
+  const [list, setList] = useState<{ url: string; models: string[]; error?: string } | null>(null);
   const [loading, setLoading] = useState<'models' | 'test' | null>(null);
   const [result, setResult] = useState<ILlmTest | null>(null);
   const form = { base_url: text(llm.base_url).trim(), model: text(llm.model).trim(), reasoning_effort: text(llm.reasoning_effort) };
+  const current = form.model;
 
-  const fetchModels = async () => {
+  const load = (url: string) => ai.llmModels({ base_url: url })
+    .then(r => setList({ url, models: r.models }))
+    .catch((e: unknown) => setList({ url, models: [], error: errorText(e) }));
+
+  const initialUrl = useRef(form.base_url);
+  useEffect(() => {
+    if (keySet) void load(initialUrl.current);
+  }, [keySet]);
+
+  const refresh = async () => {
     setLoading('models');
-    try {
-      const r = await ai.llmModels(form);
-      setModels(r.models);
-      toast.success(r.models.length ? `获取到 ${r.models.length} 个模型` : '接口没有返回模型，请手动填写');
-    } catch (e) {
-      toast.error(errorText(e));
-    } finally {
-      setLoading(null);
-    }
+    await load(form.base_url);
+    setLoading(null);
   };
   const test = async () => {
     setLoading('test'); setResult(null);
     try { setResult(await ai.llmTest(form)); } catch (e) { toast.error(errorText(e)); } finally { setLoading(null); }
   };
 
+  const models = list?.models ?? [];
+  const options = [
+    // 已保存的模型不在列表里（或列表还没取到）时也要显示出来，但只能从列表里换成别的
+    ...(current && !models.includes(current)
+      ? [{ value: current, label: list?.models.length ? `${current}（接口列表里没有）` : current }] : []),
+    ...models.map(m => ({ value: m, label: m })),
+  ];
+  const stale = list !== null && list.url !== form.base_url;
+  const hint = !keySet ? '先保存 AI 接口密钥，再从接口获取可用的模型。'
+    : list === null ? '正在获取模型列表…'
+    : list.error ? `获取模型列表失败：${list.error}`
+    : stale ? '接口地址改了，点「刷新列表」获取这个地址的模型。'
+    : models.length ? `接口提供 ${models.length} 个模型，从中选择。` : '接口没有返回任何模型。';
+
   return (
     <>
-      <Field label="模型" hint={models?.length
-        ? `已获取 ${models.length} 个模型，点输入框可选择，也可以手动填写。`
-        : '可以手动填写，或用当前的接口地址与已保存的密钥获取模型列表。'}>
+      <Field label="模型" hint={<span className={list?.error ? 'text-destructive' : undefined}>{hint}</span>}>
         <div className="flex gap-2">
-          <Input className="bg-card" list="llm-models" value={text(llm.model)}
-            onChange={e => { setField('llm', 'model', e.target.value); setResult(null); }} />
-          <Button variant="outline" disabled={!keySet || loading !== null} onClick={() => void fetchModels()}
+          <Select className="min-w-0 flex-1" value={current} options={options} disabled={!models.length}
+            placeholder={current ? undefined : '请选择模型'}
+            onValueChange={v => { setField('llm', 'model', v); setResult(null); }} />
+          <Button variant="outline" disabled={!keySet || loading !== null} onClick={() => void refresh()}
             title={keySet ? undefined : '请先保存 AI 接口密钥'}>
-            {loading === 'models' ? <Loader2 className="animate-spin" /> : <List />}获取模型
+            {loading === 'models' ? <Loader2 className="animate-spin" /> : <RefreshCw />}刷新列表
           </Button>
         </div>
-        <datalist id="llm-models">{(models ?? []).map(m => <option key={m} value={m} />)}</datalist>
       </Field>
       <Field label="推理强度" hint="对支持推理的模型生效：强度越高越慢、输出 token 越多。不支持的模型可能报错，改了先测试一下。">
         <Select value={text(llm.reasoning_effort)} options={EFFORTS}
