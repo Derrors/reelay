@@ -130,6 +130,16 @@ class TestDirectoryReads(unittest.TestCase):
         self.assertEqual(result['path'][-1]['name'],'电影')
         self.assertEqual(result['via'],'oauth')
 
+    def test_open_list_uses_short_field_names(self):
+        # 开放接口实际返回的字段：fid / fn / fc（0 目录、1 文件）/ pid；path 是 cid / name
+        client=Mock()
+        client.fs_files_open.return_value={'state':True,'count':3,'path':[{'cid':'0','name':'根目录'},{'cid':'42','name':'电影'}],'data':[
+            {'fid':'101','fn':'国产电影','fc':'0','pid':'42'},{'fid':'102','fn':'欧美电影','fc':'0','pid':'42'},
+            {'fid':'103','fn':'a.mkv','fc':'1','pid':'42'}]}
+        result=browse_dirs(SimpleNamespace(has_oauth=True,open_client=lambda:client),'42')
+        self.assertEqual([(i['id'],i['name'],i['pid']) for i in result['items']],[('101','国产电影','42'),('102','欧美电影','42')])
+        self.assertEqual(result['path'],[{'id':'0','name':'根目录'},{'id':'42','name':'电影'}])
+
     def test_expired_credentials_and_missing_directory(self):
         client=Mock()
         credentials=SimpleNamespace(has_oauth=False,cookie_client=lambda:client)

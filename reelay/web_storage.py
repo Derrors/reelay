@@ -38,8 +38,13 @@ def browse_dirs(credentials, cid: str, offset: int = 0, limit: int = 100) -> dic
             breadcrumbs = [{'id': '0', 'name': '根目录'}]
         items = []
         for item in data:
-            # web 列表目录无 fid，cid 为目录ID；open 列表 file_category=0。
-            if 'file_category' in item:
+            # web 列表：目录没有 fid，cid 是目录 ID。开放接口列表：fid / fn / fc（fc=0 是目录）；
+            # 旧写法 file_id / file_name / file_category 也认。
+            if 'fc' in item:
+                is_dir = str(item['fc']) == '0'
+                fid, name = item.get('fid'), item.get('fn')
+                pid = item.get('pid', cid)
+            elif 'file_category' in item:
                 is_dir = str(item['file_category']) == '0'
                 fid, name = item.get('file_id'), item.get('file_name')
                 pid = item.get('parent_id', cid)
