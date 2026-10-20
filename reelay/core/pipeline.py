@@ -208,6 +208,15 @@ class Pipeline:
     async def _emit(self, event: str, ctx: PipelineContext, *, persist: bool = True) -> None:
         if event == "on_failed":
             ctx.ns("task")["failures"] = ctx.ns("task").get("failures", 0) + 1
+        if event in ("on_failed", "on_saved"):
+            # 任务结果也写进运行日志：排查时不必去数据库里翻轨迹；原因是轨迹的最后一行（去掉时间）
+            title = (ctx.parsed.title if ctx.parsed else None) or "未识别片名"
+            reason = ctx.trail[-1][9:] if ctx.trail else ""
+            if event == "on_saved":
+                log.info("任务 %s《%s》已入库", ctx.task_id, title)
+            else:
+                log.warning("任务 %s《%s》%s：%s", ctx.task_id, title,
+                            "待人工处理" if ctx.state == TaskState.NEED_MANUAL else "失败", reason[:200])
         for listener in self.reg.listeners_for(event, self.task_config(ctx)):
             self._stage("event", event, self.reg.extension_name(listener), ctx)
         if persist:
@@ -478,6 +487,8 @@ class Pipeline:
             if ns["phase"] == "ready" and not await self._recheck_manifest(ctx, storage, provider_name):
                 return
 
+        # Worker 后台自动复查（见 Worker.recheck_transfers）：仍未核验通过时已通知过，不再重复通知
+        auto_recheck = ns.pop("auto_recheck_run", False)
         try:
             if ns["phase"] == "ready":
                 ns["phase"] = "receiving"
@@ -504,8 +515,11 @@ class Pipeline:
         except Exception as exc:
             ctx.state = TaskState.NEED_MANUAL
             ctx.log(f"转存结果待核验，不自动重发：{exc}")
-            await self._notify_all(ctx, "transfer_uncertain", persist=False)
-            await self._emit("on_failed", ctx, persist=False)
+            if not auto_recheck:
+                await self._notify_all(ctx, "transfer_uncertain", persist=False)
+                await self._emit("on_failed", ctx, persist=False)
+            else:
+                log.info("任务 %s 自动复查仍未核验通过：%s", ctx.task_id, exc)
             self.store.save_task(ctx, error=str(exc))
             return  # 保留资源占位，防止另一条消息绕过核验再次转存
 

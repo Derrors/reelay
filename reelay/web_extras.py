@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -19,8 +20,10 @@ from pydantic import BaseModel, Field
 from .core import secret_store
 from .core.media import multi_season
 
-# 会话保存在内存即可：单实例个人工具，重启后要求重新登录。token -> 过期时间
-_SESSIONS: dict[str, float] = {}
+
+def _session_key(token: str) -> str:
+    """管理台登录会话存在数据库里（Web 重启后已打开的页面不用重新登录），只存 token 的 SHA-256。"""
+    return hashlib.sha256(token.encode()).hexdigest()
 # 登录失败记录：客户端地址 -> 最近失败时间；窗口内失败过多则拒绝尝试。
 _FAILURES: dict[str, list[float]] = {}
 LOGIN_WINDOW = 300
@@ -53,14 +56,14 @@ def auth_enabled() -> bool:
     return bool(secret_store.get("web_password"))
 
 
-def _session_valid(token: str | None) -> bool:
+def _session_valid(store, token: str | None) -> bool:
     if not token:
         return False
-    expires = _SESSIONS.get(token)
+    expires = store.web_session_expires(_session_key(token))
     if expires is None:
         return False
     if expires < time.time():
-        _SESSIONS.pop(token, None)
+        store.web_session_drop(_session_key(token))
         return False
     return True
 
@@ -70,7 +73,8 @@ def is_authenticated(request: Request) -> bool:
         return True
     auth = request.headers.get("authorization", "")
     bearer = auth[7:] if auth.startswith("Bearer ") else None
-    return _session_valid(request.cookies.get(_COOKIE)) or _session_valid(bearer)
+    store = request.app.state.store
+    return _session_valid(store, request.cookies.get(_COOKIE)) or _session_valid(store, bearer)
 
 
 async def require_auth(request: Request) -> bool:
@@ -130,19 +134,11 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
             _FAILURES[client] = [*recent, now]
             raise HTTPException(status_code=401, detail="密码错误")
         _FAILURES.pop(client, None)
-        for token, expires in list(_SESSIONS.items()):
-            if expires < now:
-                _SESSIONS.pop(token, None)
-        token = secrets.token_urlsafe(32)
-        _SESSIONS[token] = now + _SESSION_TTL
-        resp = JSONResponse({"ok": True, "auth_required": True})
-        resp.set_cookie(_COOKIE, token, httponly=True, samesite="lax",
-                        max_age=_SESSION_TTL, path="/")
-        return resp
+        return _new_session({"ok": True, "auth_required": True})
 
     def _new_session(body: dict) -> JSONResponse:
         token = secrets.token_urlsafe(32)
-        _SESSIONS[token] = time.time() + _SESSION_TTL
+        store.web_session_add(_session_key(token), time.time() + _SESSION_TTL)
         resp = JSONResponse(body)
         resp.set_cookie(_COOKIE, token, httponly=True, samesite="lax", max_age=_SESSION_TTL, path="/")
         return resp
@@ -163,7 +159,7 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
         if "web_password" not in payload.changes:
             return status
         # 改了或清除了 Web 密码：其他已登录的会话全部失效，当前页面换一个新会话继续使用
-        _SESSIONS.clear()
+        store.web_session_drop()
         if not auth_enabled():
             return status
         return _new_session(status)
@@ -172,7 +168,7 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
     async def logout(request: Request):
         token = request.cookies.get(_COOKIE)
         if token:
-            _SESSIONS.pop(token, None)
+            store.web_session_drop(_session_key(token))
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(_COOKIE, path="/")
         return resp

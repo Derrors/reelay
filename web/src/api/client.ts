@@ -25,6 +25,22 @@ export class ApiError extends Error {
   }
 }
 
+const unauthorizedListeners = new Set<() => void>();
+
+/**
+ * 订阅「登录已失效」：任一接口返回 401 时通知。App 据此切回登录页，各页面随之卸载、停止轮询，
+ * 而不是在后台一直拿着失效的会话请求。返回取消订阅函数。
+ */
+export function onUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener);
+  return () => unauthorizedListeners.delete(listener);
+}
+
+/** 接口返回 401 时调用（登录接口本身的 401 是密码错误，不算）。 */
+export function reportUnauthorized(): void {
+  for (const listener of [...unauthorizedListeners]) listener();
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(path), {
     ...init,
@@ -42,6 +58,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // 非 JSON 错误响应，保留通用文案
     }
+    if (response.status === 401) reportUnauthorized();
     throw new ApiError(message, response.status);
   }
   return (await response.json()) as T;

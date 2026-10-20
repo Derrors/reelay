@@ -1158,7 +1158,6 @@ class TestWebAuthGuard(unittest.TestCase):
         self.env.start()
         self.loader = patch("reelay.web.load_env")
         self.loader.start()
-        web_extras._SESSIONS.clear()
         web_extras._FAILURES.clear()
         (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
                                           encoding="utf-8")
@@ -1192,15 +1191,24 @@ class TestWebAuthGuard(unittest.TestCase):
         self.assertGreater(checked, 30)
 
     def test_login_grants_access_and_forged_or_expired_sessions_fail(self):
-        from reelay import web_extras
         self.assertEqual(self.client.get("/api/events", cookies={"reelay_session": "forged"}).status_code, 401)
         self.assertEqual(self.client.get("/api/auth/status").json(), {"auth_required": True, "authenticated": False})
         self.assertEqual(self.client.post("/api/auth/login", json={"password": "pw"}).status_code, 200)
         self.assertEqual(self.client.get("/api/auth/status").json()["authenticated"], True)
         self.assertEqual(self.client.get("/api/config").status_code, 200)
-        for token in web_extras._SESSIONS:
-            web_extras._SESSIONS[token] = time.time() - 1
+        # 会话存在数据库里：Web 重启（同一数据目录新建应用）后仍然有效
+        from reelay.web import create_app
+        cookie = self.client.cookies.get("reelay_session")
+        stored = [r["token_hash"] for r in self.app.state.store._conn.execute("SELECT * FROM web_sessions")]
+        self.assertEqual(len(stored), 1)
+        self.assertNotIn(cookie, stored)  # 数据库里只有哈希
+        with TestClient(create_app(data_dir=Path(self.temp.name))) as restarted:
+            restarted.cookies.set("reelay_session", cookie)
+            self.assertEqual(restarted.get("/api/config").status_code, 200)
+        with self.app.state.store._conn as conn:
+            conn.execute("UPDATE web_sessions SET expires_at=?", (time.time() - 1,))
         self.assertEqual(self.client.get("/api/config").status_code, 401)
+        self.assertEqual(list(self.app.state.store._conn.execute("SELECT * FROM web_sessions")), [])
 
     def test_login_is_throttled_after_repeated_failures(self):
         codes = [self.client.post("/api/auth/login", json={"password": "bad"}).status_code for _ in range(6)]

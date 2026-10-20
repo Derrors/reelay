@@ -221,7 +221,6 @@ class TestBootstrap(unittest.TestCase):
 @unittest.skipIf(TestClient is None, "未安装 web 可选依赖")
 class TestSettingsApi(unittest.TestCase):
     def setUp(self):
-        from reelay import web_extras
         from reelay.web import create_app
         self.env = patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "tmdb-key"}, clear=True)
         self.env.start()
@@ -229,7 +228,6 @@ class TestSettingsApi(unittest.TestCase):
         root = Path(self.temp.name)
         (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
                                           encoding="utf-8")
-        web_extras._SESSIONS.clear()
         self.app = create_app(data_dir=root)
         self.client = TestClient(self.app)
         self.client.__enter__()

@@ -533,8 +533,12 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([x['id'] for x in self.cloud.children(season)], [existing['id']])
 
     async def test_strm_files_point_to_signed_redirect(self):
+        from reelay.core import paths, strm as strm_secret
         from reelay.core.strm import sign
         from reelay.plugins.strm import StrmGenerator
+        # 签名密钥写在临时目录：不能在项目的 data/ 下生成 strm.secret
+        strm_secret.use_secret_file(Path(self.tempdir.name) / 'strm.secret')
+        self.addCleanup(strm_secret.use_secret_file, paths.STRM_SECRET)
         strm = StrmGenerator()
         strm._auth = self.credentials
         self.reg.add_hook(strm)
@@ -640,6 +644,46 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute(ctx)).state, TaskState.DONE)
         self.assertEqual((await self.execute(other)).state, TaskState.SKIPPED)
         self.assertEqual(len(self.cloud.receives()), 1)
+
+    async def test_late_landing_is_rechecked_automatically_without_repeating_notices(self):
+        import time
+        from reelay.core.worker import RECHECK_FIRST_SEC, RECHECK_WINDOW_SEC
+        self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
+        self.cloud.receive_mode['share'] = 'partial'
+        ctx = self.task(episodes=(1, 2))
+        with self.assertLogs('reelay.pipeline', 'WARNING') as logs:
+            manual = await self.execute(ctx)
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        self.assertTrue(any(f'任务 {ctx.task_id}' in line and '待人工处理' in line for line in logs.output))
+        outbox = lambda: self.store._conn.execute('SELECT COUNT(*) FROM outbox').fetchone()[0]  # noqa: E731
+        notices = outbox()
+        worker, now = Worker(self.pipeline, self.store), time.time()
+        self.assertEqual(await worker.recheck_transfers(now), 0)  # 还没到 5 分钟
+        first = now + RECHECK_FIRST_SEC + 1
+        self.assertEqual(await worker.recheck_transfers(first), 1)
+        self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.QUEUED)
+        self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)  # 还没到齐
+        self.assertEqual(outbox(), notices)  # 已经通知过，不再重复
+        self.assertEqual(await worker.recheck_transfers(first + 1), 0)  # 间隔翻倍
+        stage = manual.ns('storage')['manifest']['staging_cid']
+        self.cloud.add(self.cloud.shares['share'][1], stage)  # 115 在后台落地了剩下的文件
+        self.assertEqual(await worker.recheck_transfers(first + 2 * RECHECK_FIRST_SEC + 1), 1)
+        with self.assertLogs('reelay.pipeline', 'INFO') as logs:
+            done = await self.execute(ctx)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertTrue(any(f'任务 {ctx.task_id}' in line and '已入库' in line for line in logs.output))
+        self.assertEqual(len(self.cloud.receives()), 1)
+        self.assertTrue(any('自动只读核验转存（第 2 次）' in line for line in done.trail))
+        # 24 小时仍未核验通过：停止自动复查
+        self.cloud.add_share('other', 'S01E05.mkv', 'S01E06.mkv')
+        self.cloud.receive_mode['other'] = 'partial'
+        stuck = self.task('other', title='另一部', episodes=(5, 6))
+        await self.execute(stuck)
+        late = time.time() + RECHECK_WINDOW_SEC + 10
+        self.assertEqual(await worker.recheck_transfers(late), 0)
+        stuck = self.store.get_task(stuck.task_id)
+        self.assertEqual((stuck.state, stuck.ns('storage')['auto_recheck']['gave_up']), (TaskState.NEED_MANUAL, True))
+        self.assertEqual(await worker.recheck_transfers(late + RECHECK_WINDOW_SEC), 0)
 
     async def test_corrupt_landed_content_is_not_committed_as_success(self):
         self.cloud.add_share('share', 'S01E01.mkv')

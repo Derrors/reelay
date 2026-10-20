@@ -25,17 +25,18 @@ interface LogLine {
   continued: boolean;
 }
 
-// 后端格式：%(asctime)s %(levelname)s %(name)s | %(message)s，时间为 HH:MM:SS
-const LINE_RE = /^(?:\d{4}-\d{2}-\d{2}[ T])?(\d{2}:\d{2}:\d{2})(?:[.,]\d+)?\s+(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\s+(\S+)\s+\|\s?(.*)$/;
+// 后端格式：%(asctime)s %(levelname)s %(name)s | %(message)s，时间为 YYYY-MM-DD HH:MM:SS（旧日志只有 HH:MM:SS）
+const LINE_RE = /^(?:\d{4}-(\d{2}-\d{2})[ T])?(\d{2}:\d{2}:\d{2})(?:[.,]\d+)?\s+(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\s+(\S+)\s+\|\s?(.*)$/;
 
 function parse(lines: string[]): LogLine[] {
   let level: Level = 'INFO';
   return lines.map((raw, key) => {
     const m = LINE_RE.exec(raw);
     if (!m) return { key, time: '', level, logger: '', message: raw, continued: true };
-    const name = m[2];
+    const name = m[3];
     level = name === 'CRITICAL' ? 'ERROR' : name === 'WARN' ? 'WARNING' : (name as Level);
-    return { key, time: m[1], level, logger: m[3], message: m[4], continued: false };
+    // 显示「月-日 时:分:秒」，跨天的日志也分得清
+    return { key, time: m[1] ? `${m[1]} ${m[2]}` : m[2], level, logger: m[4], message: m[5], continued: false };
   });
 }
 
@@ -187,7 +188,7 @@ export default function LogsPage() {
             const style = LEVEL_STYLE[line.level];
             return (
               <div key={line.key} className={cn('flex gap-3 px-4 py-px hover:bg-foreground/[0.04]', style.row)}>
-                <span className="w-[8ch] shrink-0 tabular-nums text-muted-foreground/80">{line.time}</span>
+                <span className="w-[14ch] shrink-0 tabular-nums text-muted-foreground/80">{line.time}</span>
                 <span className={cn('w-[5ch] shrink-0 font-semibold', line.continued ? 'opacity-0' : style.text)}>
                   {line.continued ? '' : style.label}
                 </span>

@@ -33,13 +33,22 @@ from .control.panel import ControlPanel
 SWEEP_INTERVAL_SEC = 3600
 
 
+# 运行日志按大小轮转：单个文件最多 10 MB，保留 5 个旧文件（reelay.log.1 … .5）
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 5
+# 第三方库的 INFO 日志（Telegram 每次拉取更新、每个 HTTP 请求）量大且没有排查价值，只记警告以上
+QUIET_LOGGERS = ("telethon", "httpx", "httpx2", "httpcore", "openai")
+
+
 def _setup_log(*, to_file: bool) -> None:
     """日志级别取系统配置 runtime.log_level（重启生效）；正常运行时同时写入 data/reelay.log 供管理台查看。"""
+    from logging.handlers import RotatingFileHandler
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     level = "INFO"
     if to_file:
         paths.LOG.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(paths.LOG, encoding="utf-8"))
+        handlers.append(RotatingFileHandler(paths.LOG, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+                                            encoding="utf-8"))
         try:
             level = load_config()["runtime"]["log_level"]
         except ValueError:
@@ -47,9 +56,11 @@ def _setup_log(*, to_file: bool) -> None:
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%Y-%m-%d %H:%M:%S",
         handlers=handlers,
     )
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 async def _run_dry() -> int:

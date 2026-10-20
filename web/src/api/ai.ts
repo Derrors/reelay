@@ -1,7 +1,7 @@
 // ===== AI 能力：审批洞察、调用记录、一句话规则、订阅、收件箱建议、来源接入与质量、媒体库问答 =====
 // AI 起草的内容（规则、来源配置）只返回草案与改动清单，写入仍走带版本号的 saveSections，由用户确认。
 import type { IAdvice } from '@/lib/types';
-import { apiUrl, ApiError } from './client';
+import { apiUrl, ApiError, reportUnauthorized } from './client';
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(apiUrl(path), {
@@ -16,7 +16,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       if (typeof detail === 'string') msg = detail;
       else if (Array.isArray(detail)) msg = detail.map((x: { msg?: string }) => x.msg ?? '输入无效').join('；');
     } catch { /* 非 JSON 响应沿用状态码 */ }
-    if (r.status === 401) msg = '登录已失效，请重新登录控制台';
+    if (r.status === 401) {
+      msg = '登录已失效，请重新登录控制台';
+      reportUnauthorized();
+    }
     throw new ApiError(msg, r.status);
   }
   return r.json() as Promise<T>;

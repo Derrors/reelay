@@ -5,7 +5,9 @@
 
 - 自动重试写入 ``not_before``，到期后才会被领取，退避期间不占用并发槽；
 - 115 cookie 失效或缺失时暂停转存/整理的领取（解析照常），只告警一次；
-  凭证恢复后自动继续并发送恢复通知。任务不会因鉴权失效耗尽重试次数。
+  凭证恢复后自动继续并发送恢复通知。任务不会因鉴权失效耗尽重试次数；
+- 转存请求已发出、暂存目录还没到齐而转为待人工的任务，后台按退避间隔自动只读核验（见 ``recheck_transfers``）：
+  115 在后台落地文件有时要十几分钟，到齐后自动入库，并释放它占着的集，排在后面的任务随之继续。
 """
 
 from __future__ import annotations
@@ -28,6 +30,11 @@ STORAGE_STATES = (TaskState.QUEUED, TaskState.STORED)
 AUTH_ALERT = "p115_auth"
 # 115 凭证探活间隔（秒）；凭证失效暂停转存期间固定 30 秒探活，恢复后自动继续
 AUTH_CHECK_SEC = 300
+# 转存结果待核验的任务：首次在转为待人工 5 分钟后自动复查，之后间隔翻倍（最长 1 小时），持续 24 小时
+RECHECK_FIRST_SEC = 300
+RECHECK_MAX_INTERVAL_SEC = 3600
+RECHECK_WINDOW_SEC = 86400
+RECHECK_SCAN_SEC = 60
 
 
 def is_auth_failure(message: str | None) -> bool:
@@ -50,6 +57,7 @@ class Worker:
         self._next_auth_check = 0.0
         self._dir_paths_revision: str | None = None  # 已记录目录路径的配置版本
         self._next_dir_paths = 0.0
+        self._next_recheck = 0.0
 
     async def run(self, *, drain: bool = False) -> None:
         self.store.acquire_worker()
@@ -133,11 +141,54 @@ class Worker:
                 await self.check_auth()
             if self._dir_paths_revision != self.pipeline.revision and time.time() >= self._next_dir_paths:
                 await self.record_dir_paths()
+            if not self.storage_paused and time.time() >= self._next_recheck:
+                self._next_recheck = time.time() + RECHECK_SCAN_SEC
+                try:
+                    await self.recheck_transfers()
+                except Exception as exc:  # noqa: BLE001 - 复查失败不影响主链路
+                    log.warning("自动复查待核验转存失败：%s", exc)
             try:
                 await self.pipeline.emit_daily()
             except Exception as exc:  # noqa: BLE001 - 日报失败不影响主链路
                 log.warning("每日系统事件发送失败：%s", exc)
             await asyncio.sleep(1)
+
+    async def recheck_transfers(self, now: float | None = None) -> int:
+        """转存请求已发出、核验时暂存目录没到齐的待人工任务：到点后放回队列做一次只读核验（不重发转存）。
+
+        复查记录在 storage.auto_recheck（since / count / next_at）。超过 24 小时仍未到齐就不再自动复查，
+        留给人工「核验转存」。返回本次放回队列的任务数。
+        """
+        now = time.time() if now is None else now
+        queued = 0
+        for row in self.store.list_by_state(TaskState.NEED_MANUAL, 500):
+            ctx = self.store.get_task(row["task_id"])
+            ns = ctx.ns("storage") if ctx else {}
+            if not ctx or ns.get("phase") != "receiving" or not ns.get("manifest"):
+                continue
+            record = ns.get("auto_recheck") or {}
+            since = record.get("since", row["updated_at"])
+            if record.get("gave_up") or now < record.get("next_at", since + RECHECK_FIRST_SEC):
+                continue
+            if now - since > RECHECK_WINDOW_SEC:
+                ns["auto_recheck"] = {**record, "since": since, "gave_up": True}
+                ctx.log("24 小时内自动复查都没有核验通过，停止自动复查，请到网盘确认后处理")
+                log.warning("任务 %s 自动复查 24 小时仍未核验通过，留给人工处理", ctx.task_id)
+                self.store.update_task_context(ctx, expected=TaskState.NEED_MANUAL, error=row["error"])
+                continue
+            count = record.get("count", 0) + 1
+            ns["auto_recheck"] = {"since": since, "count": count,
+                                  "next_at": now + min(RECHECK_FIRST_SEC * 2 ** count, RECHECK_MAX_INTERVAL_SEC)}
+            ns["auto_recheck_run"] = True
+            ctx.state = TaskState.QUEUED
+            ctx.log(f"自动只读核验转存（第 {count} 次），不重发转存请求")
+            try:
+                self.store.update_task_context(ctx, expected=TaskState.NEED_MANUAL)
+            except ValueError:
+                continue  # 期间被人工处理了
+            log.info("任务 %s 转存待核验，第 %d 次自动复查", ctx.task_id, count)
+            queued += 1
+        return queued
 
     async def check_auth(self) -> None:
         """探活 115 凭证并据此暂停/恢复转存；暂停期间缩短探活间隔以便尽快恢复。"""

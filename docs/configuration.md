@@ -177,7 +177,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `tmdb_api_key` | AI 与 TMDB | TMDB v3 API Key 或 v4 Read Access Token |
 | `telegram_api_id` / `telegram_api_hash` | Telegram | 个人账号的 Telegram API 凭证 |
 | `control_bot_token` | Telegram | 控制 Bot 的 token |
-| `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要。暴露到本机以外时必须设置；修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项即可恢复免登录 |
+| `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要。暴露到本机以外时必须设置；修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。登录会话保存在数据库里，有效期 7 天，Web 重启不影响。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项即可恢复免登录 |
 
 ## 运行文件位置
 
@@ -191,7 +191,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `data/userbot.session` / `data/controlbot.session` | 个人账号与控制 Bot 的 Telegram 会话 |
 | `data/115_credentials.json` | 115 cookie 与开放平台令牌 |
 | `data/strm.secret` | STRM 跳转地址的签名密钥，首次使用时生成 |
-| `data/reelay.log` | 主进程日志，管理台「运行日志」读取 |
+| `data/reelay.log` | 主进程日志，管理台「运行日志」读取；超过 10 MB 轮转为 `reelay.log.1` … `.5` |
 | `data/plugins/` | 外部扩展目录 |
 | `data/eval/` | 本地评测样本与报告 |
 

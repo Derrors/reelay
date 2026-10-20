@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, apiUrl, ApiError } from '@/api/client';
+import { api, apiUrl, ApiError, onUnauthorized } from '@/api/client';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -26,6 +26,18 @@ describe('request 错误处理', () => {
     const error = await api.dashboard().catch((err: unknown) => err);
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).message).toBe('body.password：Field required');
+  });
+
+  it('401 时通知登录已失效，其他错误不通知', async () => {
+    const listener = vi.fn();
+    const off = onUnauthorized(listener);
+    respond(409, { detail: 'x' });
+    await api.dashboard().catch(() => undefined);
+    expect(listener).not.toHaveBeenCalled();
+    respond(401, { detail: '未登录' });
+    await expect(api.dashboard()).rejects.toMatchObject({ status: 401 });
+    expect(listener).toHaveBeenCalledTimes(1);
+    off();
   });
 
   it('非 JSON 错误响应回退到通用文案', async () => {

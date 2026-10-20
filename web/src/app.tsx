@@ -8,6 +8,7 @@ import TasksPage from '@/pages/TasksPage/TasksPage';
 import LibraryPage from '@/pages/LibraryPage/LibraryPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 import { extras } from '@/api/extras';
+import { onUnauthorized } from '@/api/client';
 
 // 常用页面直接打包；统计页（echarts）、设置与工具页按需加载，控制首屏体积。
 const StatsPage = lazy(() => import('@/pages/StatsPage/StatsPage'));
@@ -26,6 +27,9 @@ export default function App() {
       .then((s) => setNeedAuth(s.auth_required && !s.authenticated))
       .catch(() => setNeedAuth(false));
   }, []);
+
+  // 会话失效（如改了密码、会话过期）：回到登录页，控制台各页面卸载后不再轮询；登录后回到原来的页面
+  useEffect(() => onUnauthorized(() => setNeedAuth(true)), []);
 
   if (needAuth === null) return null;
   if (needAuth) {

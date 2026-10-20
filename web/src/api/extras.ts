@@ -1,6 +1,6 @@
 // ===== 控制台增强 API：鉴权 / 日志 / 115 浏览 / 源测试 / 统计 =====
 import type { IParsedResource } from '@/lib/types';
-import { ApiError, apiUrl } from './client';
+import { ApiError, apiUrl, reportUnauthorized } from './client';
 
 function authHeaders(): Record<string, string> {
   return {}; // cookie 由浏览器自动携带
@@ -20,7 +20,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       else if (Array.isArray(detail)) msg = detail.map((x: { msg?: string }) => x.msg ?? '输入无效').join('；');
     } catch { /* 非JSON响应沿用状态码 */ }
     // 登录接口的 401 是“密码错误”，保留后端文案；其他接口的 401 表示会话失效
-    if (r.status === 401 && path !== 'auth/login') msg = '登录已失效，请重新登录控制台';
+    if (r.status === 401 && path !== 'auth/login') {
+      msg = '登录已失效，请重新登录控制台';
+      reportUnauthorized();
+    }
     throw new ApiError(msg, r.status);
   }
   return r.json() as Promise<T>;
