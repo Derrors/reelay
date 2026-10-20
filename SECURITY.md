@@ -21,4 +21,3 @@ Reelay 保存并使用 Telegram 会话、115 cookie / OAuth 令牌、LLM 与 TMD
 - 管理台默认只监听 `127.0.0.1`。暴露到其他设备时必须设置 `REELAY_WEB_PASSWORD`，并建议放在 HTTPS 反向代理之后。
 - `data/` 目录包含 session、凭证文件与数据库，权限应只对运行用户可读；不要放在共享或同步目录中。
 - 外部插件以 Reelay 进程权限运行，只加载你信任的代码。
-- STRM 跳转地址带 HMAC 签名，泄露 `.strm` 文件等同于泄露对应文件的播放权限；需要时可更换 `REELAY_STRM_SECRET` 使旧地址失效。

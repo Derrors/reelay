@@ -75,5 +75,5 @@ python -m reelay.main    # 监听 + 后台 Worker + 控制 Bot
 - 人工确认得多了，「监听来源」和总览会提示哪些来源可以改为自动转存；也可以对信任的来源直接改用 `approval_mode: auto`，配合 `decision: llm` 和自然语言 `preferences`，只把拿不准的资源留给人工——见 [配置参考](configuration.md)。
 - 配置了控制 Bot 后，直接给它发消息：「待审批里有什么」「我有哪些 4K 日本动画」「把《X》这几集都批了」。
 - 配置 TMDB，让分类、命名和 `[tmdbid=…]` 更准确。
-- 在「插件」页打开 STRM 生成，或用 [插件开发指南](plugins.md) 写自己的扩展。
+- 用 [插件开发指南](plugins.md) 写自己的扩展。
 - 通过 [MCP](../README.md#mcp) 让 Claude 等 agent 帮你查询和审批。

@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -29,7 +30,8 @@ LEGACY = {
     "tmdb": {"language": "en-US"},
     "daily_report": {"narrative": False},
     "episode_tracker": {"lookback_days": 14, "subscriptions": [{"title": "剧", "season": 1}]},
-    "plugins": {"strm": False},
+    "plugins": {"strm": False, "daily_report": True},  # strm 是已移除的内置插件
+    "strm": {"output_dir": "/media/strm"},
     "audit": {"level": "info"},  # 外部插件的旧配置：认不出归属，原样保留
 }
 
@@ -44,10 +46,10 @@ class TestFileStructure(unittest.TestCase):
         self.assertEqual(plugins["organizer"]["conflict"], "skip")
         self.assertIn("tv", plugins["organizer"]["naming"])  # 内置插件补齐默认设置
         self.assertEqual(plugins["dir_router"]["categories"]["tv"], {"剧集/全部": {}})
-        self.assertEqual(plugins["daily_report"], {"narrative": False})
+        self.assertEqual(plugins["daily_report"], {"enabled": True, "narrative": False})
         self.assertEqual(plugins["episode_tracker"], {"lookback_days": 14})
-        self.assertEqual(plugins["strm"], {"enabled": False})
-        for key in ("organize", "dir_router", "daily_report", "episode_tracker"):
+        self.assertNotIn("strm", plugins)  # 已移除的插件，旧设置丢弃
+        for key in ("organize", "dir_router", "daily_report", "episode_tracker", "strm"):
             self.assertNotIn(key, cfg)
         self.assertEqual(cfg["audit"], {"level": "info"})
 
@@ -65,13 +67,12 @@ class TestFileStructure(unittest.TestCase):
     def test_example_config_is_valid(self):
         cfg = load_config(Path(__file__).resolve().parents[1] / "config.example.yaml")
         discover().validate_config(cfg)
-        self.assertEqual(cfg["plugins"]["strm"], {"enabled": False})
 
     def test_new_sections_are_validated(self):
         for bad in ({"llm": {"base_url": "ftp://x"}}, {"llm": {"model": " "}}, {"tmdb": {"timeout": 0}},
                     {"telegram": {"owner_id": "abc"}}, {"runtime": {"concurrency": 0}},
                     {"runtime": {"log_level": "TRACE"}}, {"p115": {"share_qps": 0}},
-                    {"plugins": {"strm": {"enabled": "yes"}}}, {"plugins": {"strm": True, "x": 1}},
+                    {"plugins": {"organizer": {"enabled": "yes"}}}, {"plugins": {"organizer": True, "x": 1}},
                     {"system": {"defaults": {}}, "defaults": {}}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 normalize_config(bad)
@@ -80,9 +81,9 @@ class TestFileStructure(unittest.TestCase):
 
     def test_plugin_switch_and_field_paths(self):
         registry = discover()
-        strm = next(h for h in registry.hooks["after_save"] if h.name == "strm")
-        self.assertFalse(Registry.is_enabled(strm, normalize_config({})))
-        self.assertTrue(Registry.is_enabled(strm, normalize_config({"plugins": {"strm": {"enabled": True}}})))
+        opt_in = types.SimpleNamespace(name="opt_in", default_enabled=False)  # 默认关闭的扩展
+        self.assertFalse(Registry.is_enabled(opt_in, normalize_config({})))
+        self.assertTrue(Registry.is_enabled(opt_in, normalize_config({"plugins": {"opt_in": {"enabled": True}}})))
         catalog = registry.catalog(normalize_config({}))
         daily = next(x for x in catalog["events"] if x["name"] == "daily_report")
         self.assertEqual((daily["config_section"], daily["fields"][0]["path"]),
@@ -170,7 +171,7 @@ class TestBootstrap(unittest.TestCase):
     def test_environment_is_imported_once_and_web_changes_win(self):
         env = {"REELAY_LLM_API_KEY": "sk-old", "REELAY_LLM_MODEL": "m1", "REELAY_OWNER_ID": "42",
                "REELAY_TG_BACKFILL_MAX_DAYS": "3", "REELAY_115_SHARE_QPS": "0.5", "REELAY_WEB_PASSWORD": "pw",
-               "REELAY_115_COOKIES": "UID=1;CID=2", "REELAY_STRM_SECRET": "strm"}
+               "REELAY_115_COOKIES": "UID=1;CID=2"}
         bootstrap.prepare(self.data, env=env)
         cfg = load_config(self.data / "config.yaml")
         self.assertEqual((cfg["llm"]["model"], cfg["telegram"]["owner_id"], cfg["telegram"]["backfill_max_days"],
@@ -180,7 +181,6 @@ class TestBootstrap(unittest.TestCase):
         self.assertTrue(secrets.check_password("pw"))
         self.assertNotIn("sk-old", (self.data / "config.yaml").read_text(encoding="utf-8"))
         self.assertIn("UID=1", CredentialStore(self.data / "115_credentials.json").cookies)
-        self.assertEqual((self.data / "strm.secret").read_text(), "strm")
         # 管理台清除了密钥、改了模型：.env 没变就不会再覆盖回去
         secrets.update({"llm_api_key": None})
         path = self.data / "config.yaml"

@@ -22,7 +22,7 @@ system:
   # …其余系统配置
 plugins:
   organizer: {enabled: true, conflict: manual, naming: {...}}
-  strm: {enabled: false, output_dir: "", base_url: ""}
+  daily_report: {enabled: true, narrative: true}
   # …其余插件
 ```
 
@@ -143,7 +143,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 ## 插件配置（`plugins`）
 
-每个插件的设置在 `plugins.<插件名>` 下，`enabled` 是开关（不写时按插件默认：`strm` 默认关闭，其余默认开启）。没有设置项的插件（如 `tmdb_enrich`、`share_probe`、`failure_explainer`）只有开关。外部插件的设置同样放在这里，见 [插件开发指南](plugins.md)。
+每个插件的设置在 `plugins.<插件名>` 下，`enabled` 是开关（不写时按插件声明的默认状态，内置插件都默认开启）。没有设置项的插件（如 `tmdb_enrich`、`share_probe`、`failure_explainer`）只有开关。外部插件的设置同样放在这里，见 [插件开发指南](plugins.md)。
 
 ### 媒体库整理（`plugins.organizer`）与二级分类（`plugins.dir_router`）
 
@@ -164,8 +164,6 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `plugins.episode_tracker.track_all` | `true` | 自动跟踪最近有新集入库的剧，只报告断档和 TMDB 已播未入库的新集 |
 | `plugins.episode_tracker.lookback_days` | `30` | 自动跟踪的时间窗口 |
 | `plugins.daily_report.narrative` | `true` | 配置了 AI 时，日报开头附一段 AI 按统计事实写的提醒，数字版保留 |
-| `plugins.strm.output_dir` | — | STRM 输出目录（本机路径），启用 `strm` 时必填 |
-| `plugins.strm.base_url` | — | 媒体服务器能访问到的 Reelay 地址，如 `http://192.168.1.10:28080` |
 
 ## 密钥
 
@@ -190,7 +188,6 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `data/reelay.db` | SQLite 数据库（勿放在网络文件系统） |
 | `data/userbot.session` / `data/controlbot.session` | 个人账号与控制 Bot 的 Telegram 会话 |
 | `data/115_credentials.json` | 115 cookie 与开放平台令牌 |
-| `data/strm.secret` | STRM 跳转地址的签名密钥，首次使用时生成 |
 | `data/reelay.log` | 主进程日志，管理台「运行日志」读取；超过 10 MB 轮转为 `reelay.log.1` … `.5` |
 | `data/plugins/` | 外部扩展目录 |
 | `data/eval/` | 本地评测样本与报告 |
@@ -211,7 +208,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 旧版本的配置写在项目根目录的 `config.yaml`（或 `REELAY_CONFIG_PATH`、Docker 的 `/app/config/config.yaml`）与 `.env` 里。升级后主进程或管理台第一次启动时自动迁移，不需要手动操作：
 
-- 配置文件移到 `data/config.yaml`，原文件改名为 `*.migrated`；旧结构（系统配置在顶层、插件配置在 `organize` / `dir_router` / `strm` / `daily_report` / `episode_tracker` 等顶层键、`plugins` 只是开关）先备份为 `config.yaml.bak-日期`，再改写成 `system` / `plugins` 新结构。`episode_tracker.subscriptions` 移到 `system.subscriptions`。
-- `.env` 里的旧变量逐个导入：普通设置写入系统配置，密钥写入 `data/secrets.json`，`REELAY_115_COOKIES` 与开放平台令牌写入 115 凭证文件（文件里已有的不覆盖），`REELAY_STRM_SECRET` 写入 `data/strm.secret`。每个值只导入一次：之后在管理台改过或清除的不会被 `.env` 覆盖回去；`.env` 里换了新值会再导入一次。启动日志列出导入了哪些变量，之后可以从 `.env` 删掉它们。
+- 配置文件移到 `data/config.yaml`，原文件改名为 `*.migrated`；旧结构（系统配置在顶层、插件配置在 `organize` / `dir_router` / `daily_report` / `episode_tracker` 等顶层键、`plugins` 只是开关）先备份为 `config.yaml.bak-日期`，再改写成 `system` / `plugins` 新结构。`episode_tracker.subscriptions` 移到 `system.subscriptions`。
+- `.env` 里的旧变量逐个导入：普通设置写入系统配置，密钥写入 `data/secrets.json`，`REELAY_115_COOKIES` 与开放平台令牌写入 115 凭证文件（文件里已有的不覆盖）。每个值只导入一次：之后在管理台改过或清除的不会被 `.env` 覆盖回去；`.env` 里换了新值会再导入一次。启动日志列出导入了哪些变量，之后可以从 `.env` 删掉它们。
 - `REELAY_TG_SESSION`、`REELAY_CONTROL_BOT_SESSION`、`REELAY_115_OAUTH_FILE` 指向别处的文件会复制到 `data/`。`REELAY_DB_PATH` 指向别处时不自动搬（数据库与 WAL 文件要一起移动），启动会报错并给出移动命令。
 - 外部插件放在 `data/plugins/`（原 `REELAY_PLUGIN_DIRS`）；它们留在配置顶层的旧设置原样保留并在启动日志提示，请移到 `plugins.<插件名>` 下。

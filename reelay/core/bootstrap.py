@@ -6,8 +6,8 @@
    config/config.yaml）的配置复制过来，旧文件改名为 ``*.migrated``；
 2. 配置还是旧结构时先备份原文件（``config.yaml.bak-日期``），再写成 system / plugins 的新结构；
 3. 旧环境变量逐个导入：普通设置写入系统配置，密钥写入 secrets.json，115 的 cookie / token 写入凭证文件
-   （凭证文件里已有的不覆盖），STRM 签名密钥写入 strm.secret。每个变量记下导入时的值摘要：值没变就不再
-   导入，管理台改过或清除的设置不会被 .env 覆盖回去；.env 里换了新值会再导入一次；
+   （凭证文件里已有的不覆盖）。每个变量记下导入时的值摘要：值没变就不再导入，
+   管理台改过或清除的设置不会被 .env 覆盖回去；.env 里换了新值会再导入一次；
 4. 会话、凭证文件在旧变量指定的别处时复制到 data/；数据库在别处时不自动搬（WAL 文件同时搬不安全），
    报错并说明怎么移动。
 
@@ -73,13 +73,12 @@ FILE_ENV = {
     "REELAY_TG_SESSION": "userbot.session",
     "REELAY_CONTROL_BOT_SESSION": "controlbot.session",
     "REELAY_115_OAUTH_FILE": "115_credentials.json",
-    "REELAY_STRM_SECRET_FILE": "strm.secret",
 }
 # 已经写死、不再读取的变量：设置了只在启动日志里提示一次
 IGNORED_ENV = ("REELAY_CONFIG_PATH", "REELAY_DB_PATH", "REELAY_LOG_FILE", "REELAY_PLUGIN_DIRS",
                "REELAY_LLM_RETRIES", "REELAY_LLM_RETRY_DELAY", "REELAY_115_AUTH_CHECK_SEC",
                "REELAY_SWEEP_INTERVAL_SEC", "REELAY_115_COOKIE_QR_APP", "REELAY_115_OAUTH_LIFETIME_SEC",
-               "REELAY_115_OAUTH_REFRESH_ADVANCE_SEC")
+               "REELAY_115_OAUTH_REFRESH_ADVANCE_SEC", "REELAY_STRM_SECRET", "REELAY_STRM_SECRET_FILE")
 
 
 def _digest(value: str) -> str:
@@ -226,17 +225,6 @@ def _apply_credentials(data_dir: Path, env: dict[str, str], imported: dict[str, 
     return {name: _digest(value) for name, value in pending.items()}
 
 
-def _apply_strm(data_dir: Path, env: dict[str, str], imported: dict[str, str]) -> dict[str, str]:
-    value = env.get("REELAY_STRM_SECRET", "").strip()
-    if not value or imported.get("REELAY_STRM_SECRET") == _digest(value):
-        return {}
-    target = data_dir / "strm.secret"
-    if not target.exists():  # 已生成过的密钥不换：换了媒体服务器里已有的 .strm 会失效
-        _write_atomic(target, value, 0o600)
-        log.warning("REELAY_STRM_SECRET 已写入 %s", target)
-    return {"REELAY_STRM_SECRET": _digest(value)}
-
-
 def prepare(data_dir: str | Path | None = None, *, legacy_locations: bool | None = None,
             env: dict[str, str] | None = None, project_root: str | Path | None = None) -> None:
     """启动前调用。legacy_locations 默认只在使用默认 data/ 时查找旧位置的配置；旧位置在 project_root（默认项目根目录）下。
@@ -261,7 +249,6 @@ def prepare(data_dir: str | Path | None = None, *, legacy_locations: bool | None
             log.error("配置文件 %s 无效，暂不迁移与导入环境变量：%s", config, exc)
         marks.update(_apply_secrets(secrets, env, imported))
         marks.update(_apply_credentials(data_dir, env, imported))
-        marks.update(_apply_strm(data_dir, env, imported))
         if marks:
             secrets.mark_imported(marks)
             log.warning("已从环境变量导入：%s。之后以管理台的设置为准，可以从 .env 中删掉这些变量",

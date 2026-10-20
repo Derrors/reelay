@@ -7,8 +7,8 @@
 
 运行时内部表示把 ``system`` 平铺到顶层（``cfg["defaults"]`` 等），插件配置在
 ``cfg["plugins"][名称]``；只在读写文件时套上或拆掉 ``system``（见 ``to_file``）。
-旧版本的文件（系统配置在顶层、插件配置散在 ``organize`` / ``dir_router`` / ``strm`` 等顶层键、
-``plugins`` 只是布尔开关）读取时自动转换。密钥不在这里，见 ``core/secret_store.py``。
+旧版本的文件（系统配置在顶层、插件配置散在 ``organize`` / ``dir_router`` 等顶层键、
+``plugins`` 只是布尔开关）读取时自动转换；已移除的内置插件（STRM）的设置读取时丢弃。密钥不在这里，见 ``core/secret_store.py``。
 """
 from __future__ import annotations
 
@@ -76,8 +76,9 @@ PLUGIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "dir_router": {},
 }
 # 旧版本放在顶层的插件配置 → 插件名
-_LEGACY_PLUGIN_SECTIONS = {"organize": "organizer", "dir_router": "dir_router", "strm": "strm",
-                           "daily_report": "daily_report"}
+_LEGACY_PLUGIN_SECTIONS = {"organize": "organizer", "dir_router": "dir_router", "daily_report": "daily_report"}
+# 已移除的内置插件：旧配置里它们的设置（顶层或 plugins 下）读取时丢弃，保存时不再写回
+_REMOVED_PLUGINS = ("strm",)
 
 
 def migrate(data: dict) -> dict:
@@ -95,7 +96,10 @@ def migrate(data: dict) -> dict:
     if not isinstance(plugins, dict):
         raise ValueError("plugins 必须是对象")
     # 旧版本的 plugins 只是开关：{名: true/false}
-    plugins = {name: {"enabled": value} if type(value) is bool else value for name, value in plugins.items()}
+    plugins = {name: {"enabled": value} if type(value) is bool else value for name, value in plugins.items()
+               if name not in _REMOVED_PLUGINS}
+    for name in _REMOVED_PLUGINS:
+        data.pop(name, None)
     for old, name in _LEGACY_PLUGIN_SECTIONS.items():
         if old in data:
             section = data.pop(old)

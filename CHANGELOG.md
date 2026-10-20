@@ -36,14 +36,18 @@
 ### 变更
 
 - 配置与环境变量整理（升级时自动迁移，见 [配置参考](docs/configuration.md#从旧版本升级)）：
-  - 所有设置都能在管理台修改并与配置文件同步。配置文件固定为 `data/config.yaml`，分为 `system`（系统配置）与 `plugins.<插件名>`（插件开关 `enabled` 与插件自己的设置）。原来散在顶层的 `organize`、`dir_router`、`strm`、`daily_report`、`episode_tracker` 归入对应插件，订阅移到 `system.subscriptions`。
+  - 所有设置都能在管理台修改并与配置文件同步。配置文件固定为 `data/config.yaml`，分为 `system`（系统配置）与 `plugins.<插件名>`（插件开关 `enabled` 与插件自己的设置）。原来散在顶层的 `organize`、`dir_router`、`daily_report`、`episode_tracker` 归入对应插件，订阅移到 `system.subscriptions`。
   - 原来只能写在 `.env` 里的设置移进系统配置并在管理台提供表单：AI 接口地址与模型、TMDB 地址、Telegram 机主 ID 与补拉、主进程并发与日志级别、115 限速与风控冷却。设置页新增「AI 与 TMDB」「Telegram」「运行与安全」，「115 网盘」页增加请求限速。
   - 密钥（AI / TMDB key、Telegram API ID / Hash、控制 Bot Token、Web 登录密码）在管理台设置，单独保存在 `data/secrets.json`（权限 600），页面、接口与配置原文都不显示原值；Web 密码只存摘要，修改需输入当前密码，修改后其他会话失效。AI 与 TMDB 的地址和密钥改了立即生效，不用重启。
-  - 数据库、会话、115 凭证、STRM 密钥、日志与外部扩展目录固定放在 `data/` 下，不再提供配置；Docker 只需挂载数据卷 `/app/data`，外部扩展挂载到 `/app/data/plugins`。LLM 重试、凭证探活、审批扫描等内部参数改为固定值。环境变量只剩 Web 监听地址、端口与 MCP 只读开关。
+  - 数据库、会话、115 凭证、日志与外部扩展目录固定放在 `data/` 下，不再提供配置；Docker 只需挂载数据卷 `/app/data`，外部扩展挂载到 `/app/data/plugins`。LLM 重试、凭证探活、审批扫描等内部参数改为固定值。环境变量只剩 Web 监听地址、端口与 MCP 只读开关。
   - 旧版本的 `config.yaml`（项目根目录、`REELAY_CONFIG_PATH` 或 Docker 的 `/app/config`）首次启动时移进 `data/` 并改写为新结构（原文件先备份）；`.env` 里的旧变量逐个导入一次，之后在管理台改过的不会被 `.env` 覆盖回去。
   - 插件的 `ui_fields` 路径改为相对 `plugins.<插件名>`，读取用 `runtime.plugin_config`；外部插件留在配置顶层的旧设置会保留并在启动日志提示。`discover()` 新增 `plugin_dirs` 参数，`web.create_app()` 改为传 `data_dir`。
 - 运行日志带日期（`2026-10-20 19:08:12`），按大小轮转（单个 10 MB，保留 5 个旧文件）；Telethon 拉取更新、每个 HTTP 请求这类第三方 INFO 日志不再记录；任务入库、失败与转为待人工时各记一行（含片名与原因），排查时不必去任务轨迹里翻。
 - 管理台登录会话保存在数据库里（只存 token 的摘要），Web 重启后已打开的页面不用重新登录；会话失效时页面回到登录页并停止后台刷新，不再持续发出被拒绝的请求。
+
+### 移除
+
+- 内置的 STRM 生成插件、`/api/strm/p115/{pickcode}` 播放跳转接口与 `data/strm.secret` 签名密钥：先完善转存与整理主链路，之后再另行考虑。旧配置里的 `strm` 设置读取时丢弃，`.env` 里的 `REELAY_STRM_SECRET` 不再导入（启动日志提示可以删掉）；已生成的 `.strm` 文件会失效。
 
 ### 修复
 

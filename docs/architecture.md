@@ -16,7 +16,7 @@
                                     ┌─────────────── pending_approval ◀── ask ┤── skip ─▶ rejected / skipped
                                     │ 人工批准                                 │ save
                                     ▼                                          ▼
-            before_save（分类路由）─▶ 准备清单 ─▶ 转存（Storage）─▶ 读回核验 ─▶ after_save（整理、STRM）─▶ done
+            before_save（分类路由）─▶ 准备清单 ─▶ 转存（Storage）─▶ 读回核验 ─▶ after_save（整理）─▶ done
 ```
 
 ## 任务状态机

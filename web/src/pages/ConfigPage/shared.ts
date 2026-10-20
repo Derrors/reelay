@@ -117,7 +117,7 @@ export function sortHooks(items: IExtension[]): IExtension[] {
 /** 扩展设置在配置里的位置（plugins.<名>），用于判断是否有未保存的修改与撤销。 */
 export const extensionKeys = (x: IExtension) => [x.config_section ?? `plugins.${x.name}`];
 
-/** plugins.<名>.enabled 优先；未设置时用目录给出的默认状态（如 STRM 默认关闭）。 */
+/** plugins.<名>.enabled 优先；未设置时用目录给出的默认状态（扩展可声明默认关闭）。 */
 export const isEnabled = (x: IExtension, plugins: Obj) => {
   const value = obj(plugins[x.name]).enabled;
   return typeof value === 'boolean' ? value : x.enabled;

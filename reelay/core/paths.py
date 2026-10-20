@@ -21,15 +21,13 @@ SECRETS = DATA / SECRETS_NAME
 USERBOT_SESSION = DATA / "userbot.session"
 CONTROL_BOT_SESSION = DATA / "controlbot.session"
 CREDENTIALS_115 = DATA / "115_credentials.json"
-STRM_SECRET = DATA / "strm.secret"
 LOG = DATA / "reelay.log"
 PLUGINS = DATA / "plugins"
 EVAL = DATA / "eval"
 
 
 def use_data_dir(data_dir: Path) -> None:
-    """入口程序按数据目录设定进程级的文件位置：密钥、115 凭证与 STRM 签名密钥。须在 discover() 之前调用。"""
-    from . import auth115, secret_store, strm
+    """入口程序按数据目录设定进程级的文件位置：密钥与 115 凭证。须在 discover() 之前调用。"""
+    from . import auth115, secret_store
     secret_store.use(data_dir / SECRETS_NAME)
     auth115.reset_store(auth115.CredentialStore(data_dir / CREDENTIALS_115.name))
-    strm.use_secret_file(data_dir / STRM_SECRET.name)

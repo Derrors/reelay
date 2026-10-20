@@ -70,7 +70,7 @@ claude mcp add reelay -- /path/to/reelay/.venv/bin/python -m reelay.mcp_server
 reelay/
 ├── core/          # 内核：契约、管线、状态机与持久层、注册机、置信度、TMDB、115 凭证
 ├── providers/     # 内置 Provider：Telegram 源、LLM/规则解析、决策、115 存储、通知
-├── plugins/       # 内置扩展：分类路由、TMDB 补全、整理、STRM、日报、缺集追更
+├── plugins/       # 内置扩展：分类路由、TMDB 补全、整理、日报、缺集追更
 ├── control/       # Telegram 控制 Bot 与对话助手
 ├── web.py         # 管理 API（前端在 web/）
 ├── mcp_server.py  # MCP server

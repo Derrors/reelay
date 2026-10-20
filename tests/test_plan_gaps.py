@@ -1104,13 +1104,6 @@ class TestExternalPlugins(unittest.TestCase):
         plain = discover(plugin_dirs=[])
         self.assertNotIn("audit_hook", [h.name for h in plain.hooks.get("after_parse", [])])
 
-    def test_opt_in_extensions_default_disabled(self):
-        registry = discover()
-        names = [registry.extension_name(h) for h in registry.hooks_for("after_save", {})]
-        self.assertNotIn("strm", names)
-        self.assertIn("strm", [registry.extension_name(h)
-                               for h in registry.hooks_for("after_save", {"plugins": {"strm": {"enabled": True}}})])
-
 
 class TestEntrypointsLoadEnvFirst(unittest.TestCase):
     """主进程启动顺序：先加载 .env，再迁移（导入旧环境变量），再按数据目录加载密钥与凭证。"""
@@ -1154,7 +1147,7 @@ class TestWebAuthGuard(unittest.TestCase):
         from reelay.web import create_app
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.env = patch.dict(os.environ, {"REELAY_WEB_PASSWORD": "pw", "REELAY_STRM_SECRET": "s"}, clear=True)
+        self.env = patch.dict(os.environ, {"REELAY_WEB_PASSWORD": "pw"}, clear=True)
         self.env.start()
         self.loader = patch("reelay.web.load_env")
         self.loader.start()
@@ -1180,10 +1173,10 @@ class TestWebAuthGuard(unittest.TestCase):
                         .replace("{pickcode}", "abc")
 
     def test_every_non_public_api_route_requires_login(self):
-        from reelay.web_extras import PUBLIC_PATHS, PUBLIC_PREFIXES
+        from reelay.web_extras import PUBLIC_PATHS
         checked = 0
         for method, path in self.api_routes():
-            if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+            if path in PUBLIC_PATHS:
                 continue
             response = self.client.request(method, path)
             self.assertEqual(response.status_code, 401, f"{method} {path}")
@@ -1241,14 +1234,6 @@ class TestWebAuthGuard(unittest.TestCase):
 
     def test_health_hides_runtime_details_without_login(self):
         self.assertEqual(self.client.get("/api/health").json(), {"ok": True, "service": "reelay"})
-
-    def test_strm_redirect_requires_valid_signature(self):
-        from reelay.core.strm import sign
-        self.assertEqual(self.client.get("/api/strm/p115/abc?sig=bad", follow_redirects=False).status_code, 403)
-        fake = types.SimpleNamespace(download_url=lambda pickcode, user_agent=None: f"https://cdn/{pickcode}")
-        with patch("reelay.core.auth115.CredentialStore.cookie_client", return_value=fake):
-            response = self.client.get(f"/api/strm/p115/abc?sig={sign('abc')}", follow_redirects=False)
-        self.assertEqual((response.status_code, response.headers["location"]), (302, "https://cdn/abc"))
 
 
 if __name__ == "__main__":

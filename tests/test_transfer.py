@@ -532,30 +532,6 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done.state, TaskState.DONE)
         self.assertEqual([x['id'] for x in self.cloud.children(season)], [existing['id']])
 
-    async def test_strm_files_point_to_signed_redirect(self):
-        from reelay.core import paths, strm as strm_secret
-        from reelay.core.strm import sign
-        from reelay.plugins.strm import StrmGenerator
-        # 签名密钥写在临时目录：不能在项目的 data/ 下生成 strm.secret
-        strm_secret.use_secret_file(Path(self.tempdir.name) / 'strm.secret')
-        self.addCleanup(strm_secret.use_secret_file, paths.STRM_SECRET)
-        strm = StrmGenerator()
-        strm._auth = self.credentials
-        self.reg.add_hook(strm)
-        output = Path(self.tempdir.name) / 'strm'
-        self.cfg = {**self.cfg, 'plugins': {'strm': True},
-                    'strm': {'output_dir': str(output), 'base_url': 'http://nas:28080/'}}
-        self.pipeline = Pipeline(self.reg, self.store, self.cfg)
-        self.cloud.add_share('share', 'Show.S01E01.mkv')
-        with patch.dict(os.environ, {'REELAY_STRM_SECRET': 'secret'}):
-            done = await self.execute(self.task())
-            landed = int(done.ns('storage')['landed'][0]['id'])
-            expected = f'http://nas:28080/api/strm/p115/pc{landed}?sig={sign(f"pc{landed}")}'
-        self.assertEqual(done.state, TaskState.DONE)
-        target = output / '默认' / '剧集 (2026)' / 'Season 01' / '剧集 - S01E01.strm'
-        self.assertEqual(target.read_text(encoding='utf-8').strip(), expected)
-        self.assertEqual(done.ns('strm')['files'], ['默认/剧集 (2026)/Season 01/剧集 - S01E01.strm'])
-
     async def test_dedup_is_scoped_to_target_directory(self):
         self.cloud.add_share('share', 'S01E01.mkv')
         await self.execute(self.task())

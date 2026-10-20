@@ -170,9 +170,3 @@ plugins:
   daily_report:
     enabled: true
     narrative: true
-
-  # STRM 生成，默认关闭；开启时 output_dir 是本机目录，base_url 是媒体服务器能访问到的 Reelay 地址
-  strm:
-    enabled: false
-    # output_dir: /media/strm
-    # base_url: http://192.168.1.10:28080

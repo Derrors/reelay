@@ -12,7 +12,7 @@ Reelay 的主流程（监听 → 识别 → 转存整理）是固定骨架，所
 | 你想做的事 | 扩展点 | 例子 |
 | --- | --- | --- |
 | 同一件事换一种实现 | **Provider**（能力槽） | 新消息源、新通知渠道、另一种解析器或网盘 |
-| 在某个阶段前后插入处理，可能改数据或拦截 | **Hook**（钩子） | 补元数据、二次过滤、选目录、整理、生成 STRM |
+| 在某个阶段前后插入处理，可能改数据或拦截 | **Hook**（钩子） | 补元数据、二次过滤、选目录、整理 |
 | 某件事发生后旁路做点什么，不能挡主流程 | **Event**（事件） | 统计、日报、写外部索引、审计 |
 
 ## 加载方式
@@ -64,7 +64,7 @@ class MyListener: ...
 class MyHook:
     name = "my_hook"
     stage = "after_parse"   # before_parse / after_parse / before_save / after_save
-    order = 60              # 同一阶段内从小到大执行；内置：dir_router 10，tmdb_enrich 50，share_probe 60，organizer 20，strm 30
+    order = 60              # 同一阶段内从小到大执行；内置：dir_router 10，tmdb_enrich 50，share_probe 60，organizer 20
 
     async def run(self, ctx) -> bool:
         ...
@@ -79,7 +79,7 @@ class MyHook:
 | `before_save` | 任务结束为 skipped | 任务失败并按阶段重试（转存前置检查不能静默跳过） |
 | `after_save` | 任务转 need_manual | 记录整理错误，任务转 need_manual |
 
-`after_save` 运行时文件已经转存完成。只适用于某个存储 Provider 的整理类 Hook 应声明 `storage_provider = "p115"`，内核会拒绝把它用在其他 Provider 转存的任务上。只做附加产物（如 STRM）的 Hook 应自己捕获异常并返回 `True`，不要影响任务结果。
+`after_save` 运行时文件已经转存完成。只适用于某个存储 Provider 的整理类 Hook 应声明 `storage_provider = "p115"`，内核会拒绝把它用在其他 Provider 转存的任务上。只做附加产物（如生成媒体服务器索引文件）的 Hook 应自己捕获异常并返回 `True`，不要影响任务结果。
 
 ## Event
 

@@ -28,9 +28,8 @@ def _session_key(token: str) -> str:
 _FAILURES: dict[str, list[float]] = {}
 LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
-# 设置密码后仍可匿名访问的接口：登录相关、容器健康检查，以及自带签名的 STRM 跳转。
+# 设置密码后仍可匿名访问的接口：登录相关与容器健康检查。
 PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/status", "/api/health"}
-PUBLIC_PREFIXES = ("/api/strm/",)
 
 def _parse_size_gb(value: Any) -> float:
     """把 '1.46 GB' / '800 MB' / 字节数换算成 GB。"""
@@ -86,7 +85,7 @@ async def require_auth(request: Request) -> bool:
 async def api_guard(request: Request) -> None:
     """应用级依赖：除公开接口外，所有 /api/* 路由都要求登录（含 SSE）。"""
     path = request.url.path
-    if not path.startswith("/api/") or path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+    if not path.startswith("/api/") or path in PUBLIC_PATHS:
         return
     await require_auth(request)
 

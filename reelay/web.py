@@ -14,7 +14,7 @@ from typing import Any
 try:
     from fastapi import Depends, FastAPI, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+    from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - 仅在未装 web 依赖时触发
@@ -137,33 +137,6 @@ def create_app(
             return {"ok": True, "service": "reelay"}
         return {"ok": True, "service": "reelay", "runtime": store.health_status(),
                 "deliveries": store.delivery_counts()}
-
-    strm_cache: dict[tuple[str, str], tuple[float, str]] = {}
-
-    @app.get("/api/strm/p115/{pickcode}")
-    async def strm_redirect(pickcode: str, request: Request, sig: str = Query(default="")):
-        """STRM 播放跳转：校验签名后换取 115 直链并 302（直链与 User-Agent 绑定）。"""
-        import asyncio
-        import time
-        from .core.auth115 import get_store
-        from .core.strm import verify
-        if not verify(pickcode, sig):
-            raise HTTPException(status_code=403, detail="签名无效")
-        agent = request.headers.get("user-agent", "")
-        cached = strm_cache.get((pickcode, agent))
-        if cached and cached[0] > time.time():
-            return RedirectResponse(cached[1], status_code=302)
-        client = get_store().cookie_client()
-        if client is None:
-            raise HTTPException(status_code=503, detail="115 cookie 未配置")
-        try:
-            url = str(await asyncio.to_thread(client.download_url, pickcode, user_agent=agent))
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"获取 115 直链失败：{type(exc).__name__}") from exc
-        if len(strm_cache) > 512:
-            strm_cache.clear()
-        strm_cache[(pickcode, agent)] = (time.time() + 600, url)
-        return RedirectResponse(url, status_code=302)
 
     @app.get("/api/dashboard")
     async def dashboard():
