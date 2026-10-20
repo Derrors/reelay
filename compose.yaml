@@ -1,11 +1,15 @@
+# 默认拉取 GitHub Actions 发布的镜像（ghcr.io/derrors/reelay，支持 amd64 / arm64）。
+# 固定版本：在 .env 里写 REELAY_VERSION=0.3.0；不写时用 latest（最新正式版）。
+# 从源码构建：docker compose -f compose.yaml -f compose.build.yaml up -d --build
 services:
   worker:
-    image: reelay:local
-    build: .
+    image: ghcr.io/derrors/reelay:${REELAY_VERSION:-latest}
     init: true
     restart: unless-stopped
-    # .env 只剩部署参数；旧版本写在里面的设置首次启动时导入管理台
-    env_file: .env
+    # .env 只剩部署参数（可以没有）；旧版本写在里面的设置首次启动时导入管理台
+    env_file:
+      - path: .env
+        required: false
     volumes:
       # 数据库、配置、密钥、会话、115 凭证与日志都在这个数据卷里
       - reelay-data:/app/data
@@ -22,12 +26,13 @@ services:
     stop_grace_period: 120s
 
   web:
-    image: reelay:local
-    build: .
+    image: ghcr.io/derrors/reelay:${REELAY_VERSION:-latest}
     init: true
     command: ["python", "-m", "reelay.web"]
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       REELAY_WEB_HOST: 0.0.0.0
       REELAY_WEB_PORT: "28080"

@@ -4,12 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # 发布流程（release.yml）先调用这里跑完整检查
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

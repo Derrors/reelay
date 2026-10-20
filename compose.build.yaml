@@ -1,0 +1,13 @@
+# 从源码构建镜像，覆盖 compose.yaml 里发布的镜像：
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+# 国内网络可先构建并指定镜像源：
+#   docker compose -f compose.yaml -f compose.build.yaml build \
+#     --build-arg NPM_REGISTRY=https://registry.npmmirror.com/ \
+#     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+services:
+  worker:
+    image: reelay:local
+    build: .
+  web:
+    image: reelay:local
+    build: .

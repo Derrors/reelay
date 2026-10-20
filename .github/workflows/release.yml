@@ -1,0 +1,127 @@
+name: 发布
+
+# 推送版本标签（如 v0.3.0）时：跑完整 CI → 构建 amd64 / arm64 镜像推送到 GHCR → 创建 GitHub Release。
+# 手动运行（Actions 页「Run workflow」）只构建两个架构的镜像、不推送，用来在发版前验证镜像能构建。
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/derrors/reelay
+
+jobs:
+  version:
+    name: 核对版本号
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+      - name: 标签与代码中的版本号一致
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          project=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          package=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' reelay/__init__.py)
+          echo "标签 $tag，pyproject.toml $project，reelay/__init__.py $package"
+          if [ "$tag" != "$project" ] || [ "$tag" != "$package" ]; then
+            echo "::error::标签 v$tag 与代码中的版本号不一致，请先改好版本号再打标签"
+            exit 1
+          fi
+          grep -q "^## \[$tag\]" CHANGELOG.md || { echo "::error::CHANGELOG.md 缺少 ## [$tag] 一节"; exit 1; }
+
+  ci:
+    name: 持续集成
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    name: Docker 镜像
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+      - name: 准备 QEMU（构建 arm64）
+        uses: docker/setup-qemu-action@v4
+      - name: 准备 Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # v0.3.0 → 0.3.0、0.3、latest；预发布版本（如 v0.3.0-rc.1）只打自己的标签，不更新 latest
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=Reelay
+      - name: 登录 GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ github.event_name == 'push' && steps.meta.outputs.tags || 'reelay:release-check' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=release
+          cache-to: type=gha,scope=release,mode=max
+
+  release:
+    name: GitHub Release
+    if: github.event_name == 'push'
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # 发布说明取 CHANGELOG.md 中这个版本的一节，后面附上镜像地址
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "### Docker 镜像"
+            echo
+            echo '支持 linux/amd64 与 linux/arm64：'
+            echo
+            echo '```bash'
+            echo "docker pull $IMAGE:$version"
+            echo '```'
+            echo
+            echo "部署与升级见 [Docker 部署](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/deployment.md)。"
+          } >> notes.md
+          flags=()
+          case "$version" in *-*) flags+=(--prerelease) ;; esac
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --title "v$version" --notes-file notes.md --verify-tag "${flags[@]}"
+          fi

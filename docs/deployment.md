@@ -1,19 +1,22 @@
 # Docker 单机部署
 
-镜像使用 Python 3.12 与固定版本的 115 SDK，前端在 Node 构建阶段编译，运行镜像只包含 Python 服务和静态资源。Compose 启动一个监听/Worker 进程和一个 Web 管理进程；两者共享同一个本机 Docker 数据卷 `/app/data`，数据库、配置、密钥、会话、115 凭证与日志都在里面。不要把 SQLite/WAL 与 Worker 文件锁迁移到网络文件系统，也不要同时启动另一个消费同一数据库的 Worker。
+每个版本发布时，GitHub Actions 自动构建镜像并推送到 `ghcr.io/derrors/reelay`（linux/amd64 与 linux/arm64），标签为版本号（如 `0.3.0`）、次版本号（如 `0.3`）和 `latest`（最新正式版）。镜像使用 Python 3.12 与固定版本的 115 SDK，前端在 Node 构建阶段编译，运行镜像只包含 Python 服务和静态资源。Compose 启动一个监听/Worker 进程和一个 Web 管理进程；两者共享同一个本机 Docker 数据卷 `/app/data`，数据库、配置、密钥、会话、115 凭证与日志都在里面。不要把 SQLite/WAL 与 Worker 文件锁迁移到网络文件系统，也不要同时启动另一个消费同一数据库的 Worker。
 
 ## 首次启动
 
-配置与密钥都在管理台里填写，不需要事先编辑配置文件。
+配置与密钥都在管理台里填写，不需要事先编辑配置文件，也不需要下载源码，只要一个 `compose.yaml`（需要 Docker Compose v2.24 及以上）：
 
 ```bash
-cp .env.example .env          # 只有 Web 监听地址等部署参数
+mkdir reelay && cd reelay
+curl -fsSLO https://raw.githubusercontent.com/Derrors/reelay/main/compose.yaml
 mkdir -p deploy/plugins
-docker compose build   # 国内网络可加 --build-arg NPM_REGISTRY=https://registry.npmmirror.com/ --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+docker compose pull
 # 镜像以 UID 10001 运行；让数据卷可写。
 docker compose run --rm --no-deps --user root worker chown -R 10001:10001 /app/data /app/config
 docker compose up -d web
 ```
+
+默认使用 `latest`。要固定版本（便于回滚），在同目录的 `.env` 里写 `REELAY_VERSION=0.3.0`；`.env` 其余可写的部署参数见仓库里的 `.env.example`，没有 `.env` 也能启动。
 
 打开 <http://127.0.0.1:28080>：
 
@@ -33,7 +36,29 @@ Compose 默认只在宿主机回环地址开放 Web。设置登录密码后，�
 
 ### 从旧版本升级
 
-旧版本把配置放在 `deploy/config/config.yaml`、凭证写在 `.env`。保持 Compose 里 `./deploy/config:/app/config` 这一行和原来的 `.env` 不动，直接 `docker compose build && docker compose up -d`：首次启动时配置移进数据卷（原文件改名为 `config.yaml.migrated`），`.env` 里的设置和凭证导入管理台，日志会列出导入了哪些变量。确认管理台里的设置无误后，可以删掉 Compose 中的 `./deploy/config` 挂载和 `.env` 里除监听地址外的变量。详见 [配置参考](configuration.md#从旧版本升级)。
+旧版本把配置放在 `deploy/config/config.yaml`、凭证写在 `.env`，镜像在本机构建。换用新的 `compose.yaml`（保留其中 `./deploy/config:/app/config` 这一行，原来的 `.env` 不动），执行 `docker compose pull && docker compose up -d`：首次启动时配置移进数据卷（原文件改名为 `config.yaml.migrated`），`.env` 里的设置和凭证导入管理台，日志会列出导入了哪些变量。确认管理台里的设置无误后，可以删掉 Compose 中的 `./deploy/config` 挂载和 `.env` 里除监听地址外的变量。详见 [配置参考](configuration.md#从旧版本升级)。
+
+## 升级与回滚
+
+```bash
+docker compose pull     # 拉取 REELAY_VERSION 指定的版本（默认 latest）
+docker compose up -d    # 用新镜像重建两个容器，数据卷保留
+```
+
+升级前先看 [CHANGELOG](../CHANGELOG.md) 或 GitHub Release 的说明。数据库结构随版本升级后，旧版本程序会拒绝打开（提示升级 Reelay），所以回滚只适用于没有改动数据库结构的版本；稳妥的做法是升级前停止服务并备份数据卷，回滚时连同数据卷一起恢复，再在 `.env` 里把 `REELAY_VERSION` 改回原版本。
+
+## 从源码构建
+
+需要改代码或网络拉不到 GHCR 时，在仓库目录用 `compose.build.yaml` 覆盖镜像，在本机构建：
+
+```bash
+docker compose -f compose.yaml -f compose.build.yaml build \
+  --build-arg NPM_REGISTRY=https://registry.npmmirror.com/ \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple   # 国内网络可加这两个镜像源
+docker compose -f compose.yaml -f compose.build.yaml up -d
+```
+
+之后的 `run`、`restart`、`logs` 等命令同样带上这两个 `-f`，否则 Compose 会改用发布的镜像。
 
 ## 外部扩展
 
@@ -64,4 +89,4 @@ docker compose down
 
 ## 验证边界
 
-真实账号已跑通监听、LLM 识别、人工审批、115 转存与整理（单源、剧集单集）；电影、多集合集、auto/default_pass 模式、多来源、长期断线与容器线上部署尚未实测。Docker 镜像需要在有 Docker 的机器上实际构建和启动验收。尚未实现自动撤销已转存文件。
+真实账号已跑通监听、LLM 识别、人工审批、115 转存与整理（单源、剧集单集）；电影、多集合集、auto/default_pass 模式、多来源、长期断线与容器线上部署尚未实测。镜像由 CI 构建并在容器内跑过模拟运行冒烟测试，但完整的容器部署（扫码、登录 Telegram、长期运行）尚未实测。尚未实现自动撤销已转存文件。

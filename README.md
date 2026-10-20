@@ -53,7 +53,7 @@ python -m reelay.login        # 登录个人 Telegram 账号
 python -m reelay.main         # 监听 + Worker（另开终端）
 ```
 
-所有配置与密钥都在管理台修改，保存在 `data/` 目录（`data/config.yaml` 与 `data/secrets.json`）。然后在管理台扫码登录 115、选择保存目录、添加监听来源。完整步骤见 [快速开始](docs/quickstart.md)；常驻运行推荐 [Docker 部署](docs/deployment.md)。
+所有配置与密钥都在管理台修改，保存在 `data/` 目录（`data/config.yaml` 与 `data/secrets.json`）。然后在管理台扫码登录 115、选择保存目录、添加监听来源。完整步骤见 [快速开始](docs/quickstart.md)；常驻运行推荐 [Docker 部署](docs/deployment.md)：每个版本都发布 `ghcr.io/derrors/reelay` 镜像（amd64 / arm64），只需一个 `compose.yaml`。
 
 ## MCP
 

@@ -43,3 +43,13 @@ CI 会在每个 PR 上运行以上全部检查并构建 Docker 镜像。
 
 - Bug：请附版本、运行方式（Docker / 本地）、复现步骤、相关的任务轨迹或日志（**先去掉凭证、链接与频道名**）。
 - 安全问题请不要公开提 Issue，按 [SECURITY.md](SECURITY.md) 私下报告。
+
+## 发布新版本
+
+维护者发布版本的步骤（GitHub Actions 自动完成检查、镜像与 Release）：
+
+1. 同时修改 `pyproject.toml` 的 `version` 与 `reelay/__init__.py` 的 `__version__`；
+2. 把 `CHANGELOG.md` 的 `[Unreleased]` 改为 `## [x.y.z] - 日期`，上方留一个新的空 `[Unreleased]`；
+3. 提交并推送到 main，CI 通过后打标签并推送：`git tag vx.y.z && git push origin vx.y.z`。
+
+推送标签后「发布」工作流核对版本号与 CHANGELOG，跑完整 CI，构建 linux/amd64 与 linux/arm64 镜像推送到 `ghcr.io/derrors/reelay`（标签 `x.y.z`、`x.y`、`latest`），再用 CHANGELOG 中这个版本的一节创建 GitHub Release。带 `-` 的预发布标签（如 `v0.3.0-rc.1`）只推送自己的镜像标签，不更新 `latest`，Release 标为预发布。发版前想先确认镜像能构建，可以在 Actions 页手动运行「发布」工作流，它只构建、不推送。

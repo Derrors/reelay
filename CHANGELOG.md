@@ -31,6 +31,7 @@
 - 配置 TMDB 后重启，已有任务自动补跑 TMDB 匹配（不重新调用 LLM）：待审批任务补上规范片名、类型、地区、tmdbid 与海报并重算置信度，已入库任务在片名不变时补上海报。
 - 插件开发指南新增「元数据补全约定」：说明 TMDB 补全写出的字段、各自的读取方与对置信度的影响，便于接入豆瓣等其他数据源。
 - 管理台「AI 服务」可以从接口获取模型列表选择模型、测试连通性（用表单里还没保存的地址与模型），并新增推理强度设置（`llm.reasoning_effort`，随请求作为 `reasoning_effort` 发送）：管理台检测当前模型支持的取值并禁用其余选项；请求因推理强度被拒时自动去掉它重发。
+- 发布版本时自动构建 Docker 镜像：推送 `v*` 标签后 GitHub Actions 跑完整检查，构建 linux/amd64 与 linux/arm64 镜像推送到 `ghcr.io/derrors/reelay`（版本号、次版本号与 `latest` 标签），并按 CHANGELOG 创建 GitHub Release。部署不再需要源码：下载 `compose.yaml` 后 `docker compose pull && docker compose up -d`，`.env` 里的 `REELAY_VERSION` 可固定版本；从源码构建改用 `compose.build.yaml`。
 - Telegram 消息重新设计：待审批卡片列出片名、季集、清晰度与字幕音轨、大小、来源与存放位置，识别不可靠或分享失效时附提醒，超时重推时注明第几次提醒；点「转存」「忽略」后卡片保留原内容并在末尾写明结果；入库通知显示整理后的网盘目录与文件名（多个文件时列出数量）；需要处理的提醒写明该在管理台点哪个操作。模板见 `reelay/core/messages.py`。
 
 ### 变更

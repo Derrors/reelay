@@ -1,6 +1,7 @@
 # 国内网络可加：--build-arg NPM_REGISTRY=https://registry.npmmirror.com/ \
 #              --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-FROM node:24-bookworm-slim AS frontend
+# 前端产物与架构无关：在构建机的原生平台上编译，多架构构建时不必在 QEMU 里跑 npm
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS frontend
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
