@@ -582,7 +582,7 @@ class TestManualDirectoryChoice(Base):
         console = ConsoleNotify()
         console.configure(sender=sender)
         await console.notify(self.store.get_task(task_id), "pending_approval")
-        self.assertIn("是否转存到「剧集/国产剧集」", sent[0])
+        self.assertIn("存到 <code>剧集/国产剧集</code>", sent[0])
 
     async def test_targets_show_real_drive_paths_once_recorded(self):
         self.store.state_set("kernel", "save_dir_paths", {

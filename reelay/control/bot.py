@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 
-from ..core import paths, secret_store
+from ..core import messages, paths, secret_store
 from ..core.contracts import TaskState
 from ..core.service import ConflictError, ManagementService, NotFoundError
 from .assistant import Assistant
@@ -129,18 +129,20 @@ class ControlBot:
             data = (e.data or b"").decode()
             if data.startswith(("do:", "cancel:")):
                 await e.edit(await self.confirm(data))
-            elif data.startswith("ok:"):
-                try:
-                    await self.service.approve(data[3:])
-                    await e.edit("✅ 已确认，加入转存队列")
-                except (ConflictError, NotFoundError):
-                    await e.edit("任务状态已变化")
-            elif data.startswith("no:"):
-                try:
-                    await self.service.reject(data[3:])
-                    await e.edit("🚫 已忽略")
-                except (ConflictError, NotFoundError):
-                    await e.edit("任务状态已变化")
+            elif data.startswith(("ok:", "no:")):
+                await e.edit(await self.decide(data), buttons=None, parse_mode="html")
+
+    async def decide(self, data: str) -> str:
+        """审批卡片上的「转存 / 忽略」：处理后返回新的卡片内容（原内容加一行结果，按钮去掉）。"""
+        action, _, task_id = data.partition(":")
+        ctx = self.service.store.get_task(task_id)
+        card = messages.approval_card(ctx) if ctx else f"<code>{messages.esc(task_id)}</code>"
+        try:
+            await (self.service.approve if action == "ok" else self.service.reject)(task_id)
+        except (ConflictError, NotFoundError):
+            current = self.service.store.get_task(task_id)
+            return messages.approval_result(card, "stale", current.state.value if current else None)
+        return messages.approval_result(card, "approved" if action == "ok" else "rejected")
 
     def _is_owner(self, event) -> bool:
         return str(getattr(event, "sender_id", "")) == str(self._owner)
@@ -168,15 +170,14 @@ class ControlBot:
             return None
         return [[self._Button.inline(label, data.encode()) for label, data in buttons]]
 
-    async def send(self, text: str, buttons=None, chat=None) -> None:
-        """供 NotifyProvider 调用：把消息发给 owner（或指定 chat）。"""
+    async def send(self, text: str, buttons=None, chat=None, html: bool = False) -> None:
+        """供 NotifyProvider 调用：把消息发给 owner（或指定 chat）。html=True 时按 HTML 解析（模板见 core/messages.py）；
+        按钮排在同一行。"""
         if not self._client:
-            log.info("[控制bot未启用] %s", text.replace("\n", " / "))
+            log.info("[控制bot未启用] %s", (messages.plain(text) if html else text).replace("\n", " / "))
             return
-        tg_buttons = None
-        if buttons and self._Button:
-            tg_buttons = [[self._Button.inline(label, data.encode())] for label, data in buttons]
-        await self._client.send_message(chat or int(self._owner), text, buttons=tg_buttons)
+        await self._client.send_message(chat or int(self._owner), text, buttons=self._buttons(buttons),
+                                        parse_mode="html" if html else ())
 
     async def run_forever(self) -> None:
         """保持控制 bot 长驻（在 gather 里与监听/worker 并发）。"""
