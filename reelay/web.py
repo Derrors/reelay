@@ -2,12 +2,13 @@
 
 开发期通过 Vite 代理访问 ``/api``；生产构建后若 ``web/dist`` 存在，会由同一个
 Python 服务托管 SPA。默认只绑定本机；暴露到其他机器时必须在「设置」中设置 Web 登录密码。
+装了 agent 可选依赖时还在 ``/mcp`` 提供 MCP（Streamable HTTP），凭 MCP 访问令牌使用，见 ``mcp_server``。
 """
 
 from __future__ import annotations
 
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,8 @@ def create_app(
     service = ManagementService(store, pipeline, config_path=config_file)
     worker = Worker(pipeline, store, concurrency=cfg["runtime"]["concurrency"])
     bus = EventBus(store=store, service=service)
+    from .mcp_server import http_endpoint
+    mcp = http_endpoint(service)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -101,7 +104,8 @@ def create_app(
             worker_task = asyncio.create_task(worker.run(drain=False))
         bus.start()
         try:
-            yield
+            async with mcp.run() if mcp else nullcontext():
+                yield
         finally:
             await bus.stop()
             worker.stop()
@@ -129,6 +133,9 @@ def create_app(
     register_extras(app, log_file=data / paths.LOG.name, store=store,
                     service=service, registry=registry)
     register_ai(app, service=service)
+    if mcp:
+        # 不在 /api 下、不走管理台登录：端点自己按 MCP 访问令牌鉴权
+        app.add_route("/mcp", mcp, methods=["GET", "POST", "DELETE"])
 
     @app.get("/api/health")
     async def health(request: Request):

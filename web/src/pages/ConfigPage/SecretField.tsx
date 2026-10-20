@@ -9,18 +9,26 @@ import type { ISecretStatus } from '@/lib/types';
 
 const message = (e: unknown) => (e instanceof Error ? e.message : '保存失败');
 
+/** 32 字节随机数的 base64url，用作访问令牌。 */
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 /**
  * 密钥：只显示是否已设置，可以替换或清除，读不回原值。
  * 单独保存、立即生效，不经过页面底部的「保存并生效」。
+ * generate：可随机生成一个令牌，生成后明文显示，便于保存前复制。
  */
-export function SecretField({ name, secrets, onSaved, hint, placeholder }: {
+export function SecretField({ name, secrets, onSaved, hint, placeholder, generate }: {
   name: string; secrets: ISecretStatus; onSaved: (status: ISecretStatus) => void;
-  hint?: string; placeholder?: string;
+  hint?: string; placeholder?: string; generate?: boolean;
 }) {
   const item = secrets[name];
   const label = item?.label ?? name;
   const isSet = Boolean(item?.set);
   const [value, setValue] = useState('');
+  const [revealed, setRevealed] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const save = async (next: string | null) => {
@@ -29,6 +37,7 @@ export function SecretField({ name, secrets, onSaved, hint, placeholder }: {
     try {
       onSaved(await api.saveSecrets({ [name]: next }));
       setValue('');
+      setRevealed(false);
       toast.success(next === null ? `已清除「${label}」` : `「${label}」已保存并生效`);
     } catch (e) {
       toast.error(message(e));
@@ -45,11 +54,14 @@ export function SecretField({ name, secrets, onSaved, hint, placeholder }: {
       </div>
       <div className="flex gap-2">
         <Input
-          type="password" autoComplete="new-password" className="bg-card" aria-label={label}
+          type={revealed ? 'text' : 'password'} autoComplete="new-password" className="bg-card" aria-label={label}
           value={value} placeholder={isSet ? '输入新值以替换' : placeholder}
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && value.trim()) void save(value.trim()); }}
         />
+        {generate && !value ? (
+          <Button variant="outline" disabled={busy} onClick={() => { setValue(randomToken()); setRevealed(true); }}>生成</Button>
+        ) : null}
         <Button variant="outline" disabled={busy || !value.trim()} onClick={() => void save(value.trim())}>
           {busy ? <Loader2 className="animate-spin" /> : null}保存
         </Button>

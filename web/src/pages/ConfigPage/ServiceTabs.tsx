@@ -254,6 +254,8 @@ export function P115LimitsPanel({ config, setField }: { config: Obj; setField: S
   );
 }
 
+const CODE = 'mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px] break-all';
+
 const LOG_LEVELS = [
   { value: 'DEBUG', label: '调试（DEBUG）' }, { value: 'INFO', label: '一般（INFO）' },
   { value: 'WARNING', label: '警告（WARNING）' }, { value: 'ERROR', label: '错误（ERROR）' },
@@ -265,6 +267,20 @@ export function SystemTab({ config, setField, secrets, onSecrets }: { config: Ob
     <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
       <Panel icon={ShieldCheck} title="访问安全" bodyClassName="p-4 sm:p-5">
         <PasswordField secrets={secrets} onSaved={onSecrets} />
+      </Panel>
+      <Panel icon={Bot} title="Agent 接入（MCP）" description="外部 Agent（如 Claude Code）凭访问令牌经管理台的 /mcp 查询和操作 Reelay。"
+        bodyClassName="p-4 sm:p-5">
+        <div className="space-y-4">
+          <SecretField name="mcp_token" secrets={secrets} onSaved={onSecrets} generate placeholder="至少 24 个字符"
+            hint="可以查询，也可以批准、忽略、重试与订阅；批准和重试会发起真实的 115 转存。" />
+          <SecretField name="mcp_readonly_token" secrets={secrets} onSaved={onSecrets} generate placeholder="至少 24 个字符"
+            hint="只能查询，看不到写操作工具。" />
+          <p className="text-xs leading-5 text-muted-foreground">
+            地址 <code className={CODE}>{window.location.origin}/mcp</code>，请求头
+            <code className={CODE}>Authorization: Bearer 令牌</code>。令牌保存后读不回原值，生成后先复制再保存；两个都没设置时
+            /mcp 不可用。与 Reelay 同机时也可以用 stdio 方式（reelay-mcp），见 README。
+          </p>
+        </div>
       </Panel>
       <Panel icon={ServerCog} title="运行参数" description={RESTART_HINT} bodyClassName="p-4 sm:p-5">
         <div className="grid gap-4 sm:grid-cols-2">

@@ -34,6 +34,8 @@ docker compose ps
 
 Compose 默认只在宿主机回环地址开放 Web。设置登录密码后，除登录、登录状态和健康检查外，所有 `/api/*` 接口（含 SSE）都要求登录，同一客户端 5 分钟内连续 5 次密码错误会被拒绝尝试。
 
+外部 Agent 经 Web 的 `/mcp` 接入（见 [MCP](../README.md#mcp)），不需要进容器：在「设置 → 运行与安全 → Agent 接入」生成 MCP 访问令牌即可，`/mcp` 只认这个令牌，与登录密码无关；没有令牌时 `/mcp` 关闭。Agent 不在宿主机上时，需要像管理台一样把端口开放出去（或经反向代理），反代要放行 `Authorization` 请求头。
+
 ### 从旧版本升级
 
 旧版本把配置放在 `deploy/config/config.yaml`、凭证写在 `.env`，镜像在本机构建。换用新的 `compose.yaml`（保留其中 `./deploy/config:/app/config` 这一行，原来的 `.env` 不动），执行 `docker compose pull && docker compose up -d`：首次启动时配置移进数据卷（原文件改名为 `config.yaml.migrated`），`.env` 里的设置和凭证导入管理台，日志会列出导入了哪些变量。确认管理台里的设置无误后，可以删掉 Compose 中的 `./deploy/config` 挂载和 `.env` 里除监听地址外的变量。详见 [配置参考](configuration.md#从旧版本升级)。

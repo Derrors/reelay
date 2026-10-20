@@ -41,7 +41,7 @@ web = [
     "uvicorn[standard]>=0.30",
     "PyYAML>=6.0",
 ]
-agent = ["mcp>=1.2"]
+agent = ["mcp>=1.30"]
 all = [
     "telethon>=1.36",
     "p115client==0.0.9.6.5.1",
@@ -52,7 +52,7 @@ all = [
     "PyYAML>=6.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "mcp>=1.2",
+    "mcp>=1.30",
 ]
 # 开发与 CI：pip install -e ".[all,dev]"
 dev = [

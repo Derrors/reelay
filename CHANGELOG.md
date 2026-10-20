@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增
+
+- MCP 的 HTTP 接入：Web 进程在 `/mcp` 提供 Streamable HTTP，凭管理台「设置 → 运行与安全」生成的 MCP 访问令牌（读写 / 只读各一个）使用；Docker 部署与其他机器上的 Agent 不必再进容器跑 stdio。
+- MCP 新增 `missing_episodes`、`list_subscriptions`、`find_show`、`subscribe`，与控制 Bot 对话助手的能力一致；`list_pending` 附审批建议与理由、推荐版本、是否已订阅与等待天数。
+- MCP 工具带 `readOnlyHint` / `destructiveHint` / `openWorldHint` 标注，客户端可据此决定哪些调用要逐次确认。
+
+### 变更
+
+- MCP 工具与对话助手改为同一份定义（`reelay/agent_tools.py`），参数校验与实现共用。
+- MCP 的 `approve` / `reject` / `retry` 改为接收 `task_ids` 数组（1-100 个），逐条返回结果 `{ok, results: [{task_id, ok, state | error}]}`。
+- MCP 的 `search_library` 改为按作品返回（各季已入库的集、清晰度、版本、地区），支持类型、最低清晰度、地区与 TMDB 类型筛选，不再返回逐个文件路径。
+- `list_pending` 返回 `{pending_approval, need_manual}` 两组。
+- `mcp` 依赖最低版本提高到 1.30。
+
 ## [0.3.0] - 2026-10-20
 
 设计原则更新为「AI 提议，事实源校验，人工裁决，裁决结果反馈给 AI」，见 [架构设计](docs/architecture.md#ai-与规则的分工)。

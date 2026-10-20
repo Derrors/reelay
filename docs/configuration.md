@@ -176,6 +176,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `telegram_api_id` / `telegram_api_hash` | Telegram | 个人账号的 Telegram API 凭证 |
 | `control_bot_token` | Telegram | 控制 Bot 的 token |
 | `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要。暴露到本机以外时必须设置；修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。登录会话保存在数据库里，有效期 7 天，Web 重启不影响。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项即可恢复免登录 |
+| `mcp_token` / `mcp_readonly_token` | 运行与安全 | MCP 访问令牌（读写 / 只读）。外部 Agent 在请求头 `Authorization: Bearer <令牌>` 里带上它访问 `/mcp`；只读令牌看不到写操作工具。至少 24 个字符，两个不能相同，管理台可随机生成。两个都没设置时 `/mcp` 关闭。与 Web 登录密码相互独立 |
 
 ## 运行文件位置
 
@@ -201,7 +202,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `REELAY_WEB_HOST` / `REELAY_WEB_PORT` | `127.0.0.1` / `28080` | 管理台监听地址 |
-| `REELAY_MCP_READONLY` | 空 | 设为 `1` 时 MCP 只暴露查询工具 |
+| `REELAY_MCP_READONLY` | 空 | 设为 `1` 时 MCP 只暴露查询工具（stdio 与 HTTP 都是，HTTP 的读写令牌也降为只读） |
 | `VITE_BASE_PATH` | `/` | 构建前端时的子路径前缀（反向代理到子路径时使用） |
 
 ## 从旧版本升级

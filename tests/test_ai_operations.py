@@ -72,7 +72,7 @@ class TestAssistant(Base):
                   origin_country=("JP",))
         done_task(self.store, "2", title="繁花", resolution="2160p")
         self.parser._client = FakeToolAI(
-            {"tools": [("library", {"media_type": "anime", "min_resolution": "2160p", "origin_country": "JP"})]},
+            {"tools": [("search_library", {"media_type": "anime", "min_resolution": "2160p", "origin_country": "JP"})]},
             {"text": "你有 1 部 4K 日本动画：《葬送的芙莉莲》"})
         reply = await self.assistant.handle("我有哪些 4K 日本动画？")
         self.assertEqual((reply.text, reply.plan_id), ("你有 1 部 4K 日本动画：《葬送的芙莉莲》", None))

@@ -80,6 +80,6 @@ received → parsed → pending_approval → queued → saving → stored → or
 
 - `python -m reelay.main`：消息源 + Worker + 控制 Bot，单实例（数据库旁的文件锁阻止两个 Worker 消费同一数据库）。
 - `python -m reelay.web`：管理 API 与前端，只读写任务状态，不启动 Worker。
-- `python -m reelay.mcp_server`：MCP 接入，与 Web 相同的服务层。控制 Bot 的对话助手复用其中的查询实现。
+- `python -m reelay.mcp_server`：MCP 的 stdio 接入，与 Web 相同的服务层；Web 进程也在 `/mcp` 提供同一组工具（Streamable HTTP，凭 MCP 访问令牌）。工具的定义、参数校验与实现在 `reelay/agent_tools.py`，控制 Bot 的对话助手也从这里取工具，区别只在写操作何时执行：MCP 直接执行（客户端按工具标注确认），对话助手先列出来，用户点「执行」后才执行。
 
 三者共享同一个 SQLite 数据库与配置文件；Web/MCP 修改配置后，Worker 约 1 秒内采用。

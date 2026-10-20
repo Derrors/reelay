@@ -1,4 +1,4 @@
-"""密钥：AI 接口 / TMDB 的 key、Telegram API、控制 Bot Token 与 Web 登录密码。
+"""密钥：AI 接口 / TMDB 的 key、Telegram API、控制 Bot Token、Web 登录密码与 MCP 访问令牌。
 
 存放在 data/secrets.json（权限 600），不进配置文件，配置原文与接口返回里都看不到；管理台只能
 设置、替换或清除，读不回原值。Web 登录密码只存 PBKDF2 摘要。
@@ -29,7 +29,12 @@ NAMES = {
     "telegram_api_hash": "Telegram API Hash",
     "control_bot_token": "控制 Bot Token",
     "web_password": "Web 登录密码",
+    "mcp_token": "MCP 访问令牌（读写）",
+    "mcp_readonly_token": "MCP 访问令牌（只读）",
 }
+# 外部 Agent 凭它们经 Web 的 /mcp 操作 Reelay，至少 24 个字符，两个不能相同。
+TOKEN_NAMES = ("mcp_token", "mcp_readonly_token")
+MIN_TOKEN_LENGTH = 24
 _PBKDF2_ROUNDS = 200_000
 
 
@@ -117,6 +122,13 @@ class SecretStore:
                 value = (value or "").strip()
                 if name == "telegram_api_id" and value and not value.isdecimal():
                     raise ValueError("Telegram API ID 必须是数字")
+                if name in TOKEN_NAMES and value:
+                    if len(value) < MIN_TOKEN_LENGTH:
+                        raise ValueError(f"{NAMES[name]}至少 {MIN_TOKEN_LENGTH} 个字符")
+                    other = next(item for item in TOKEN_NAMES if item != name)
+                    paired = (changes[other] or "").strip() if other in changes else self._data["values"].get(other)
+                    if value == paired:
+                        raise ValueError("读写与只读的 MCP 访问令牌不能相同")
                 if value:
                     self._data["values"][name] = hash_password(value) if name == "web_password" else value
                 else:

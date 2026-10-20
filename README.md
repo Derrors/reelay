@@ -57,12 +57,22 @@ python -m reelay.main         # 监听 + Worker（另开终端）
 
 ## MCP
 
+Agent 可以用两种方式接入，工具相同：运行状态、待处理列表（附审批建议）、任务检索与详情、目录别名、媒体库检索、缺集、追剧订阅与找剧，以及批量批准 / 忽略 / 重试与订阅。批准和重试只改任务状态，由运行中的 Worker 执行真实转存。
+
+**HTTP**（Docker 部署或 Agent 在其他机器上时用这个）：在管理台「设置 → 运行与安全 → Agent 接入」生成 MCP 访问令牌，读写和只读各一个，然后：
+
 ```bash
-pip install -e ".[agent]"
-claude mcp add reelay -- /path/to/reelay/.venv/bin/python -m reelay.mcp_server
+claude mcp add --transport http reelay http://127.0.0.1:28080/mcp --header "Authorization: Bearer <令牌>"
 ```
 
-提供运行状态、任务查询、待处理列表、任务详情、目录别名、媒体库检索，以及审批 / 忽略 / 重试（批准后由运行中的 Worker 执行真实转存）。设置 `REELAY_MCP_READONLY=1` 只暴露查询工具。
+**stdio**（与 Reelay 同机、直接读写 `data/`）：
+
+```bash
+pip install -e ".[agent]"
+claude mcp add reelay -- /path/to/reelay/.venv/bin/reelay-mcp
+```
+
+写操作工具标注了 `destructiveHint`，客户端可以据此逐次确认。设置 `REELAY_MCP_READONLY=1` 只暴露查询工具（HTTP 的读写令牌也降为只读）。
 
 ## 项目结构
 
@@ -73,7 +83,8 @@ reelay/
 ├── plugins/       # 内置扩展：分类路由、TMDB 补全、整理、日报、缺集追更
 ├── control/       # Telegram 控制 Bot 与对话助手
 ├── web.py         # 管理 API（前端在 web/）
-├── mcp_server.py  # MCP server
+├── agent_tools.py # Agent 工具：MCP 与控制 Bot 对话助手共用的定义与实现
+├── mcp_server.py  # MCP server（stdio / Web 的 /mcp）
 └── eval.py        # 本地评测：用人工裁决样本对比提示词与模型
 examples/plugins/  # 外部插件示例
 ```
