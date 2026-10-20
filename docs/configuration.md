@@ -110,11 +110,12 @@ plugins:
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `llm.base_url` | 空 | OpenAI 兼容接口地址，留空用 OpenAI 官方地址 |
-| `llm.model` | `gpt-4o-mini` | 模型名 |
+| `llm.model` | `gpt-4o-mini` | 模型名。管理台可以从接口获取模型列表选择 |
+| `llm.reasoning_effort` | 空 | 推理强度，随每次请求作为 `reasoning_effort` 发送：`none` / `minimal` / `low` / `medium` / `high`；留空不传，由模型决定。只对支持推理的模型生效，不支持的模型或网关可能报错 |
 | `tmdb.base_url` | 空 | 留空用 `https://api.themoviedb.org/3`；国内该域名常被 DNS 污染，可改用官方备用域名 `https://api.tmdb.org/3` 或自己的反向代理 |
 | `tmdb.language` / `tmdb.timeout` | `zh-CN` / `10` | TMDB 匹配语言与超时秒数 |
 
-AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生效。
+AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生效。管理台「AI 服务」可以用表单里当前的地址获取模型列表（OpenAI 兼容的 `GET /models`），并用当前的地址、模型与推理强度发一条很短的消息测试连通性，不必先保存。
 
 ### Telegram（`telegram`）
 

@@ -48,6 +48,13 @@ class TaskIdsPayload(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
 
 
+class LlmPayload(BaseModel):
+    # 都可以省略：省略时用已保存的配置；密钥总是用已保存的
+    base_url: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+
+
 class DraftPayload(BaseModel):
     bot: str
     samples: list[str] = Field(default_factory=list)
@@ -76,6 +83,15 @@ def register_ai(app, *, service) -> None:
     @app.get("/api/ai/usage")
     async def ai_usage(days: int = Query(default=30, ge=1, le=90)):
         return service.llm_usage(days)
+
+    @app.post("/api/ai/models")
+    async def ai_models(payload: LlmPayload):
+        return await call(service.llm_models, payload.base_url)
+
+    @app.post("/api/ai/test")
+    async def ai_test(payload: LlmPayload):
+        return await call(service.llm_test, base_url=payload.base_url, model=payload.model,
+                          reasoning_effort=payload.reasoning_effort)
 
     @app.post("/api/ai/compile-rules")
     async def compile_rules(payload: CompilePayload):

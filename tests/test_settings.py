@@ -280,5 +280,69 @@ class TestSettingsApi(unittest.TestCase):
         self.assertIn("typo_plugin", res.text)
 
 
+class FakeModels:
+    def __init__(self, ids):
+        self.ids = ids
+
+    async def list(self):
+        return type("Page", (), {"data": [type("M", (), {"id": i})() for i in self.ids]})()
+
+
+class FakeLLM:
+    """OpenAI 兼容客户端的替身：记下请求参数；error 不为空时抛出。"""
+
+    def __init__(self, ids=(), error=None):
+        self.models, self.calls, self.error = FakeModels(list(ids)), [], error
+        self.chat = type("Chat", (), {"completions": self})()
+
+    async def create(self, **params):
+        self.calls.append(params)
+        if self.error:
+            raise self.error
+        message = type("Msg", (), {"content": "正常", "refusal": None})()
+        usage = type("Usage", (), {"prompt_tokens": 12, "completion_tokens": 30})()
+        return type("Resp", (), {"choices": [type("C", (), {"message": message})()], "usage": usage, "model": params["model"]})()
+
+
+@unittest.skipIf(TestClient is None, "未安装 web 可选依赖")
+class TestLlmSettings(unittest.TestCase):
+    setUp = TestSettingsApi.setUp  # 只复用环境，不重复跑设置接口的用例
+    tearDown = TestSettingsApi.tearDown
+
+    def test_model_list_and_connection_test_use_the_form_values(self):
+        from reelay.core import ai
+        self.assertEqual(self.client.post("/api/ai/models", json={}).status_code, 409)  # 还没有密钥
+        self.client.put("/api/settings/secrets", json={"changes": {"llm_api_key": "sk-secret"}})
+        fake, used = FakeLLM(["gpt-b", "gpt-a", "gpt-a"]), []
+        with patch.object(ai, "client_for", lambda url: used.append(url) or fake):
+            res = self.client.post("/api/ai/models", json={"base_url": "https://llm.example/v1/"})
+            self.assertEqual(res.json(), {"models": ["gpt-a", "gpt-b"]})
+            self.assertEqual(used, ["https://llm.example/v1"])
+            self.assertEqual(self.client.post("/api/ai/models", json={"base_url": "ftp://x"}).status_code, 422)
+            res = self.client.post("/api/ai/test", json={"model": "gpt-a", "reasoning_effort": "low"}).json()
+            self.assertEqual((res["ok"], res["reply"], res["completion_tokens"]), (True, "正常", 30))
+            self.assertEqual((fake.calls[-1]["model"], fake.calls[-1]["reasoning_effort"]), ("gpt-a", "low"))
+            self.client.post("/api/ai/test", json={"model": "gpt-a", "reasoning_effort": ""})
+            self.assertNotIn("reasoning_effort", fake.calls[-1])  # 留空不传
+            self.assertEqual(self.client.post("/api/ai/test", json={"reasoning_effort": "max"}).status_code, 422)
+            fake.error = RuntimeError("401 bad key sk-secret")
+            res = self.client.post("/api/ai/test", json={"model": "gpt-a"}).json()
+            self.assertFalse(res["ok"])
+            self.assertNotIn("sk-secret", res["error"])
+
+    def test_reasoning_effort_is_sent_on_every_request_when_set(self):
+        import asyncio
+        from reelay.core import ai, runtime
+        with self.assertRaises(ValueError):
+            normalize_config({"llm": {"reasoning_effort": "max"}})
+        fake = FakeLLM()
+        with runtime.scope(normalize_config({"llm": {"reasoning_effort": "high"}})):
+            asyncio.run(ai.request(fake, model="m", messages=[]))
+        with runtime.scope(normalize_config({})):
+            asyncio.run(ai.request(fake, model="m", messages=[]))
+        self.assertEqual(fake.calls[0]["reasoning_effort"], "high")
+        self.assertNotIn("reasoning_effort", fake.calls[1])
+
+
 if __name__ == "__main__":
     unittest.main()

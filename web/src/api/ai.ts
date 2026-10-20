@@ -174,7 +174,17 @@ export interface IQualityAdvice {
   revision: string;
 }
 
+/** 测试 AI 服务连通性的结果。 */
+export interface ILlmTest {
+  ok: boolean; model: string; seconds: number;
+  reply?: string; prompt_tokens?: number | null; completion_tokens?: number | null; error?: string;
+}
+/** 地址、模型与推理强度用表单里的值（可以还没保存）；密钥总是用已保存的。 */
+export interface ILlmForm { base_url?: string; model?: string; reasoning_effort?: string }
+
 export const ai = {
+  llmModels: (form: ILlmForm) => post<{ models: string[] }>('ai/models', form),
+  llmTest: (form: ILlmForm) => post<ILlmTest>('ai/test', form),
   insights: () => req<IInsights>('insights'),
   enableAuto: (source: string) =>
     post<{ config: Record<string, unknown>; revision: string }>('insights/auto-approve', { source }),

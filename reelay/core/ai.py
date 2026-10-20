@@ -45,23 +45,31 @@ def dry_run() -> bool:
 _CLIENTS: dict[tuple[str, str], Any] = {}
 
 
+def client_for(base_url: str) -> Any | None:
+    """用已保存的密钥与给定地址创建客户端（管理台获取模型列表、测试连通性时用表单里还没保存的地址）。"""
+    key = secret_store.get("llm_api_key")
+    if not key or dry_run():
+        return None
+    try:
+        from openai import AsyncOpenAI  # 延迟导入
+        # 关掉 SDK 自带的重试：重试只由 request() 负责，否则两层叠加，超时时一次调用最多要发 9 次请求，
+        # 调用记录也对不上实际请求。
+        return AsyncOpenAI(api_key=key, base_url=base_url or None, max_retries=0)
+    except Exception:  # noqa: BLE001 - 未安装 SDK 时按未配置处理
+        return None
+
+
 def make_client() -> tuple[Any | None, str]:
     """返回 (客户端或 None, 模型名)；同一组 key 与地址复用同一个客户端。"""
     model = str(runtime.get("llm.model") or DEFAULT_MODEL)
-    if dry_run():
-        return None, model
     key = secret_store.get("llm_api_key")
-    if not key:
+    if dry_run() or not key:
         return None, model
     base_url = str(runtime.get("llm.base_url") or "")
     client = _CLIENTS.get((key, base_url))
     if client is None:
-        try:
-            from openai import AsyncOpenAI  # 延迟导入
-            # 关掉 SDK 自带的重试：重试只由 request() 负责，否则两层叠加，超时时一次调用最多要发 9 次请求，
-            # 调用记录也对不上实际请求。
-            client = AsyncOpenAI(api_key=key, base_url=base_url or None, max_retries=0)
-        except Exception:  # noqa: BLE001 - 未安装 SDK 时按未配置处理
+        client = client_for(base_url)
+        if client is None:
             return None, model
         _CLIENTS.clear()  # 换了 key 或地址，旧客户端不再使用
         _CLIENTS[(key, base_url)] = client
@@ -124,6 +132,9 @@ async def request(client, *, purpose: str = "other", task_id: str | None = None,
     返回 (响应, 开始时间)：失败的请求在这里记录，成功的由调用方校验输出后再记录结果。
     """
     retries, delay = RETRIES, RETRY_DELAY
+    effort = runtime.get("llm.reasoning_effort")
+    if effort and "reasoning_effort" not in params:
+        params["reasoning_effort"] = effort  # 系统配置 llm.reasoning_effort，留空不传
     model = str(params.get("model", ""))
     for attempt in range(retries + 1):
         started = time.monotonic()

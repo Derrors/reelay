@@ -1,7 +1,11 @@
 /** 系统配置里的服务与运行参数：AI 与 TMDB、Telegram、115 请求限速、运行与安全。 */
-import { Bot, Film, Gauge, Info, Send, ServerCog, ShieldCheck, Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { Bot, CircleAlert, CircleCheck, Film, Gauge, Info, List, Loader2, PlugZap, Send, ServerCog, ShieldCheck, Sparkles } from 'lucide-react';
+import { toast } from 'sonner';
+import { ai, type ILlmTest } from '@/api/ai';
 import { Panel } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { ISecretStatus } from '@/lib/types';
 import { Field, Notice } from './fields';
@@ -29,6 +33,79 @@ function NumberField({ label, hint, unit, value, onChange, min, max, step }: {
   );
 }
 
+const EFFORTS = [
+  { value: '', label: '默认（不传，由模型决定）' }, { value: 'none', label: '关闭推理（none）' },
+  { value: 'minimal', label: '最低（minimal）' }, { value: 'low', label: '低（low）' },
+  { value: 'medium', label: '中（medium）' }, { value: 'high', label: '高（high）' },
+];
+const errorText = (e: unknown) => (e instanceof Error ? e.message : '请求失败');
+
+/** 模型：可以手填，也可以从接口获取列表后选择；测试用表单里当前的地址、模型与推理强度（不必先保存）。 */
+function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; keySet: boolean }) {
+  const [models, setModels] = useState<string[] | null>(null);
+  const [loading, setLoading] = useState<'models' | 'test' | null>(null);
+  const [result, setResult] = useState<ILlmTest | null>(null);
+  const form = { base_url: text(llm.base_url).trim(), model: text(llm.model).trim(), reasoning_effort: text(llm.reasoning_effort) };
+
+  const fetchModels = async () => {
+    setLoading('models');
+    try {
+      const r = await ai.llmModels(form);
+      setModels(r.models);
+      toast.success(r.models.length ? `获取到 ${r.models.length} 个模型` : '接口没有返回模型，请手动填写');
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setLoading(null);
+    }
+  };
+  const test = async () => {
+    setLoading('test'); setResult(null);
+    try { setResult(await ai.llmTest(form)); } catch (e) { toast.error(errorText(e)); } finally { setLoading(null); }
+  };
+
+  return (
+    <>
+      <Field label="模型" hint={models?.length
+        ? `已获取 ${models.length} 个模型，点输入框可选择，也可以手动填写。`
+        : '可以手动填写，或用当前的接口地址与已保存的密钥获取模型列表。'}>
+        <div className="flex gap-2">
+          <Input className="bg-card" list="llm-models" value={text(llm.model)}
+            onChange={e => { setField('llm', 'model', e.target.value); setResult(null); }} />
+          <Button variant="outline" disabled={!keySet || loading !== null} onClick={() => void fetchModels()}
+            title={keySet ? undefined : '请先保存 AI 接口密钥'}>
+            {loading === 'models' ? <Loader2 className="animate-spin" /> : <List />}获取模型
+          </Button>
+        </div>
+        <datalist id="llm-models">{(models ?? []).map(m => <option key={m} value={m} />)}</datalist>
+      </Field>
+      <Field label="推理强度" hint="对支持推理的模型生效：强度越高越慢、输出 token 越多。不支持的模型可能报错，改了先测试一下。">
+        <Select value={text(llm.reasoning_effort)} options={EFFORTS}
+          onValueChange={v => { setField('llm', 'reasoning_effort', v); setResult(null); }} />
+      </Field>
+      <div className="space-y-2">
+        <Button variant="outline" size="sm" disabled={!keySet || !form.model || loading !== null} onClick={() => void test()}
+          title={keySet ? undefined : '请先保存 AI 接口密钥'}>
+          {loading === 'test' ? <Loader2 className="animate-spin" /> : <PlugZap />}测试连通性
+        </Button>
+        {result ? (
+          result.ok ? (
+            <p className="flex items-start gap-1.5 text-xs leading-5 text-success">
+              <CircleCheck className="mt-0.5 size-3.5 shrink-0" />
+              <span>可以使用：{result.model} 回复「{result.reply || '（空）'}」，用时 {result.seconds} 秒
+                {typeof result.completion_tokens === 'number' ? `，输出 ${result.completion_tokens} token` : ''}。</span>
+            </p>
+          ) : (
+            <p className="flex items-start gap-1.5 text-xs leading-5 text-destructive">
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0" /><span className="break-all">{result.error}</span>
+            </p>
+          )
+        ) : <p className="text-xs leading-5 text-muted-foreground">用当前填写的地址、模型与推理强度发一条很短的消息，不必先保存。</p>}
+      </div>
+    </>
+  );
+}
+
 export function ServicesTab({ config, setField, secrets, onSecrets }: { config: Obj; setField: SetField } & SecretProps) {
   const llm = obj(config.llm);
   const tmdb = obj(config.tmdb);
@@ -42,9 +119,7 @@ export function ServicesTab({ config, setField, secrets, onSecrets }: { config: 
             <Input className="bg-card" placeholder="https://api.openai.com/v1" value={text(llm.base_url)}
               onChange={e => setField('llm', 'base_url', e.target.value)} />
           </Field>
-          <Field label="模型">
-            <Input className="bg-card" value={text(llm.model)} onChange={e => setField('llm', 'model', e.target.value)} />
-          </Field>
+          <ModelFields llm={llm} setField={setField} keySet={Boolean(secrets.llm_api_key?.set)} />
         </div>
       </Panel>
 

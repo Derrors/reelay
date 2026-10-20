@@ -16,7 +16,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import ai, inbox, library, release, secret_store, subscriptions, tmdb
+from . import ai, inbox, library, release, runtime, secret_store, subscriptions, tmdb
 from .config import config_revision, merge_config, normalize_config, render as render_config
 from .validation import MEDIA_SCHEMA, validate_resource
 from .contracts import ParsedResource, PipelineContext, TaskState
@@ -903,6 +903,71 @@ class ManagementService:
     def llm_usage(self, days: int = 30) -> dict[str, Any]:
         import time
         return self.store.llm_usage(time.time() - days * 86400)
+
+    # ------------------------------------------------------------------ #
+    # AI 服务：获取模型列表、测试连通性。用表单里的地址（可以还没保存），密钥用已保存的
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _llm_client_for(base_url: str | None) -> tuple[Any, str]:
+        import re
+        url = (base_url if base_url is not None else str(runtime.get("llm.base_url") or "")).strip().rstrip("/")
+        if url and not re.match(r"https?://[^/\s]+", url):
+            raise ValueError("接口地址需以 http:// 或 https:// 开头，留空使用 OpenAI 官方地址")
+        client = ai.client_for(url)
+        if client is None:
+            raise ConflictError("请先保存 AI 接口密钥")
+        return client, url
+
+    @staticmethod
+    def _llm_error(exc: Exception) -> str:
+        """SDK 的错误说明里可能带地址，不会带密钥；仍按已保存的密钥脱敏后再返回。"""
+        status = getattr(exc, "status_code", None)
+        body = getattr(exc, "body", None)
+        detail = body.get("message") if isinstance(body, dict) and isinstance(body.get("message"), str) else None
+        if detail is None and isinstance(body, dict) and isinstance(body.get("error"), dict):
+            detail = body["error"].get("message")
+        text = f"{type(exc).__name__}{f'（HTTP {status}）' if status else ''}：{detail or exc}"
+        key = secret_store.get("llm_api_key")
+        return (text.replace(key, "***") if key else text)[:300]
+
+    async def llm_models(self, base_url: str | None = None) -> dict[str, Any]:
+        """接口提供的模型列表（OpenAI 兼容的 GET /models）。"""
+        client, _ = self._llm_client_for(base_url)
+        try:
+            page = await asyncio.wait_for(client.models.list(), timeout=20)
+        except Exception as exc:  # noqa: BLE001 - 原因交给用户判断（地址、密钥或网关不支持列模型）
+            raise ConflictError(f"获取模型列表失败：{self._llm_error(exc)}") from None
+        ids = sorted({str(getattr(m, "id", "")) for m in getattr(page, "data", None) or [] if getattr(m, "id", None)})
+        return {"models": ids}
+
+    async def llm_test(self, *, base_url: str | None = None, model: str | None = None,
+                       reasoning_effort: str | None = None) -> dict[str, Any]:
+        """用一次很短的对话测试地址、密钥、模型与推理强度能否使用；不写入调用记录。"""
+        import time
+        from .config import REASONING_EFFORTS
+        client, _ = self._llm_client_for(base_url)
+        model = (model or str(runtime.get("llm.model") or "")).strip()
+        if not model:
+            raise ValueError("请先填写模型")
+        effort = (reasoning_effort if reasoning_effort is not None else str(runtime.get("llm.reasoning_effort") or ""))
+        if effort not in REASONING_EFFORTS:
+            raise ValueError("推理强度无效")
+        params: dict[str, Any] = {"model": model, "temperature": 0,
+                                  "messages": [{"role": "user", "content": "只回复两个字：正常"}]}
+        if effort:
+            params["reasoning_effort"] = effort
+        started = time.monotonic()
+        try:
+            response = await client.chat.completions.create(**params, timeout=60)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "model": model, "error": self._llm_error(exc),
+                    "seconds": round(time.monotonic() - started, 1)}
+        usage = getattr(response, "usage", None)
+        reply = ((response.choices[0].message.content or "") if response.choices else "").strip()
+        return {"ok": True, "model": getattr(response, "model", None) or model, "reply": reply[:100],
+                "seconds": round(time.monotonic() - started, 1),
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None)}
 
     def _require_ai(self) -> tuple[Any, str]:
         client, model = self.ai_client()

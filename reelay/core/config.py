@@ -32,6 +32,8 @@ DEFAULT_NAMING = {
 }
 CONFLICT_STRATEGIES = {"manual", "skip", "suffix", "upgrade"}
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+# 推理强度（OpenAI 兼容接口的 reasoning_effort）；空字符串表示不传，由模型或网关决定
+REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high")
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
 _DEFAULT_CONFIG: dict[str, Any] = {
@@ -52,8 +54,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
            "suggest_auto": {"min_decisions": 20, "approve_rate": 0.9, "max_correct_rate": 0.1}},
     # 同一集多个版本时的偏好（收件箱推荐版本与洗版共用），顺序即优先级
     "release": {"prefer_subtitles": ["chs", "cht"], "prefer_audio": [], "hdr": "any", "prefer_sources": []},
-    # OpenAI 兼容接口；密钥在 secrets.json
-    "llm": {"base_url": "", "model": DEFAULT_LLM_MODEL},
+    # OpenAI 兼容接口；密钥在 secrets.json；reasoning_effort 留空不传
+    "llm": {"base_url": "", "model": DEFAULT_LLM_MODEL, "reasoning_effort": ""},
     # TMDB：识别后的元数据补全、订阅找剧与缺集追更共用；base_url 留空用官方地址
     "tmdb": {"base_url": "", "language": "zh-CN", "timeout": 10},
     # Telegram：控制 Bot 只服务 owner_id；重连后按来源补拉停机期间的消息；断开多久告警
@@ -306,6 +308,8 @@ def _validate_services(cfg: dict) -> None:
         cfg[section]["base_url"] = url.rstrip("/")
     if not cfg["llm"]["model"].strip():
         raise ValueError("llm.model 不能为空")
+    if cfg["llm"].get("reasoning_effort") not in REASONING_EFFORTS:
+        raise ValueError(f"llm.reasoning_effort 必须为 {'、'.join(e for e in REASONING_EFFORTS if e)} 之一，留空表示不传")
     _number(cfg["tmdb"], "timeout", "tmdb", 1, 60)
     telegram = cfg["telegram"]
     owner = telegram.get("owner_id")

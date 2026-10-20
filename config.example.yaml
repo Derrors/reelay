@@ -93,6 +93,7 @@ system:
   llm:
     base_url: ""
     model: gpt-4o-mini
+    reasoning_effort: ""       # none | minimal | low | medium | high；留空不传，只对支持推理的模型生效
 
   # TMDB：base_url 留空用官方地址；国内连不上时可改用 https://api.tmdb.org/3 或自己的反向代理
   tmdb:
