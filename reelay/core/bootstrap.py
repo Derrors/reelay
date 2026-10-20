@@ -86,11 +86,11 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
-def _resolve(value: str) -> Path:
+def _resolve(value: str, root: Path) -> Path:
     path = Path(value).expanduser()
     if path.is_absolute():
         return path
-    for base in (Path.cwd(), paths.PROJECT_ROOT):
+    for base in (Path.cwd(), root):
         if (base / path).exists():
             return (base / path).resolve()
     return (Path.cwd() / path).resolve()
@@ -134,11 +134,11 @@ def _write_atomic(path: Path, text: str, mode: int | None = None) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _move_legacy_config(config: Path, env: dict[str, str]) -> None:
+def _move_legacy_config(config: Path, env: dict[str, str], root: Path) -> None:
     if config.exists():
         return
-    candidates = [_resolve(env["REELAY_CONFIG_PATH"])] if env.get("REELAY_CONFIG_PATH") else []
-    candidates += [paths.PROJECT_ROOT / paths.CONFIG_NAME, paths.PROJECT_ROOT / "config" / paths.CONFIG_NAME]
+    candidates = [_resolve(env["REELAY_CONFIG_PATH"], root)] if env.get("REELAY_CONFIG_PATH") else []
+    candidates += [root / paths.CONFIG_NAME, root / "config" / paths.CONFIG_NAME]
     for source in candidates:
         if source.is_file() and not _same(source, config):
             shutil.copy2(source, config)
@@ -151,16 +151,16 @@ def _move_legacy_config(config: Path, env: dict[str, str]) -> None:
             return
 
 
-def _copy_files(data_dir: Path, env: dict[str, str]) -> None:
+def _copy_files(data_dir: Path, env: dict[str, str], root: Path) -> None:
     for name, filename in FILE_ENV.items():
         if not env.get(name):
             continue
-        source, target = _resolve(env[name]), data_dir / filename
+        source, target = _resolve(env[name], root), data_dir / filename
         if source.is_file() and not target.exists() and not _same(source, target):
             shutil.copy2(source, target)
             log.warning("%s 指向的 %s 已复制到 %s", name, source, target)
     if env.get("REELAY_DB_PATH"):
-        source, target = _resolve(env["REELAY_DB_PATH"]), data_dir / paths.DATABASE_NAME
+        source, target = _resolve(env["REELAY_DB_PATH"], root), data_dir / paths.DATABASE_NAME
         if source.is_file() and not _same(source, target):
             if target.exists():
                 log.warning("数据库固定为 %s，不再使用 REELAY_DB_PATH 指向的 %s", target, source)
@@ -238,17 +238,19 @@ def _apply_strm(data_dir: Path, env: dict[str, str], imported: dict[str, str]) -
 
 
 def prepare(data_dir: str | Path | None = None, *, legacy_locations: bool | None = None,
-            env: dict[str, str] | None = None) -> None:
-    """启动前调用。legacy_locations 默认只在使用默认 data/ 时查找旧位置的配置（测试的临时目录不会去碰项目根目录）。"""
+            env: dict[str, str] | None = None, project_root: str | Path | None = None) -> None:
+    """启动前调用。legacy_locations 默认只在使用默认 data/ 时查找旧位置的配置；旧位置在 project_root（默认项目根目录）下。
+    测试必须传临时的 project_root：否则会把开发机上真实的 config.yaml 移走。"""
     data_dir = Path(data_dir or paths.DATA)
+    root = Path(project_root or paths.PROJECT_ROOT)
     env = dict(os.environ if env is None else env)
     if legacy_locations is None:
         legacy_locations = _same(data_dir, paths.DATA)
     config = data_dir / paths.CONFIG_NAME
     with _locked(data_dir):
         if legacy_locations:
-            _move_legacy_config(config, env)
-            _copy_files(data_dir, env)
+            _move_legacy_config(config, env, root)
+            _copy_files(data_dir, env, root)
         secrets = SecretStore(data_dir / paths.SECRETS_NAME)
         imported = secrets.imported()
         marks: dict[str, str] = {}

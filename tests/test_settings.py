@@ -131,6 +131,10 @@ class TestBootstrap(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.data = self.root / "data"
         self.data.mkdir()
+        # 旧位置只在临时目录里找：真实项目根目录下的 config.yaml 绝不能被测试移走
+        guard = patch.object(bootstrap.paths, "PROJECT_ROOT", self.root / "no-project-root")
+        guard.start()
+        self.addCleanup(guard.stop)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -151,10 +155,17 @@ class TestBootstrap(unittest.TestCase):
     def test_config_in_a_legacy_location_is_moved_into_data(self):
         legacy = self.root / "custom.yaml"
         legacy.write_text(json.dumps({"save_dirs": {"默认": "7"}, "defaults": {"save_to": "默认"}}), encoding="utf-8")
-        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_CONFIG_PATH": str(legacy)})
+        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_CONFIG_PATH": str(legacy)}, project_root=self.root)
         self.assertFalse(legacy.exists())
         self.assertTrue((self.root / "custom.yaml.migrated").exists())
         self.assertEqual(load_config(self.data / "config.yaml")["save_dirs"], {"默认": "7"})
+        # 项目根目录下的旧 config.yaml
+        (self.data / "config.yaml").unlink()
+        (self.root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "8"}, "defaults": {"save_to": "默认"}}),
+                                               encoding="utf-8")
+        bootstrap.prepare(self.data, legacy_locations=True, env={}, project_root=self.root)
+        self.assertEqual(load_config(self.data / "config.yaml")["save_dirs"], {"默认": "8"})
+        self.assertTrue((self.root / "config.yaml.migrated").exists())
 
     def test_environment_is_imported_once_and_web_changes_win(self):
         env = {"REELAY_LLM_API_KEY": "sk-old", "REELAY_LLM_MODEL": "m1", "REELAY_OWNER_ID": "42",
@@ -199,10 +210,11 @@ class TestBootstrap(unittest.TestCase):
         old = self.root / "old.db"
         old.write_bytes(b"")
         with self.assertRaisesRegex(bootstrap.BootstrapError, "mv"):
-            bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_DB_PATH": str(old)})
+            bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_DB_PATH": str(old)}, project_root=self.root)
         session = self.root / "custom.session"
         session.write_text("s")
-        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_TG_SESSION": str(session)})
+        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_TG_SESSION": str(session)},
+                          project_root=self.root)
         self.assertEqual((self.data / "userbot.session").read_text(), "s")
 
 
