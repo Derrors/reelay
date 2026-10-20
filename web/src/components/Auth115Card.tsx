@@ -252,7 +252,11 @@ export default function Auth115Card() {
             <p className="mt-2 flex items-center justify-center gap-2 text-sm text-foreground/85 sm:justify-start">
               <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />{qrMsg}
             </p>
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">直接用 App 扫码即可，不要保存或转发二维码图片。扫码登录使用独立会话，不会影响手机和网页上已登录的 115。</p>
+            <p className="mt-3 text-xs leading-5 text-muted-foreground">
+              直接用 App 扫码即可，不要保存或转发二维码图片。{qrMode === 'cookie'
+                ? '扫码登录使用独立会话，不会影响手机和网页上已登录的 115。'
+                : '授权后 Reelay 通过 115 开放平台整理文件，可随时在这里取消授权。'}
+            </p>
             <Button size="sm" variant="ghost" className="mt-3" onClick={stopQr}><X />取消</Button>
           </div>
         </div>

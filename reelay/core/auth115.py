@@ -608,6 +608,7 @@ class CredentialStore:
                 "sign": data.get("sign"),
                 "time": data.get("time"),
                 "app_id": aid,
+                "qrcode_url": qrcode_url,
                 "created_at": time.time(),
             }
         return {"uid": uid, "qrcode_url": qrcode_url, "app_id": aid,
@@ -637,7 +638,7 @@ class CredentialStore:
         resp = P115OpenClient.login_qrcode_scan_status({
             "uid": uid, "time": session["time"], "sign": session["sign"]})
         data = (resp or {}).get("data") or {}
-        status = data.get("status")
+        status = data.get("status", 0)  # 还没扫码时 115 返回空的 data
         if status == 2:
             token_resp = P115OpenClient.login_qrcode_access_token_open(uid)
             tokens = (token_resp or {}).get("data") or {}

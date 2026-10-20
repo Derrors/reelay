@@ -319,8 +319,11 @@ class TestAuth115Api(unittest.TestCase):
         self.assertEqual(self.client.delete("/api/auth115/oauth").status_code, 200)
         self.assertFalse(store.has_oauth)
 
-    def test_qr_image_returns_png_for_pending_session(self):
-        png_bytes = b"\x89PNG\r\n\x1a\nfake"
+    def test_qr_image_encodes_the_open_platform_link(self):
+        # 授权二维码必须是开放平台返回的 qrcode 链接；网页登录的二维码图片 App 扫了提示参数错误
+        import io
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
 
         class FakeP115Open:
             @staticmethod
@@ -330,20 +333,26 @@ class TestAuth115Api(unittest.TestCase):
 
             @staticmethod
             def login_qrcode(payload, app="web"):
-                return png_bytes
+                raise AssertionError("不能用网页登录的二维码图片")
 
+            @staticmethod
+            def login_qrcode_scan_status(payload):
+                return {"state": 1, "code": 0, "data": {}}  # 还没扫码时 115 返回空的 data
+
+        expected = io.BytesIO()
+        qrcode.make("https://115.com/scan/dg-u8", image_factory=SvgPathImage).save(expected)
         fake = type("M", (), {"P115OpenClient": FakeP115Open})()
         with patch.dict("sys.modules", {"p115client": fake}):
-            r1 = self.client.post("/api/auth115/oauth/qr")
-            uid = r1.json()["uid"]
+            uid = self.client.post("/api/auth115/oauth/qr").json()["uid"]
             r2 = self.client.get(f"/api/auth115/oauth/qr/image?uid={uid}")
-            self.assertEqual(r2.status_code, 200)
-            self.assertEqual(r2.headers["content-type"], "image/png")
-            self.assertEqual(r2.content, png_bytes)
+            self.assertEqual(r2.status_code, 200, r2.text)
+            self.assertEqual(r2.headers["content-type"], "image/svg+xml")
+            self.assertEqual(r2.content, expected.getvalue())
+            status = self.client.get(f"/api/auth115/oauth/qr?uid={uid}").json()
+            self.assertEqual((status["status"], status["message"]), (0, "等待扫码"))
         # 未知 uid 返回 404
         r3 = self.client.get("/api/auth115/oauth/qr/image?uid=nope")
         self.assertEqual(r3.status_code, 404)
-
 
 if __name__ == "__main__":
     unittest.main()

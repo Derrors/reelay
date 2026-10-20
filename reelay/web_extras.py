@@ -306,21 +306,22 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"查询 Cookie 扫码状态失败：{exc}") from exc
 
+    def _qr_svg(url: str) -> bytes:
+        import io
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+        output = io.BytesIO()
+        qrcode.make(url, image_factory=SvgPathImage).save(output)
+        return output.getvalue()
+
     @app.get("/api/auth115/cookie/qr/image")
     async def auth115_cookie_qr_image(uid: str = Query(...)):
         from fastapi import Response
         store = get_store()
 
         def _fetch() -> bytes:
-            import io
-            import qrcode
-            from qrcode.image.svg import SvgPathImage
             session = store.cookie_qr_session(uid)
-            url = session.get("qrcode_url") or f"https://115.com/scan/dg-{uid}"
-            image = qrcode.make(url, image_factory=SvgPathImage)
-            output = io.BytesIO()
-            image.save(output)
-            return output.getvalue()
+            return _qr_svg(session.get("qrcode_url") or f"https://115.com/scan/dg-{uid}")
 
         try:
             png = await asyncio.to_thread(_fetch)
@@ -351,18 +352,15 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
 
     @app.get("/api/auth115/oauth/qr/image")
     async def auth115_qr_image(uid: str = Query(...)):
-        """返回授权二维码 PNG：后端向 115 拉取，避免前端跨域与外链跳转。"""
+        """授权二维码：按开放平台返回的 qrcode 链接在本地生成。不能用网页登录的二维码图片接口，
+        那是另一种登录，App 扫了会提示参数错误。"""
         import asyncio
         from fastapi import Response
         store = get_store()
 
         def _fetch() -> bytes:
-            store.qr_session(uid)  # 校验会话存在且未过期
-            from p115client import P115OpenClient
-            data = P115OpenClient.login_qrcode({"uid": uid}, app="web")
-            if not isinstance(data, (bytes, bytearray)):
-                raise RuntimeError("二维码接口未返回图片")
-            return bytes(data)
+            session = store.qr_session(uid)  # 校验会话存在且未过期
+            return _qr_svg(session.get("qrcode_url") or f"https://115.com/scan/dg-{uid}")
 
         try:
             png = await asyncio.to_thread(_fetch)
@@ -370,7 +368,7 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"获取二维码图片失败：{exc}") from exc
-        return Response(content=png, media_type="image/png",
+        return Response(content=png, media_type="image/svg+xml",
                         headers={"Cache-Control": "no-store"})
 
     @app.delete("/api/auth115/oauth")
