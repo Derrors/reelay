@@ -181,12 +181,9 @@ _PREFERENCE_PROMPT = (
 
 
 @register(kind="provider", ptype="decision")
-class LLMDecision(SubscriptionDecision):
+class LLMDecision(ai.UsesAI, SubscriptionDecision):
     """自然语言偏好仅决定候选资源；不能覆盖硬过滤、低置信度和人工审批（订阅放行也可被偏好否决）。"""
     name = "llm"
-
-    def __init__(self) -> None:
-        self._client, self._model = ai.make_client()
 
     async def decide(self, ctx: PipelineContext) -> Decision:
         decision = await self._prefer(ctx)

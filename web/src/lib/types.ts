@@ -248,8 +248,11 @@ export interface IExtensionCatalog {
   /** 外部扩展导入或实例化失败的记录。 */
   load_errors?: Array<{ source: string; error: string }>;
 }
+/** 密钥名称 → 显示名与是否已设置（原值不会返回）。 */
+export type ISecretStatus = Record<string, { label: string; set: boolean }>;
 export interface IConfigResponse {
   revision: string;
+  secrets: ISecretStatus;
   extensions: IExtensionCatalog;
   config: Record<string, unknown>;
   text: string;

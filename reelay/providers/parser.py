@@ -197,11 +197,10 @@ def correction_examples(ctx: PipelineContext) -> list[dict]:
 
 
 @register(kind="provider", ptype="parser")
-class LLMParser:
+class LLMParser(ai.UsesAI):
     name = "llm"
 
     def __init__(self) -> None:
-        self._client, self._model = ai.make_client()
         self._cache = _ResultCache()
 
     def _cache_key(self, ctx: PipelineContext, response: dict, examples: list[dict]) -> str:

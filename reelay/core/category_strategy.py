@@ -39,7 +39,7 @@ def _csv(value: str) -> set[str]:
 
 def validate_strategy(strategy: Any) -> None:
     if not isinstance(strategy, Mapping) or set(strategy) - ALLOWED_MEDIA:
-        raise ValueError("dir_router.categories 仅允许 movie 和 tv 两个媒体类型")
+        raise ValueError("plugins.dir_router.categories 仅允许 movie 和 tv 两个媒体类型")
     for media_type, categories in strategy.items():
         if not isinstance(categories, Mapping) or not categories:
             raise ValueError(f"{media_type} 分类必须是非空对象")

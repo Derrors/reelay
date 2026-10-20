@@ -1,6 +1,6 @@
 """剧集订阅：用户在追的剧，后续新集由订阅决策（``SubscriptionDecision``）自动放行。
 
-订阅沿用缺集追更的配置 ``episode_tracker.subscriptions``，每项::
+订阅是系统配置 ``subscriptions``（缺集追更也用它），每项::
 
     {title: 剧名, season: 1, total: 36, tmdbid: 12345, auto: true}
 
@@ -23,15 +23,12 @@ FIELDS = ("title", "season", "total", "tmdbid", "auto")
 
 
 def validate(cfg: dict) -> None:
-    section = cfg.get("episode_tracker", {})
-    if not isinstance(section, dict):
-        raise ValueError("episode_tracker 必须是对象")
-    subscriptions = section.get("subscriptions", [])
+    subscriptions = cfg.get("subscriptions", [])
     if not isinstance(subscriptions, list):
-        raise ValueError("episode_tracker.subscriptions 必须是数组")
+        raise ValueError("subscriptions 必须是数组")
     seen = set()
     for index, item in enumerate(subscriptions):
-        label = f"episode_tracker.subscriptions[{index}]"
+        label = f"subscriptions[{index}]"
         if not isinstance(item, dict) or type(item.get("title")) is not str or not item["title"].strip():
             raise ValueError(f"{label} 必须包含 title")
         if set(item) - set(FIELDS):
@@ -48,9 +45,8 @@ def validate(cfg: dict) -> None:
 
 
 def items(cfg: dict) -> list[dict[str, Any]]:
-    section = cfg.get("episode_tracker", {}) or {}
     out = []
-    for item in section.get("subscriptions", []) or []:
+    for item in cfg.get("subscriptions", []) or []:
         if isinstance(item, dict) and isinstance(item.get("title"), str):
             out.append({"title": item["title"].strip(), "season": item.get("season") if item.get("season") is not None else 1,
                         "total": item.get("total"), "tmdbid": item.get("tmdbid"), "auto": item.get("auto", True)})

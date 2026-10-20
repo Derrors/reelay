@@ -149,7 +149,7 @@ def apply(cfg: dict, scope: str, proposal: dict) -> dict:
         # 来源的过滤规则逐项覆盖默认规则：空列表与 null 也要写明，否则会继承回默认值。
         entry["filters"] = dict(proposal["filters"])
     if proposal["categories"] is not None:
-        candidate["dir_router"]["categories"] = proposal["categories"]
+        candidate["plugins"]["dir_router"]["categories"] = proposal["categories"]
     if proposal["release"] is not None:
         candidate["release"] = proposal["release"]
     return candidate
@@ -190,7 +190,7 @@ def diff(cfg: dict, candidate: dict, scope: str) -> list[dict]:
     if before["min_resolution"] != after["min_resolution"]:
         changes.append({"section": label, "kind": "change",
                         "text": f"最低清晰度：{before['min_resolution'] or '不限'} → {after['min_resolution'] or '不限'}"})
-    old_cats, new_cats = cfg["dir_router"]["categories"], candidate["dir_router"]["categories"]
+    old_cats, new_cats = cfg["plugins"]["dir_router"]["categories"], candidate["plugins"]["dir_router"]["categories"]
     for media in ("movie", "tv"):
         name = "电影分类" if media == "movie" else "剧集分类"
         old, new = old_cats.get(media, {}), new_cats.get(media, {})
@@ -223,7 +223,7 @@ async def compile_rules(client, model: str, *, cfg: dict, scope: str, request: s
     _, current = _scope_filters(cfg, scope)
     categories = [{"media": media, "path": path, "genre_ids": cond.get("genre_ids"),
                    "origin_country": cond.get("origin_country")}
-                  for media, items in cfg["dir_router"]["categories"].items() for path, cond in items.items()]
+                  for media, items in cfg["plugins"]["dir_router"]["categories"].items() for path, cond in items.items()]
     payload = {"request": request, "scope": scope,
                "current": {"filters": current, "categories": categories, "release": cfg["release"]},
                "genres": GENRES}
@@ -245,8 +245,8 @@ async def compile_rules(client, model: str, *, cfg: dict, scope: str, request: s
                          {"role": "user", "content": f"上面的规则未通过配置校验：{exc}。请修正后重新输出完整 JSON。"}]
     sections: dict[str, Any] = {"defaults" if scope == "defaults" else "sources":
                                 candidate["defaults"] if scope == "defaults" else candidate["sources"]}
-    if candidate["dir_router"] != cfg["dir_router"]:
-        sections["dir_router"] = candidate["dir_router"]
+    if candidate["plugins"]["dir_router"] != cfg["plugins"]["dir_router"]:
+        sections["plugins"] = candidate["plugins"]
     if candidate["release"] != cfg["release"]:
         sections["release"] = candidate["release"]
     return {"summary": proposal["summary"], "unsupported": proposal["unsupported"],

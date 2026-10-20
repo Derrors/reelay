@@ -62,8 +62,11 @@ class Base(unittest.IsolatedAsyncioTestCase):
     CFG = {"save_dirs": {"剧集": "2", "默认": "3", "动漫": "4", "电影": "5"}, "defaults": {"save_to": "默认"}}
 
     def setUp(self):
-        self.env = patch.dict(os.environ, {"REELAY_LLM_RETRY_DELAY": "0"}, clear=True)
+        self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
+        no_delay = patch("reelay.core.ai.RETRY_DELAY", 0)  # 瞬时错误重试不真的等待
+        no_delay.start()
+        self.addCleanup(no_delay.stop)
         # 凭证中心默认读仓库 data/ 下的凭证文件：开发机上可能有真实 cookie，测试里分享读取不能访问 115
         self.no_115 = patch("reelay.plugins.share_probe.get_store", return_value=types.SimpleNamespace(has_cookie=False))
         self.no_115.start()

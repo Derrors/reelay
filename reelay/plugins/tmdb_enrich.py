@@ -5,7 +5,7 @@
 目录（默认命名模板写入 ``[tmdbid=xxx]``）。最佳候选不可信时标记 ``matched=False`` 并保留 AI
 标题，不硬改；置信度计算会据此转人工。
 
-- 配了 ``REELAY_TMDB_API_KEY``：走真实搜索（标准库 urllib，无需额外依赖）。
+- 配了 TMDB API Key（管理台「设置」）：走真实搜索（标准库 urllib，无需额外依赖）。
 - 未配：降级放行（沿用 AI 标题），不阻断主流程。
 - anime：有季/集信息先按剧集搜，未命中再按电影搜（动画电影）。
 """
@@ -33,17 +33,18 @@ def search_kinds(media_type: str | None, episodic: bool) -> list[str]:
 class TmdbEnrich:
     name = "tmdb_enrich"
     ui_label = "TMDB 元数据补全"
-    ui_description = "按标题相似度与年份匹配 TMDB 条目，补充规范标题、年份、类型与国家；未配置凭证时保留原标题。"
-    ui_fields = [
-        {'path': 'tmdb.language', 'label': '匹配语言', 'type': 'string', 'choices': ['zh-CN', 'zh-TW', 'en-US']},
-        {'path': 'tmdb.timeout', 'label': '请求超时（秒）', 'type': 'number', 'min': 1, 'max': 60},
-    ]
+    ui_description = ("按标题相似度与年份匹配 TMDB 条目，补充规范标题、年份、类型与国家；未配置凭证时保留原标题。"
+                      "TMDB 的 key、地址与语言在「设置 → AI 与 TMDB」中配置。")
     stage = "after_parse"
     order = 50
 
     def __init__(self) -> None:
         self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
-        self._key = None if self._dry_run else tmdb.api_key()
+
+    @property
+    def _key(self) -> str | None:
+        """用到时读取密钥：管理台填好 TMDB key 后不用重启。"""
+        return None if self._dry_run else tmdb.api_key()
 
     def needs_refresh(self, ctx: PipelineContext) -> bool:
         """配置 key 之前识别、或上次查询出错的任务，启动时补跑一次。"""

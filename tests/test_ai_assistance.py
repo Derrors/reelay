@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import patch
 
-from reelay.core import inbox, release, subscriptions
+from reelay.core import inbox, release, secret_store, subscriptions
 from reelay.core.contracts import Decision, ParsedResource, TaskState
 from reelay.core.service import ConflictError
 from reelay.providers.decision import LLMDecision, SubscriptionDecision
@@ -73,10 +72,9 @@ class TestSubscriptionDecision(Base):
     def test_subscription_config_is_validated(self):
         for bad in ({"title": "剧", "tmdbid": "100"}, {"title": "剧", "auto": "yes"}, {"title": "剧", "extra": 1}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                subscriptions.validate({"episode_tracker": {"subscriptions": [bad]}})
+                subscriptions.validate({"subscriptions": [bad]})
         with self.assertRaises(ValueError):
-            subscriptions.validate({"episode_tracker": {"subscriptions": [{"title": "剧", "tmdbid": 1},
-                                                                           {"title": "另名", "tmdbid": 1}]}})
+            subscriptions.validate({"subscriptions": [{"title": "剧", "tmdbid": 1}, {"title": "另名", "tmdbid": 1}]})
 
     def test_request_sentences_are_understood_without_ai(self):
         self.assertEqual(subscriptions.parse_request("我在追《一瓯春》第二季")["title"], "一瓯春")
@@ -96,7 +94,7 @@ class TestSubscriptionService(Base):
         await self.pending_tv("3", tmdbid=7)
         result = await self.service.add_subscription({"title": "剧", "season": 1, "tmdbid": 100})
         self.assertEqual(sorted(result["pending"]), sorted([a.task_id, b.task_id]))
-        self.assertEqual(self.service.get_config()["episode_tracker"]["subscriptions"],
+        self.assertEqual(self.service.get_config()["subscriptions"],
                          [{"title": "剧", "season": 1, "tmdbid": 100}])
         with self.assertRaises(ConflictError):
             await self.service.add_subscription({"title": "剧 ", "season": 1, "tmdbid": 100})
@@ -136,7 +134,7 @@ class TestSubscriptionService(Base):
         hits = [{"id": 1, "name": "完全不同", "first_air_date": "2020-01-01"},
                 {"id": 2, "name": "一瓯春", "first_air_date": "2025-01-01", "poster_path": "/p.jpg"}]
         details = {"seasons": [{"season": 0, "episodes": 3}, {"season": 1, "episodes": 36}, {"season": 2, "episodes": 30}]}
-        with patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "k"}), \
+        with secret_store.override(tmdb_api_key="k"), \
                 patch("reelay.core.tmdb.search", return_value=hits), \
                 patch("reelay.core.tmdb.tv_details", return_value=details):
             result = await self.service.resolve_subscription("我最近在追一瓯春第二季")

@@ -17,7 +17,7 @@ Reelay 的主流程（监听 → 识别 → 转存整理）是固定骨架，所
 
 ## 加载方式
 
-- **单文件或包目录**：放进 `REELAY_PLUGIN_DIRS` 指向的目录（多个用 `:` 分隔；Docker 部署为 `deploy/plugins`），重启后自动发现。
+- **单文件或包目录**：放进 `data/plugins/`（Docker 部署把 `deploy/plugins` 挂载到 `/app/data/plugins`），重启后自动发现。
 - **独立发行包**：在你的包里声明 entry point，`pip install` 后自动加载：
 
   ```toml
@@ -42,7 +42,7 @@ class MyHook: ...
 class MyListener: ...
 ```
 
-装饰器只记录类，`discover()` 时用无参构造函数实例化。每个扩展需要一个全局唯一的 `name`，它同时是配置里 `plugins.<name>` 的开关名和 Provider 的引用名。
+装饰器只记录类，`discover()` 时用无参构造函数实例化。每个扩展需要一个全局唯一的 `name`，它同时是 Provider 的引用名和配置里 `plugins.<name>` 的键：开关是 `plugins.<name>.enabled`，扩展自己的设置也放在 `plugins.<name>` 下。
 
 ## 贯穿全程的 PipelineContext
 
@@ -147,7 +147,7 @@ class MyListener:
 | 字段 | 内容 | 谁在读 |
 | --- | --- | --- |
 | `title` / `year` | 规范标题与上映 / 首播年份 | 去重键（`片名\|S01\|E02`，不同来源的同一部作品靠它合并）、整理路径、缺集追更 |
-| `genre_ids` | TMDB 类型 ID 整数列表，整体替换 AI 的值 | 二级分类 `dir_router.categories`（如 16 = 动画）、命名模板 |
+| `genre_ids` | TMDB 类型 ID 整数列表，整体替换 AI 的值 | 二级分类 `plugins.dir_router.categories`（如 16 = 动画）、命名模板 |
 | `origin_country` | 两位大写国家/地区代码；数据源没有时保留 AI 的值，不要清空 | 二级分类、命名模板 |
 | `raw_fields["tmdbid"]` | TMDB 条目 ID（整数） | 命名模板变量 `tmdb_id`（默认模板写入 `[tmdbid=…]`）、缺集追更查询已播集数 |
 | `raw_fields["poster_path"]` | TMDB 图片路径，如 `/abc.jpg`，不是完整 URL | 管理台海报（拼接 `https://image.tmdb.org/t/p/<尺寸>`）；没有时显示文字封面 |
@@ -204,7 +204,8 @@ class DoubanFallback:
 ```python
 from reelay.core import runtime
 
-url = runtime.get("webhook.url")                      # 点路径读取当前任务采用的配置
+section = runtime.plugin_config("my_plugin")           # 本扩展的设置 plugins.my_plugin（不含 enabled）
+language = runtime.get("tmdb.language")                # 点路径读取系统配置
 runtime.services().notify("📦 备份完成", key="my_plugin")  # 发系统通知到所有通知渠道（持久化投递）
 state = runtime.services().state("my_plugin")          # 按扩展隔离的持久化 KV，值需可 JSON 序列化
 state.set("last_run", "2026-10-19")
@@ -213,7 +214,7 @@ runtime.observe("my_api", "failed", "TimeoutError")    # 记录一次外部调�
 
 `runtime.observe` 记录的是最近一次真实调用的结果，不会因一段时间没有调用而过期，可在 `GET /api/health` 的 `runtime` 中查看；内置的 LLM 解析与 TMDB 补全用它驱动管理台「AI 解析」「TMDB 元数据」的连接状态。
 
-`runtime.get` 读到的是任务接收时的配置快照，配置变更只影响新任务。`runtime.get` 与 `services()` 在内核调用 Hook、Event、通知渠道，以及解析/决策/存储 Provider 的方法时可用（包括其中的 `asyncio.to_thread`）；消息源的 `listen` 是长驻协程，不在任务作用域内。
+`runtime.get` / `runtime.plugin_config` 读到的是任务接收时的配置快照，配置变更只影响新任务；不在任务作用域里时读进程当前的有效配置。`services()` 在内核调用 Hook、Event、通知渠道，以及解析/决策/存储 Provider 的方法时可用（包括其中的 `asyncio.to_thread`）；消息源的 `listen` 是长驻协程，不在任务作用域内。
 
 同步阻塞调用（HTTP、SDK）请放进 `asyncio.to_thread`，不要阻塞事件循环。
 
@@ -224,28 +225,40 @@ class MyHook:
     name = "my_hook"
     ui_label = "我的扩展"
     ui_description = "一句话说明，显示在插件列表"
-    ui_fields = [   # 自动生成配置表单，并在保存时按类型校验
-        {"path": "my_hook.threshold", "label": "阈值", "type": "number", "min": 0, "max": 1},
-        {"path": "my_hook.mode", "label": "模式", "type": "string", "choices": ["a", "b"]},
-        {"path": "my_hook.enabled_x", "label": "开关", "type": "boolean"},
+    ui_fields = [   # 自动生成配置表单，并在保存时按类型校验；path 相对 plugins.my_hook
+        {"path": "threshold", "label": "阈值", "type": "number", "min": 0, "max": 1, "default": 0.5},
+        {"path": "mode", "label": "模式", "type": "string", "choices": ["a", "b"]},
+        {"path": "strict", "label": "严格模式", "type": "boolean"},
     ]
-    default_enabled = False   # 未在 plugins 中显式配置时默认关闭（适合有副作用的扩展）
+    default_enabled = False   # 未设置 plugins.my_hook.enabled 时默认关闭（适合有副作用的扩展）
 
     def validate_config(self, cfg: dict) -> None:
         """扩展启用时，配置保存与启动都会调用；抛 ValueError 拒绝无效配置。"""
+        section = runtime.plugin_config(self.name, cfg)
 ```
 
-数组、对象等复杂配置在 `validate_config` 中自行校验，用户通过配置文件维护。
+对应的配置文件：
+
+```yaml
+plugins:
+  my_hook:
+    enabled: true
+    threshold: 0.7
+    mode: a
+```
+
+`default` 是未填写时扩展实际使用的值，只用于在表单里提示。数组、对象等复杂配置在 `validate_config` 中自行校验，用户通过配置文件维护。扩展不要读环境变量：需要的地址、开关写成 `ui_fields`；需要的文件放在 `reelay.core.paths.DATA` 下。
+
+旧版本的扩展把设置写在配置顶层（如 `my_hook.threshold`）、`ui_fields` 写完整路径。升级后这些顶层设置原样保留（启动日志会提示），请把它们移到 `plugins.<name>` 下，`ui_fields` 改成相对路径、读取改用 `runtime.plugin_config`。
 
 ## 测试
 
-用 `REELAY_PLUGIN_DIRS` 加载你的扩展并直接调用，参考 [`tests/test_examples.py`](../tests/test_examples.py)：
+用 `discover(plugin_dirs=[...])` 加载你的扩展并直接调用，参考 [`tests/test_examples.py`](../tests/test_examples.py)：
 
 ```python
-with patch.dict(os.environ, {"REELAY_PLUGIN_DIRS": "path/to/plugins"}, clear=True):
-    registry = discover()
+registry = discover(plugin_dirs=["path/to/plugins"])
 assert registry.load_errors == []
 hook = next(h for h in registry.hooks["after_parse"] if h.name == "my_hook")
-with runtime.scope({"my_hook": {"threshold": 0.5}}):
+with runtime.scope({"plugins": {"my_hook": {"threshold": 0.5}}}):
     assert await hook.run(ctx) is True
 ```

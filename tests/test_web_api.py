@@ -46,8 +46,7 @@ class TestManagementApi(unittest.TestCase):
             encoding="utf-8",
         )
         self.app = create_app(
-            db_path=str(root / "reelay.db"),
-            config_path=str(self.config_path),
+            data_dir=root,
             start_worker=False,
             frontend_dir=self.frontend,
         )
@@ -135,16 +134,18 @@ class TestManagementApi(unittest.TestCase):
         self.assertEqual(self.config_path.read_text(), before)
 
     def test_health_reports_runtime_and_does_not_treat_credentials_as_connected(self):
-        with patch.dict(os.environ, {"REELAY_TG_API_ID": "1", "REELAY_TG_API_HASH": "dummy", "REELAY_115_COOKIES": "dummy"}):
-            dashboard = self.client.get("/api/dashboard").json()
-            self.assertEqual(dashboard["mode"], "not_running")
-            self.assertEqual(dashboard["connections"]["p115"]["status"], "unverified")
-            self.app.state.store.heartbeat("worker", status="running", config_revision=self.app.state.pipeline.revision)
-            self.app.state.store.heartbeat("source", status="connected")
-            dashboard = self.client.get("/api/dashboard").json()
-            self.assertEqual(dashboard["mode"], "live")
-            self.assertEqual(dashboard["connections"]["telegram"]["status"], "connected")
-            self.assertEqual(dashboard["connections"]["p115"]["status"], "unverified")
+        from reelay.core import auth115, secret_store
+        secret_store.current().update({"telegram_api_id": "1", "telegram_api_hash": "dummy"})
+        auth115.get_store().set_cookies("UID=1;CID=2;SEID=3")
+        dashboard = self.client.get("/api/dashboard").json()
+        self.assertEqual(dashboard["mode"], "not_running")
+        self.assertEqual(dashboard["connections"]["p115"]["status"], "unverified")
+        self.app.state.store.heartbeat("worker", status="running", config_revision=self.app.state.pipeline.revision)
+        self.app.state.store.heartbeat("source", status="connected")
+        dashboard = self.client.get("/api/dashboard").json()
+        self.assertEqual(dashboard["mode"], "live")
+        self.assertEqual(dashboard["connections"]["telegram"]["status"], "connected")
+        self.assertEqual(dashboard["connections"]["p115"]["status"], "unverified")
         self.assertIn("worker", self.client.get("/api/health").json()["runtime"])
 
     def test_dashboard_reports_115_cookie_probe_within_its_check_interval(self):
@@ -222,8 +223,7 @@ class TestAuth115Api(unittest.TestCase):
             "sources": [], "routing": [],
         }), encoding="utf-8")
         self.app = create_app(
-            db_path=str(root / "reelay.db"),
-            config_path=str(root / "config.yaml"),
+            data_dir=root,
             start_worker=False,
             frontend_dir=root / "frontend",
         )
@@ -236,7 +236,6 @@ class TestAuth115Api(unittest.TestCase):
         self.tempdir.cleanup()
         self.env_loader.stop()
         self.env.stop()
-        os.environ.pop("REELAY_115_COOKIES", None)
 
     def test_status_empty(self):
         data = self.client.get("/api/auth115/status").json()

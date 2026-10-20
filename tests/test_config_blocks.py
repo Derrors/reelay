@@ -1,5 +1,4 @@
 """配置块、注册目录、目录浏览错误与长ID回归。全部写入临时目录。"""
-import os
 import unittest
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -27,7 +26,7 @@ class TestConfigBlocks(unittest.TestCase):
         cfg = self.client.get('/api/config').json()
         before = self.config_path.read_bytes()
         for section in ({'approval': {'timeout_hours': -1}}, {'defaults': {'confidence_threshold': 2}},
-                        {'save_dirs': {'bad': '-2'}}, {'organize': {'naming': {'tv': '{missing}/{ext}'}}},
+                        {'save_dirs': {'bad': '-2'}}, {'plugins': {'organizer': {'naming': {'tv': '{missing}/{ext}'}}}},
                         {'plugins': {'does_not_exist': True}}, {'tmdb': {'timeout': 0}}):
             response = self.client.patch('/api/config/sections', json={'revision': cfg['revision'], 'sections': section})
             self.assertEqual(response.status_code, 422, response.text)
@@ -45,19 +44,27 @@ class TestConfigBlocks(unittest.TestCase):
     def test_catalog_is_dynamic_including_events(self):
         registry = self.app.state.pipeline.reg
         listener = SimpleNamespace(name='test_audit', event='saved', ui_label='测试审计',
-            ui_fields=[{'path':'audit.level','label':'级别','type':'string','choices':['info','error']}])
+            ui_fields=[{'path':'level','label':'级别','type':'string','choices':['info','error']}])
         registry.add_listener(listener)
         res = self.client.get('/api/extensions')
         self.assertIn('test_audit', [event['name'] for event in res.json()['events']])
         config = self.client.get('/api/config').json()
-        response = self.client.patch('/api/config/sections', json={'revision':config['revision'], 'sections': {'plugins':{'test_audit':False},'audit':{'level':'info'}}})
+        event = next(x for x in res.json()['events'] if x['name'] == 'test_audit')
+        self.assertEqual(event['fields'][0]['path'], 'plugins.test_audit.level')  # 前端按完整路径读写
+        plugins = {**config['config']['plugins'], 'test_audit': {'enabled': False, 'level': 'info'}}
+        response = self.client.patch('/api/config/sections', json={'revision':config['revision'], 'sections': {'plugins': plugins}})
         self.assertEqual(response.status_code,200,response.text)
+        bad = {**plugins, 'test_audit': {'level': 'verbose'}}
+        config = self.client.get('/api/config').json()
+        self.assertEqual(self.client.patch('/api/config/sections', json={'revision': config['revision'], 'sections': {'plugins': bad}}).status_code, 422)
         self.assertEqual(registry.listeners_for('saved',self.app.state.pipeline.cfg),[])
 
     def test_protected_extensions_and_config_sections(self):
-        with patch.dict(os.environ, {'REELAY_WEB_PASSWORD':'test-only'}):
-            for method, path in [('get','/api/extensions'),('patch','/api/config/sections'),('post','/api/config/validate')]:
-                self.assertEqual(getattr(self.client,method)(path).status_code,401)
+        from reelay.core import secret_store
+        secret_store.current().update({'web_password': 'test-only'})
+        for method, path in [('get','/api/extensions'),('patch','/api/config/sections'),('post','/api/config/validate'),
+                             ('get','/api/settings/secrets'),('put','/api/settings/secrets')]:
+            self.assertEqual(getattr(self.client,method)(path).status_code,401)
 
     def test_plugin_specific_config_types_and_previews(self):
         catalog = self.client.get('/api/extensions').json()['hooks']
@@ -71,7 +78,7 @@ class TestConfigBlocks(unittest.TestCase):
         self.assertEqual(preview.json()['path'], '示例标题/示例标题 - 4K.mkv')
         cfg = self.client.get('/api/config').json()['config']
         classified = self.client.post('/api/extensions/dir-router/preview', json={
-            'categories': cfg['dir_router']['categories'], 'media_type': 'tv',
+            'categories': cfg['plugins']['dir_router']['categories'], 'media_type': 'tv',
             'genre_ids': [16], 'origin_country': ['JP'],
         })
         self.assertEqual(classified.status_code, 200, classified.text)

@@ -2,7 +2,8 @@
 
 所有 AI 能力（解析、偏好决策、转人工前的方案兜底、规则起草、建议措辞……）都经过这里：
 
-- ``make_client()``：按环境变量创建客户端；未配 key、未装 SDK 或模拟模式返回 None，调用方自行降级；
+- ``make_client()``：按系统配置 ``llm``（地址、模型）与密钥创建客户端；未配 key、未装 SDK 或模拟模式
+  返回 None，调用方自行降级；使用方继承 ``UsesAI``，每次用到时取，管理台改了立即生效；
 - ``complete_json()``：一次结构化调用 —— JSON schema 约束输出，调用方的 ``validate`` 做本地严格校验；
   瞬时错误退避重试，非法输出重试一次；
 - 每次请求（含失败）记入 ``llm_calls``：用途、模型、耗时、token 数，以及输出是否通过校验。
@@ -18,9 +19,12 @@ import re
 import time
 from typing import Any, Callable
 
-from . import runtime
+from . import runtime, secret_store
+from .config import DEFAULT_LLM_MODEL as DEFAULT_MODEL
 
-DEFAULT_MODEL = "gpt-4o-mini"
+# 瞬时错误（超时、限流、5xx）的退避重试次数与首次间隔（秒）
+RETRIES = 2
+RETRY_DELAY = 2.0
 
 _TRANSIENT_ERRORS = {"APITimeoutError", "APIConnectionError", "RateLimitError",
                      "InternalServerError", "TimeoutError", "ConnectionError"}
@@ -38,21 +42,55 @@ def dry_run() -> bool:
     return os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
 
 
+_CLIENTS: dict[tuple[str, str], Any] = {}
+
+
 def make_client() -> tuple[Any | None, str]:
-    """返回 (客户端或 None, 模型名)。每个使用方各持一份，测试可直接替换 ``_client``。"""
-    model = os.getenv("REELAY_LLM_MODEL", DEFAULT_MODEL)
+    """返回 (客户端或 None, 模型名)；同一组 key 与地址复用同一个客户端。"""
+    model = str(runtime.get("llm.model") or DEFAULT_MODEL)
     if dry_run():
         return None, model
-    key = os.getenv("REELAY_LLM_API_KEY")
+    key = secret_store.get("llm_api_key")
     if not key:
         return None, model
-    try:
-        from openai import AsyncOpenAI  # 延迟导入
-        # 关掉 SDK 自带的重试：重试只由 request() 负责，否则两层叠加，超时时一次调用最多要发 9 次请求，
-        # 调用记录也对不上实际请求。
-        return AsyncOpenAI(api_key=key, base_url=os.getenv("REELAY_LLM_BASE_URL") or None, max_retries=0), model
-    except Exception:  # noqa: BLE001 - 未安装 SDK 时按未配置处理
-        return None, model
+    base_url = str(runtime.get("llm.base_url") or "")
+    client = _CLIENTS.get((key, base_url))
+    if client is None:
+        try:
+            from openai import AsyncOpenAI  # 延迟导入
+            # 关掉 SDK 自带的重试：重试只由 request() 负责，否则两层叠加，超时时一次调用最多要发 9 次请求，
+            # 调用记录也对不上实际请求。
+            client = AsyncOpenAI(api_key=key, base_url=base_url or None, max_retries=0)
+        except Exception:  # noqa: BLE001 - 未安装 SDK 时按未配置处理
+            return None, model
+        _CLIENTS.clear()  # 换了 key 或地址，旧客户端不再使用
+        _CLIENTS[(key, base_url)] = client
+    return client, model
+
+
+class UsesAI:
+    """使用 LLM 的扩展继承它：``_client`` / ``_model`` 在用到时按当前配置与密钥取得；
+    测试或调用方直接赋值即可覆盖（赋 None 表示不用 AI）。"""
+
+    @property
+    def _client(self) -> Any | None:
+        if "_client_override" in self.__dict__:
+            return self.__dict__["_client_override"]
+        return make_client()[0]
+
+    @_client.setter
+    def _client(self, value: Any | None) -> None:
+        self.__dict__["_client_override"] = value
+
+    @property
+    def _model(self) -> str:
+        if "_model_override" in self.__dict__:
+            return self.__dict__["_model_override"]
+        return make_client()[1]
+
+    @_model.setter
+    def _model(self, value: str) -> None:
+        self.__dict__["_model_override"] = value
 
 
 def is_transient(exc: Exception) -> bool:
@@ -85,8 +123,7 @@ async def request(client, *, purpose: str = "other", task_id: str | None = None,
 
     返回 (响应, 开始时间)：失败的请求在这里记录，成功的由调用方校验输出后再记录结果。
     """
-    retries = max(0, int(os.getenv("REELAY_LLM_RETRIES", "2")))
-    delay = max(0.0, float(os.getenv("REELAY_LLM_RETRY_DELAY", "2")))
+    retries, delay = RETRIES, RETRY_DELAY
     model = str(params.get("model", ""))
     for attempt in range(retries + 1):
         started = time.monotonic()

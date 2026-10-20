@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from typing import Any, Awaitable, Callable
 
+from ..core import paths, runtime, secret_store
 from ..core.contracts import RawMessage
 from ..core.registry import register
 
@@ -77,9 +77,7 @@ class TelegramUserbotSource:
         self._client = None
         self._authorized = False
         self._targets: list[str] = []
-        self._api_id = os.getenv("REELAY_TG_API_ID")
-        self._api_hash = os.getenv("REELAY_TG_API_HASH")
-        self._session = os.getenv("REELAY_TG_SESSION", "data/userbot.session")
+        self._session = str(paths.USERBOT_SESSION)
         self._watermark: Callable[[str], int | None] | None = None
         self.backfilled = 0
         self.backfill_done = False  # 本次监听的启动补拉已结束（含失败），日报据此决定何时发送
@@ -106,8 +104,11 @@ class TelegramUserbotSource:
             await self._client.disconnect()
 
     async def listen(self, emit: EmitFn) -> None:
+        # 在管理台「设置」填写；改了要重启主进程（会话在启动时建立）
+        self._api_id = secret_store.get("telegram_api_id")
+        self._api_hash = secret_store.get("telegram_api_hash")
         if not (self._api_id and self._api_hash):
-            raise RuntimeError("未配置 REELAY_TG_API_ID / API_HASH，无法启用 telegram 源")
+            raise RuntimeError("未配置 Telegram API ID / API Hash（管理台「设置」中填写），无法启用 telegram 源")
 
         from telethon import TelegramClient, events  # 延迟导入
 
@@ -139,7 +140,7 @@ class TelegramUserbotSource:
             account = await self._client.get_me()
             if not account or getattr(account, "bot", False):
                 raise RuntimeError(
-                    "REELAY_TG_SESSION 必须登录个人 Telegram 账号，不能使用控制 Bot 会话"
+                    "监听会话（data/userbot.session）必须登录个人 Telegram 账号，不能使用控制 Bot 会话"
                 )
             self._authorized = True
             ready.set()
@@ -161,8 +162,8 @@ class TelegramUserbotSource:
         从最新往旧读取：停机很久时优先补最近的消息（较早的分享大多已失效），遇到超过
         max_days 的消息即停止，上限只计入需要补拉的消息。首次监听（无水位）不导入历史。
         """
-        limit = int(os.getenv("REELAY_TG_BACKFILL_LIMIT", "200"))
-        max_age = float(os.getenv("REELAY_TG_BACKFILL_MAX_DAYS", "7")) * 86400
+        limit = int(runtime.get("telegram.backfill_limit", 200))
+        max_age = float(runtime.get("telegram.backfill_max_days", 7)) * 86400
         if not self._watermark or limit <= 0:
             return 0
         total = 0

@@ -1,5 +1,6 @@
 import type {
   IConfigResponse,
+  ISecretStatus,
   IDashboard,
   IInboxItem,
   IDelivery,
@@ -90,6 +91,11 @@ export const api = {
       method: 'PATCH', body: JSON.stringify({ sections, revision }),
     }),
   config: () => request<IConfigResponse>('config'),
+  /** 密钥只能设置、替换或清除（值为空），返回各项是否已设置；修改 Web 密码需带上当前密码。 */
+  saveSecrets: (changes: Record<string, string | null>, currentPassword?: string) =>
+    request<ISecretStatus>('settings/secrets', {
+      method: 'PUT', body: JSON.stringify({ changes, current_password: currentPassword || null }),
+    }),
   saveConfig: (config: Record<string, unknown>) =>
     request<{ config: Record<string, unknown> }>('config', {
       method: 'PUT',

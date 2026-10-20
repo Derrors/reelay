@@ -5,9 +5,7 @@
 """
 from __future__ import annotations
 
-import hmac
 import json
-import os
 import re
 import secrets
 import time
@@ -18,6 +16,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .core import secret_store
 from .core.media import multi_season
 
 # 会话保存在内存即可：单实例个人工具，重启后要求重新登录。token -> 过期时间
@@ -49,12 +48,9 @@ _COOKIE = "reelay_session"
 _SESSION_TTL = 7 * 24 * 3600
 
 
-def _password() -> str | None:
-    return os.getenv("REELAY_WEB_PASSWORD") or None
-
-
 def auth_enabled() -> bool:
-    return bool(_password())
+    """设置了 Web 登录密码（管理台「设置」中修改）才要求登录。"""
+    return bool(secret_store.get("web_password"))
 
 
 def _session_valid(token: str | None) -> bool:
@@ -104,20 +100,25 @@ class ParseTestPayload(BaseModel):
 class CookiePayload(BaseModel):
     cookies: str
 
+
+class SecretsPayload(BaseModel):
+    # 名称 → 新值；空字符串或 null 表示清除
+    changes: dict[str, str | None]
+    current_password: str | None = None
+
 class BatchPayload(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
     action: str = ""  # approve | reject | retry
     save_dir_alias: str | None = None  # 仅 approve：统一改投到该目录
 
 
-def register_extras(app, *, project_root: Path, store, service, registry) -> None:
+def register_extras(app, *, log_file: Path, store, service, registry) -> None:
     # ------------------------------------------------------------------ #
     # 1) 鉴权
     # ------------------------------------------------------------------ #
     @app.post("/api/auth/login")
     async def login(payload: LoginPayload, request: Request):
-        pw = _password()
-        if not pw:
+        if not auth_enabled():
             return {"ok": True, "auth_required": False}
         client = request.client.host if request.client else "unknown"
         now = time.time()
@@ -125,7 +126,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         if len(recent) >= LOGIN_MAX_FAILURES:
             wait = int(LOGIN_WINDOW - (now - recent[0])) + 1
             raise HTTPException(status_code=429, detail=f"尝试过于频繁，请 {wait} 秒后再试")
-        if not hmac.compare_digest(payload.password.encode(), pw.encode()):
+        if not secret_store.current().check_password(payload.password):
             _FAILURES[client] = [*recent, now]
             raise HTTPException(status_code=401, detail="密码错误")
         _FAILURES.pop(client, None)
@@ -138,6 +139,34 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
         resp.set_cookie(_COOKIE, token, httponly=True, samesite="lax",
                         max_age=_SESSION_TTL, path="/")
         return resp
+
+    def _new_session(body: dict) -> JSONResponse:
+        token = secrets.token_urlsafe(32)
+        _SESSIONS[token] = time.time() + _SESSION_TTL
+        resp = JSONResponse(body)
+        resp.set_cookie(_COOKIE, token, httponly=True, samesite="lax", max_age=_SESSION_TTL, path="/")
+        return resp
+
+    @app.get("/api/settings/secrets")
+    async def secret_status():
+        return service.secret_status()
+
+    @app.put("/api/settings/secrets")
+    async def update_secrets(payload: SecretsPayload):
+        from .core.service import ConflictError
+        try:
+            status = service.update_secrets(payload.changes, current_password=payload.current_password)
+        except ConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if "web_password" not in payload.changes:
+            return status
+        # 改了或清除了 Web 密码：其他已登录的会话全部失效，当前页面换一个新会话继续使用
+        _SESSIONS.clear()
+        if not auth_enabled():
+            return status
+        return _new_session(status)
 
     @app.post("/api/auth/logout")
     async def logout(request: Request):
@@ -210,11 +239,8 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
                 raise HTTPException(status_code=409, detail='配置文件当前无效，先修复原始文件；不会覆盖损坏配置。')
             if payload.get('revision') != config_revision(cfg):
                 raise HTTPException(status_code=409, detail='配置已被其他页面或进程修改，请重新加载后再保存。')
-            allowed = {'save_dirs', 'defaults', 'sources', 'forward', 'organize', 'dir_router', 'routing', 'approval',
-                       'providers', 'plugins', 'ai', 'release'}
-            catalog = registry.catalog(cfg)
-            objects = [x for rows in catalog['providers'].values() for x in rows] + catalog['hooks'] + catalog['events']
-            allowed.update(f['path'].split('.')[0] for x in objects for f in x['fields'])
+            from .core.config import SYSTEM_KEYS
+            allowed = {*SYSTEM_KEYS, 'plugins'}  # 扩展的设置都在 plugins.<名> 下
             if set(payload['sections']) - allowed:
                 raise HTTPException(status_code=422, detail='包含未声明的配置模块')
             updated = deepcopy(cfg)
@@ -356,7 +382,7 @@ def register_extras(app, *, project_root: Path, store, service, registry) -> Non
     # 3) 运行日志查看
     # ------------------------------------------------------------------ #
     def _log_path() -> Path:
-        return Path(os.getenv("REELAY_LOG_FILE", str(project_root / "data" / "reelay.log")))
+        return log_file
 
     @app.get("/api/logs")
     async def get_logs(limit: int = Query(default=400, ge=1, le=5000),

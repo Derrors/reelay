@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from reelay.core import secret_store
 from reelay.core.auth115 import CredentialStore
 from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
 from reelay.core.pipeline import Pipeline
@@ -246,7 +247,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.reg.add_hook(self.organizer)
         self.cfg = {'save_dirs': {'默认': '1', '新目录': '2'}, 'defaults': {'save_to': '默认'}, 'providers': {'notify': []}}
         self.pipeline = Pipeline(self.reg, self.store, self.cfg)
-        self.service = ManagementService(self.store, self.pipeline)
+        self.service = ManagementService(self.store, self.pipeline, config_path=Path(self.tempdir.name) / 'config.yaml')
 
     def tearDown(self):
         self.store.close()
@@ -272,7 +273,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.store.close()
         self.store = Store(self.db_path)
         self.pipeline = Pipeline(self.reg, self.store, self.cfg)
-        self.service = ManagementService(self.store, self.pipeline)
+        self.service = ManagementService(self.store, self.pipeline, config_path=Path(self.tempdir.name) / 'config.yaml')
         self.store.recover_interrupted()
 
     async def test_manifest_and_plan_are_committed_before_remote_writes(self):
@@ -481,7 +482,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         return self.cloud.add({'name': name, 'size': size, 'is_dir': False}, season['id']), season['id']
 
     def use_conflict(self, strategy):
-        self.cfg = {**self.cfg, 'organize': {'conflict': strategy}}
+        self.cfg = {**self.cfg, 'plugins': {'organizer': {'conflict': strategy}}}
         self.pipeline = Pipeline(self.reg, self.store, self.cfg)
 
     async def test_conflict_manual_keeps_both_files_for_review(self):
@@ -714,8 +715,8 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.cloud.receives()), 1)
 
     async def test_dry_run_with_cookies_never_initializes_or_calls_live_client(self):
-        with patch.dict(os.environ, {'REELAY_DRY_RUN': 'true', 'REELAY_115_COOKIES': 'fake',
-                                     'REELAY_LLM_API_KEY': 'fake', 'REELAY_TMDB_API_KEY': 'fake'}):
+        with patch.dict(os.environ, {'REELAY_DRY_RUN': 'true'}), \
+                secret_store.override(llm_api_key='fake', tmdb_api_key='fake'):
             with patch('p115client.P115Client', side_effect=AssertionError('不允许初始化真实客户端')):
                 registry = discover()
                 pipeline = Pipeline(registry, self.store, self.cfg)

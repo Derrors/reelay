@@ -31,6 +31,16 @@
 - 配置 TMDB 后重启，已有任务自动补跑 TMDB 匹配（不重新调用 LLM）：待审批任务补上规范片名、类型、地区、tmdbid 与海报并重算置信度，已入库任务在片名不变时补上海报。
 - 插件开发指南新增「元数据补全约定」：说明 TMDB 补全写出的字段、各自的读取方与对置信度的影响，便于接入豆瓣等其他数据源。
 
+### 变更
+
+- 配置与环境变量整理（升级时自动迁移，见 [配置参考](docs/configuration.md#从旧版本升级)）：
+  - 所有设置都能在管理台修改并与配置文件同步。配置文件固定为 `data/config.yaml`，分为 `system`（系统配置）与 `plugins.<插件名>`（插件开关 `enabled` 与插件自己的设置）。原来散在顶层的 `organize`、`dir_router`、`strm`、`daily_report`、`episode_tracker` 归入对应插件，订阅移到 `system.subscriptions`。
+  - 原来只能写在 `.env` 里的设置移进系统配置并在管理台提供表单：AI 接口地址与模型、TMDB 地址、Telegram 机主 ID 与补拉、主进程并发与日志级别、115 限速与风控冷却。设置页新增「AI 与 TMDB」「Telegram」「运行与安全」，「115 网盘」页增加请求限速。
+  - 密钥（AI / TMDB key、Telegram API ID / Hash、控制 Bot Token、Web 登录密码）在管理台设置，单独保存在 `data/secrets.json`（权限 600），页面、接口与配置原文都不显示原值；Web 密码只存摘要，修改需输入当前密码，修改后其他会话失效。AI 与 TMDB 的地址和密钥改了立即生效，不用重启。
+  - 数据库、会话、115 凭证、STRM 密钥、日志与外部扩展目录固定放在 `data/` 下，不再提供配置；Docker 只需挂载数据卷 `/app/data`，外部扩展挂载到 `/app/data/plugins`。LLM 重试、凭证探活、审批扫描等内部参数改为固定值。环境变量只剩 Web 监听地址、端口与 MCP 只读开关。
+  - 旧版本的 `config.yaml`（项目根目录、`REELAY_CONFIG_PATH` 或 Docker 的 `/app/config`）首次启动时移进 `data/` 并改写为新结构（原文件先备份）；`.env` 里的旧变量逐个导入一次，之后在管理台改过的不会被 `.env` 覆盖回去。
+  - 插件的 `ui_fields` 路径改为相对 `plugins.<插件名>`，读取用 `runtime.plugin_config`；外部插件留在配置顶层的旧设置会保留并在启动日志提示。`discover()` 新增 `plugin_dirs` 参数，`web.create_app()` 改为传 `data_dir`。
+
 ### 修复
 
 - 转存判断方式为「AI 按偏好判断」时，AI 选出的目录会被二级分类覆盖；现在与手动指定同等对待（手动指定优先），待审批与审批卡片显示的去向也包含 AI 的选择。

@@ -1,135 +1,177 @@
-# ===== Reelay 业务配置示例 =====
-# 复制为 config.yaml 使用。有效业务配置会被重载；新任务使用新策略，已接收任务保留快照。
+# ===== Reelay 配置示例 =====
+# 一般不需要手写：首次启动会生成 data/config.yaml，之后在管理台「设置」「插件」页修改，自动写回这个文件。
+# 想直接编辑时，复制为 data/config.yaml；有效配置会被重载，新任务使用新策略，已接收任务保留快照。
+# 密钥（AI / TMDB key、Telegram API、控制 Bot Token、Web 密码）不写在这里，在管理台「设置」中填写，
+# 保存在 data/secrets.json。
 
-# 可替换 Provider；配置保存/启动会校验名称
-providers:
-  source: telegram
-  notify: [console]
+# ---------------------------------------------------------------- 系统配置
+system:
+  # 可替换 Provider；配置保存/启动会校验名称
+  providers:
+    source: telegram
+    notify: [console]
 
-# Hook/Event 按注册名称启停；转存检查点仍绑定原 Provider 和文件 ID
-plugins:
-  tmdb_enrich: true
-  dir_router: true
-  organizer: true
-  daily_report: true      # 每日日报（on_daily 事件）；配置了 AI 时开头附一段提醒（daily_report.narrative）
-  failure_explainer: true # 失败解释：任务停下来等人处理时说明原因与建议操作
-  episode_tracker: true   # 缺集追更巡检
-  strm: false             # STRM 生成，默认关闭；开启需配置下方 strm
+  # 115 目录别名 -> cid 映射（转存目标，可随时切换）
+  save_dirs:
+    电影: "0"          # 填你 115 里对应目录的 cid（0 仅占位）
+    剧集: "0"
+    动漫: "0"
+    默认: "0"
 
-# 115 目录别名 -> cid 映射（转存目标，可随时切换）
-save_dirs:
-  电影: "0"          # 填你 115 里对应目录的 cid（0 仅占位）
-  剧集: "0"
-  动漫: "0"
-  默认: "0"
+  # 监听多个 bot，各挂各的规则（先设全局默认，再按 bot 覆盖）
+  defaults:
+    approval_mode: manual      # manual | auto | default_pass
+    parser: llm                # llm | regex；LLM 异常/非法输出降级后必须人工确认
+    llm_response_format: json_schema # 不支持 schema 的兼容接口可显式用 json_object，仍严格本地校验
+    decision: subscription     # default（只按规则）| subscription（规则 + 订阅放行）| llm（再加自然语言偏好）
+    storage: p115
+    confidence_threshold: 0.5  # 置信度由标题/类型/年份/TMDB 匹配等确定性信号计算，不采信 LLM 自报值
+    preferences: ""            # decision=llm 时，例如：只收 4K 电影，动画放入动漫目录
+    episodes_from: share       # share：以分享内文件名为准并跳过已入库的集 | message：只转存消息声明的集
+    save_to: 默认
 
-# 转发（识别成功后按模板转发到目标，可一键开关）
-forward:
-  enabled: false
-  target: "@your_archive_channel"
-  template: "🎬 {title} ({year}) {resolution}\n📦 {size}\n🔗 {link}"
+  sources:
+    - bot: "@example_movie_bot"
+      approval_mode: manual
+      save_to: 电影
+      filters:
+        must_have: ["115.com", "115.cn"]
+        block_keywords: ["广告", "招商", "投稿", "频道"]
+        # 结构化规则（可用管理台「用一句话生成规则」起草）：识别与 TMDB 补全后按字段判断
+        # allow: [{origin_country: "CN,HK,TW"}]     # 命中任一条才收
+        # deny: [{genre_ids: "10764,10767"}]        # 真人秀、脱口秀不收
+        # min_resolution: 1080p                     # 清晰度未知时转人工
 
-# 媒体库整理插件：Jinja2 模板（在 Web「插件与扩展」中维护）
-# 目录名中的 [tmdbid=xxx] 在 TMDB 匹配成功时写入，Jellyfin/Emby 据此精确刮削。
-organize:
-  naming:
-    movie: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/{{ title }}{% if year %} ({{ year }}){% endif %}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
-    tv: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}"
-  # 库里已有同名不同文件时：manual（转人工，默认）| skip（保留旧文件，新文件进回收站）
-  # | suffix（新文件加「 (2)」并存）| upgrade（洗版：画质/大小更好则替换，旧文件进回收站）
-  conflict: manual
+    # 高度信任的源：自动审批 + 自然语言偏好；低置信度、TMDB 未匹配和 LLM 降级仍会转人工
+    - bot: "@example_tv_bot"
+      approval_mode: auto
+      decision: llm
+      preferences: "只要 4K 或 1080p 的国产剧和日本动画，综艺不要"
+      save_to: 剧集
+      forward:
+        enabled: false         # 来源级覆盖，全局 target/template 继续继承
 
-# 二级分类路由插件：MoviePilot 风格策略（Web「插件与扩展」中维护）
-dir_router:
-  categories:
-    movie:
-      动漫/动画电影: {genre_ids: "16"}
-      电影/港台电影: {origin_country: "TW,HK"}
-      电影/国产电影: {origin_country: "CN"}
-      电影/日韩电影: {origin_country: "JP,KP,KR"}
-      电影/欧美电影: {}
-    tv:
-      动漫/国产动漫: {genre_ids: "16", origin_country: "CN,TW,HK"}
-      动漫/欧美动漫: {genre_ids: "16", origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
-      动漫/日本番剧: {genre_ids: "16", origin_country: "JP"}
-      其他/纪录影片: {genre_ids: "99"}
-      其他/综艺节目: {genre_ids: "10764,10767"}
-      剧集/港台剧集: {origin_country: "TW,HK"}
-      剧集/国产剧集: {origin_country: "CN"}
-      剧集/日韩剧集: {origin_country: "JP,KP,KR"}
-      剧集/南亚剧集: {origin_country: "TH,IN,SG"}
-      剧集/欧美剧集: {origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
-
-# 审批超时兜底（manual 卡片久未处理）
-approval:
-  timeout_hours: 24
-  on_timeout: remind     # remind（提醒）| skip（超时忽略）
-  reminder: digest       # digest：所有超时任务合并成一条汇总 | card：逐条重推确认卡片
-  max_reminders: 3       # 每条最多提醒次数，之后不再提醒但保留在待审批（0 = 不限）
-
-# 每日系统事件（日报、追更巡检）的发送时刻，本地时间 0-23 点
-schedule:
-  daily_hour: 9
-
-# 缺集追更与剧集订阅：自动跟踪最近有更新的剧；订阅的剧从第 1 集开始检查缺集，
-# auto 为 true（默认）时新集自动转存（decision 为 subscription 或 llm 的来源生效）。
-# 管理台「追剧订阅」与待审批「追这部剧」会写入这里。
-episode_tracker:
-  track_all: true
-  lookback_days: 30
+  # 剧集订阅：订阅的剧从第 1 集开始检查缺集；auto 为 true（默认）时新集自动转存
+  # （decision 为 subscription 或 llm 的来源生效）。管理台「追剧订阅」与待审批「追这部剧」会写入这里。
   subscriptions: []
   # - {title: 一瓯春, season: 1, total: 36, tmdbid: 12345}
   # - {title: 只想提醒缺集的剧, season: 2, auto: false}
 
-# AI 能力：人工裁决回流、转人工前兜底、审批建议与「改为自动转存」建议
-ai:
-  examples: 3                # 识别时参考同一来源最近几条人工修正（0 关闭）
-  history: 20                # decision=llm 时参考同一来源最近几条批准与忽略（0 关闭）
-  assist: true               # 分享里的文件按规则无法确定时先让 AI 给方案，方案经同一套规则校验
-  advice: true               # 待审批附建议动作与理由（动作由规则决定，AI 只措辞）
-  suggest_auto: {min_decisions: 20, approve_rate: 0.9, max_correct_rate: 0.1}
+  # 转发（识别成功后按模板转发到目标，可一键开关）
+  forward:
+    enabled: false
+    target: "@your_archive_channel"
+    template: "🎬 {title} ({year}) {resolution}\n📦 {size}\n🔗 {link}"
 
-# 同一集多个版本时的偏好：收件箱推荐版本与洗版共用，列表顺序即优先级
-release:
-  prefer_subtitles: [chs, cht]   # chs | cht | eng | jpn | kor
-  prefer_audio: []               # mandarin | cantonese | english | japanese | korean
-  hdr: any                       # any | prefer | avoid
-  prefer_sources: []             # remux | bluray | web-dl | webrip | hdtv | dvd
+  # 审批超时兜底（manual 卡片久未处理）
+  approval:
+    timeout_hours: 24
+    on_timeout: remind     # remind（提醒）| skip（超时忽略）
+    reminder: digest       # digest：所有超时任务合并成一条汇总 | card：逐条重推确认卡片
+    max_reminders: 3       # 每条最多提醒次数，之后不再提醒但保留在待审批（0 = 不限）
 
-# STRM（plugins.strm 开启时必填）：output_dir 是本机目录，base_url 是媒体服务器能访问到的 Reelay 地址
-# strm:
-#   output_dir: /media/strm
-#   base_url: http://192.168.1.10:28080
+  # 每日系统事件（日报、追更巡检）的发送时刻，本地时间 0-23 点
+  schedule:
+    daily_hour: 9
 
-# 监听多个 bot，各挂各的规则（先设全局默认，再按 bot 覆盖）
-defaults:
-  approval_mode: manual      # manual | auto | default_pass
-  parser: llm                # llm | regex；LLM 异常/非法输出降级后必须人工确认
-  llm_response_format: json_schema # 不支持 schema 的兼容接口可显式用 json_object，仍严格本地校验
-  decision: subscription     # default（只按规则）| subscription（规则 + 订阅放行）| llm（再加自然语言偏好）
-  storage: p115
-  confidence_threshold: 0.5  # 置信度由标题/类型/年份/TMDB 匹配等确定性信号计算，不采信 LLM 自报值
-  preferences: ""            # decision=llm 时，例如：只收 4K 电影，动画放入动漫目录
-  episodes_from: share       # share：以分享内文件名为准并跳过已入库的集 | message：只转存消息声明的集
-  save_to: 默认
+  # AI 能力：人工裁决回流、转人工前兜底、审批建议与「改为自动转存」建议
+  ai:
+    examples: 3                # 识别时参考同一来源最近几条人工修正（0 关闭）
+    history: 20                # decision=llm 时参考同一来源最近几条批准与忽略（0 关闭）
+    assist: true               # 分享里的文件按规则无法确定时先让 AI 给方案，方案经同一套规则校验
+    advice: true               # 待审批附建议动作与理由（动作由规则决定，AI 只措辞）
+    suggest_auto: {min_decisions: 20, approve_rate: 0.9, max_correct_rate: 0.1}
 
-sources:
-  - bot: "@example_movie_bot"
-    approval_mode: manual
-    save_to: 电影
-    filters:
-      must_have: ["115.com", "115.cn"]
-      block_keywords: ["广告", "招商", "投稿", "频道"]
-      # 结构化规则（可用管理台「用一句话生成规则」起草）：识别与 TMDB 补全后按字段判断
-      # allow: [{origin_country: "CN,HK,TW"}]     # 命中任一条才收
-      # deny: [{genre_ids: "10764,10767"}]        # 真人秀、脱口秀不收
-      # min_resolution: 1080p                     # 清晰度未知时转人工
+  # 同一集多个版本时的偏好：收件箱推荐版本与洗版共用，列表顺序即优先级
+  release:
+    prefer_subtitles: [chs, cht]   # chs | cht | eng | jpn | kor
+    prefer_audio: []               # mandarin | cantonese | english | japanese | korean
+    hdr: any                       # any | prefer | avoid
+    prefer_sources: []             # remux | bluray | web-dl | webrip | hdtv | dvd
 
-  # 高度信任的源：自动审批 + 自然语言偏好；低置信度、TMDB 未匹配和 LLM 降级仍会转人工
-  - bot: "@example_tv_bot"
-    approval_mode: auto
-    decision: llm
-    preferences: "只要 4K 或 1080p 的国产剧和日本动画，综艺不要"
-    save_to: 剧集
-    forward:
-      enabled: false         # 来源级覆盖，全局 target/template 继续继承
+  # AI 服务（OpenAI 兼容接口）：base_url 留空用 OpenAI 官方地址
+  llm:
+    base_url: ""
+    model: gpt-4o-mini
+
+  # TMDB：base_url 留空用官方地址；国内连不上时可改用 https://api.tmdb.org/3 或自己的反向代理
+  tmdb:
+    base_url: ""
+    language: zh-CN
+    timeout: 10
+
+  # Telegram：控制 Bot 只服务 owner_id（你的数字 ID）；重连后按来源补拉停机期间的消息
+  telegram:
+    owner_id: ""
+    backfill_limit: 200        # 每个来源最多补拉条数，0 关闭
+    backfill_max_days: 7
+    alert_after_sec: 120       # 消息源断开多久告警
+
+  # 115 请求治理：各类接口每秒请求数，触发风控后全部接口暂停的秒数
+  p115:
+    open_qps: 3
+    cookie_qps: 2
+    share_qps: 1
+    risk_cooldown_sec: 3600
+
+  # 主进程：同时处理的任务数与日志级别（重启生效）
+  runtime:
+    concurrency: 3
+    log_level: INFO
+
+# ---------------------------------------------------------------- 插件配置
+# plugins.<插件名>：enabled 开关（不写按插件默认）与该插件的设置；转存检查点仍绑定原 Provider 和文件 ID
+plugins:
+  tmdb_enrich: {enabled: true}
+  share_probe: {enabled: true}
+  failure_explainer: {enabled: true}   # 失败解释：任务停下来等人处理时说明原因与建议操作
+
+  # 媒体库整理：Jinja2 模板（管理台「插件」页维护）
+  # 目录名中的 [tmdbid=xxx] 在 TMDB 匹配成功时写入，Jellyfin/Emby 据此精确刮削。
+  organizer:
+    enabled: true
+    naming:
+      movie: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/{{ title }}{% if year %} ({{ year }}){% endif %}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
+      tv: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}"
+    # 库里已有同名不同文件时：manual（转人工，默认）| skip（保留旧文件，新文件进回收站）
+    # | suffix（新文件加「 (2)」并存）| upgrade（洗版：按版本偏好更好则替换，旧文件进回收站）
+    conflict: manual
+
+  # 二级分类路由：MoviePilot 风格策略（管理台「插件」页维护）
+  dir_router:
+    enabled: true
+    categories:
+      movie:
+        动漫/动画电影: {genre_ids: "16"}
+        电影/港台电影: {origin_country: "TW,HK"}
+        电影/国产电影: {origin_country: "CN"}
+        电影/日韩电影: {origin_country: "JP,KP,KR"}
+        电影/欧美电影: {}
+      tv:
+        动漫/国产动漫: {genre_ids: "16", origin_country: "CN,TW,HK"}
+        动漫/欧美动漫: {genre_ids: "16", origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
+        动漫/日本番剧: {genre_ids: "16", origin_country: "JP"}
+        其他/纪录影片: {genre_ids: "99"}
+        其他/综艺节目: {genre_ids: "10764,10767"}
+        剧集/港台剧集: {origin_country: "TW,HK"}
+        剧集/国产剧集: {origin_country: "CN"}
+        剧集/日韩剧集: {origin_country: "JP,KP,KR"}
+        剧集/南亚剧集: {origin_country: "TH,IN,SG"}
+        剧集/欧美剧集: {origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
+
+  # 缺集追更：自动跟踪最近有更新的剧（订阅的剧见 system.subscriptions）
+  episode_tracker:
+    enabled: true
+    track_all: true
+    lookback_days: 30
+
+  # 每日日报；配置了 AI 时开头附一段提醒
+  daily_report:
+    enabled: true
+    narrative: true
+
+  # STRM 生成，默认关闭；开启时 output_dir 是本机目录，base_url 是媒体服务器能访问到的 Reelay 地址
+  strm:
+    enabled: false
+    # output_dir: /media/strm
+    # base_url: http://192.168.1.10:28080

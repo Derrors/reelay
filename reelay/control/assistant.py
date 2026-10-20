@@ -175,7 +175,7 @@ class Assistant:
     async def handle(self, text: str, chat: str = "owner") -> Reply:
         client, model = self.service.ai_client()
         if client is None:
-            return Reply("未配置 AI（REELAY_LLM_API_KEY），目前只支持 /status、/pending、/failed、/retry 命令。")
+            return Reply("未配置 AI 接口密钥，目前只支持 /status、/pending、/failed、/retry 命令。")
         history = self._history.setdefault(chat, deque(maxlen=6))
         messages = [{"role": "system", "content": _PROMPT}, *history, {"role": "user", "content": text[:2000]}]
         planned: list[dict] = []

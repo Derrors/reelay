@@ -4,7 +4,7 @@
 这里只负责排版并通过 ``runtime.services().notify`` 推给所有通知渠道。没有新消息也没有
 积压的日子不发送，避免无意义打扰。
 
-配置了 AI 且 ``daily_report.narrative`` 未关闭时，开头加一段 AI 按事实写的话（如「本周新收 3 部剧，
+配置了 AI 且 ``plugins.daily_report.narrative`` 未关闭时，开头加一段 AI 按事实写的话（如「本周新收 3 部剧，
 《X》E07 已经播出 3 天还没出现，可能需要换个来源」），下面仍附原来的数字；事实全部由代码统计，
 AI 调用失败时只发数字版。
 """
@@ -68,17 +68,14 @@ def facts(summary: dict, week: list[dict], tracker: dict) -> dict:
 
 
 @register(kind="event", event="on_daily")
-class DailyReport:
+class DailyReport(ai.UsesAI):
     name = "daily_report"
     ui_label = "每日日报"
     ui_description = "每天定时（默认 9 点）推送新收、入库与积压概况；配置了 AI 时开头附一段 AI 按事实写的提醒。没有动静的日子不发送。"
     ui_fields = [
-        {'path': 'daily_report.narrative', 'label': '开头附 AI 写的一段提醒', 'type': 'boolean', 'default': True},
+        {'path': 'narrative', 'label': '开头附 AI 写的一段提醒', 'type': 'boolean', 'default': True},
     ]
     event = "on_daily"
-
-    def __init__(self) -> None:
-        self._client, self._model = ai.make_client()
 
     async def handle(self, ctx: PipelineContext) -> None:
         system = ctx.meta.get("system", {})
@@ -86,7 +83,7 @@ class DailyReport:
         text = render(summary, system.get("date", ""))
         if not text:
             return
-        if self._client is not None and runtime.get("daily_report.narrative", True):
+        if self._client is not None and runtime.plugin_config(self.name).get("narrative", True):
             story = await self._narrate(summary, system.get("date", ""))
             if story:
                 head, _, rest = text.partition("\n")

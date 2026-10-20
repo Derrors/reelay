@@ -1,7 +1,7 @@
 """STRM 生成 —— after_save Hook（排在 Organizer 之后）。
 
-整理完成后，在本地 ``strm.output_dir`` 下按「目录别名/整理后的相对路径」生成同名 .strm，
-内容是 Reelay 的签名播放地址（``strm.base_url`` 必须是媒体服务器能访问到的 Reelay 地址）。
+整理完成后，在本地 ``plugins.strm.output_dir`` 下按「目录别名/整理后的相对路径」生成同名 .strm，
+内容是 Reelay 的签名播放地址（``plugins.strm.base_url`` 必须是媒体服务器能访问到的 Reelay 地址）。
 媒体服务器播放时 Reelay 用 cookie 换取 115 直链并 302 跳转，视频不经过本机。
 
 默认关闭；生成失败只记录在 ``ctx.meta["strm"]``，不影响已完成的转存与整理。
@@ -37,8 +37,8 @@ class StrmGenerator:
     ui_label = "STRM 生成"
     ui_description = "整理后在本地目录生成 .strm，媒体服务器经 Reelay 签名地址 302 跳转到 115 直链播放。"
     ui_fields = [
-        {'path': 'strm.output_dir', 'label': 'STRM 输出目录（本机路径）', 'type': 'string'},
-        {'path': 'strm.base_url', 'label': 'Reelay 访问地址（媒体服务器可达，如 http://192.168.1.10:28080）',
+        {'path': 'output_dir', 'label': 'STRM 输出目录（本机路径）', 'type': 'string'},
+        {'path': 'base_url', 'label': 'Reelay 访问地址（媒体服务器可达，如 http://192.168.1.10:28080）',
          'type': 'string'},
     ]
 
@@ -47,20 +47,18 @@ class StrmGenerator:
         self._auth = get_store()
 
     def validate_config(self, cfg: dict) -> None:
-        section = cfg.get("strm", {})
-        if not isinstance(section, dict):
-            raise ValueError("strm 必须是对象")
+        section = runtime.plugin_config(self.name, cfg)
         if not str(section.get("output_dir", "")).strip():
-            raise ValueError("启用 STRM 生成时必须配置 strm.output_dir")
+            raise ValueError("启用 STRM 生成时必须配置输出目录（plugins.strm.output_dir）")
         if not re.match(r"https?://[^/\s]+", str(section.get("base_url", ""))):
-            raise ValueError("strm.base_url 必须是 http(s):// 开头的 Reelay 访问地址")
+            raise ValueError("plugins.strm.base_url 必须是 http(s):// 开头的 Reelay 访问地址")
 
     async def run(self, ctx: PipelineContext) -> bool:
         organize = ctx.ns("organize")
         if self._dry_run or not organize.get("applied"):
             return True
         try:
-            section = runtime.get("strm", {}) or {}
+            section = runtime.plugin_config(self.name)
             written = await run_blocking(self._write, ctx, organize.get("plan") or [], section)
             ctx.ns("strm").update(files=written, error=None)
             ctx.log(f"已生成 {len(written)} 个 STRM 文件")

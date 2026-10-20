@@ -1,8 +1,8 @@
 """STRM 播放地址签名。
 
 .strm 文件里写的是 Reelay 的 302 跳转地址；媒体服务器播放时不会带登录态，所以跳转接口
-不走会话鉴权，改用 HMAC 签名防止任意 pickcode 被遍历。密钥优先取 ``REELAY_STRM_SECRET``，
-否则首次使用时生成并持久化到 ``data/strm.secret``（与数据库同在数据卷内）。
+不走会话鉴权，改用 HMAC 签名防止任意 pickcode 被遍历。密钥首次使用时生成并持久化到
+``data/strm.secret``（与数据库同在数据卷内）；旧版本 ``REELAY_STRM_SECRET`` 设置的密钥在首次启动时导入该文件。
 """
 from __future__ import annotations
 
@@ -14,21 +14,29 @@ import secrets
 import threading
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from . import paths
+
 PICKCODE_RE = re.compile(r"[A-Za-z0-9]{1,64}")
 _lock = threading.Lock()
 _secret: bytes | None = None
 
 
+SECRET_FILE = paths.STRM_SECRET
+
+
 def _secret_file() -> Path:
-    return Path(os.getenv("REELAY_STRM_SECRET_FILE", str(PROJECT_ROOT / "data" / "strm.secret")))
+    return SECRET_FILE
+
+
+def use_secret_file(path: Path) -> None:
+    """入口程序按数据目录设定密钥文件（测试传临时目录）。"""
+    global SECRET_FILE, _secret
+    with _lock:
+        SECRET_FILE, _secret = Path(path), None
 
 
 def secret() -> bytes:
     global _secret
-    configured = os.getenv("REELAY_STRM_SECRET")
-    if configured:
-        return configured.encode()
     with _lock:
         if _secret is None:
             path = _secret_file()

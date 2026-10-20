@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .core import bootstrap, paths
 from .core.config import load_config, load_env
 from .core.contracts import TaskState
 from .core.pipeline import Pipeline
@@ -279,14 +280,18 @@ def build_server(tools: ReelayTools, *, readonly: bool):
     return server
 
 
-def create_service(*, db_path: str | None = None, config_path: str | None = None) -> ManagementService:
+def create_service(*, data_dir: str | Path | None = None) -> ManagementService:
     """与 web.create_app 相同的装配方式，但不创建 Worker。"""
-    load_env(str(PROJECT_ROOT / ".env"))
-    config_file = config_path or os.getenv("REELAY_CONFIG_PATH", str(PROJECT_ROOT / "config.yaml"))
+    if data_dir is None:
+        load_env(str(paths.ENV_FILE))
+    data = Path(data_dir or paths.DATA)
+    bootstrap.prepare(data)
+    paths.use_data_dir(data)
+    config_file = data / paths.CONFIG_NAME
     cfg = load_config(config_file)
     registry = discover()
     registry.validate_config(cfg)
-    store = Store(db_path or os.getenv("REELAY_DB_PATH", str(PROJECT_ROOT / "data/reelay.db")))
+    store = Store(str(data / paths.DATABASE_NAME))
     pipeline = Pipeline(registry, store, cfg)
     return ManagementService(store, pipeline, config_path=config_file)
 

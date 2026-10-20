@@ -52,7 +52,6 @@ class DirRouter:
     name = "dir_router"
     ui_label = "二级分类路由"
     ui_description = "参照 MoviePilot 按媒体类型、类型ID与国家/地区匹配二级目录。"
-    ui_section = "dir_router"
     ui_config_type = "category_strategy"
     stage = "before_save"
     order = 10
@@ -98,7 +97,7 @@ def route(p, source_rule: dict, *, current: str | None = None, pinned: str | Non
         return {"alias": chosen, "category_path": None, "relative_category": "",
                 "note": f"{who}「{chosen}」，不套用分类子目录"}
     result = {"alias": None, "category_path": None, "relative_category": "", "note": None}
-    config = runtime.get("dir_router", {}) or {}
+    config = runtime.get("plugins.dir_router", {}) or {}
     legacy = runtime.get("routing", []) or []
     strategy = config.get("categories")
     # 旧任务/测试若只有 legacy routing，保持旧语义；规范化后的新配置一定有 categories。

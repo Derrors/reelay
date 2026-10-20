@@ -16,9 +16,9 @@
 失败时回退到 cookie 的 webapi 路径；无论走哪条路，调用方（storage/
 organizer）都会读回核验，不会因为回退产生"以为成功、实际没动"。
 
-凭证统一持久化在一个 JSON 文件（默认 data/115_credentials.json），同时
-容纳 OAuth token 与（经 Web 录入的）cookie；不放进 config.yaml。环境变量
-``REELAY_115_COOKIES`` 仍被支持，文件中没有 cookie 时作为初始来源。
+凭证统一持久化在一个 JSON 文件（固定为 data/115_credentials.json），同时
+容纳 OAuth token 与（经 Web 录入的）cookie；不放进 config.yaml。旧版本写在
+环境变量里的 cookie 与 token 在首次启动时导入该文件（见 ``core/bootstrap.py``）。
 """
 from __future__ import annotations
 
@@ -35,9 +35,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from . import paths, runtime
+
 log = logging.getLogger("reelay.115auth")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_APP_ID = 100195125  # p115client 文档示例开放应用，已实测可用
 # 115 鉴权失效错误码（cookie 模式）。
 AUTH_ERRNOS = {99, 401}
@@ -47,25 +48,31 @@ OPEN_AUTH_CODES = {401, 99, 40140125, 20004, 20005}
 QR_TTL = 240
 RISK_CODES = {429, 405, 990009}
 RISK_MARKERS = ("访问上限", "操作频繁", "请求过于频繁", "风控", "429 Too Many Requests")
-
-
-def _env(name: str, default: str) -> str:
-    """用到时才读取环境变量：入口模块会先导入本模块再加载 .env，导入时读取会忽略 .env 里的设置。"""
-    return os.getenv(name) or default
+# Cookie 扫码绑定的设备：独立 TV 会话，降低与网页端/手机端既有会话互踢概率。
+COOKIE_QR_APP = "tv"
+# OAuth access_token 按 2 小时估算有效期，提前 15 分钟主动刷新。
+OAUTH_LIFETIME_SEC = 7200
+OAUTH_REFRESH_ADVANCE_SEC = 900
+# 限流与风控冷却的默认值；实际值取系统配置 p115（管理台「115 连接」可改，改了立即生效）
+QPS_DEFAULTS = {"open": 3.0, "cookie": 2.0, "share": 1.0}
+RISK_COOLDOWN_SEC = 3600
 
 
 def default_cred_file() -> Path:
-    return Path(_env("REELAY_115_OAUTH_FILE", str(PROJECT_ROOT / "data" / "115_credentials.json")))
+    return paths.CREDENTIALS_115
 
 
 class _RateGate:
     """线程安全的最小间隔限流器；同步/异步调用共享同一配额。"""
 
     def __init__(self, qps: float) -> None:
-        self.qps = qps
-        self.interval = 0.0 if qps <= 0 else 1.0 / qps
         self._lock = threading.Lock()
         self._next = 0.0
+        self.set_qps(qps)
+
+    def set_qps(self, qps: float) -> None:
+        self.qps = qps
+        self.interval = 0.0 if qps <= 0 else 1.0 / qps
 
     def acquire(self) -> None:
         if self.interval <= 0:
@@ -116,12 +123,7 @@ class CredentialStore:
         self._data: dict[str, Any] = self._load()
         self._file_mtime = self.path.stat().st_mtime if self.path.is_file() else 0.0
         # MoviePilot 风格的请求治理：文件 API 与分享 API 分级限流，触发风控后全通道冷却。
-        self._gates = {
-            "open": _RateGate(float(_env("REELAY_115_OPEN_QPS", "3"))),
-            "cookie": _RateGate(float(_env("REELAY_115_COOKIE_QPS", "2"))),
-            "share": _RateGate(float(_env("REELAY_115_SHARE_QPS", "1"))),
-        }
-        self._cooldown_sec = max(1, int(_env("REELAY_115_RISK_COOLDOWN_SEC", "3600")))
+        self._gates = {lane: _RateGate(self._qps(lane)) for lane in QPS_DEFAULTS}
         self._cooldown_lock = threading.Lock()
         self._cooldown_until = 0.0
         self._cooldown_reason = ""
@@ -170,7 +172,18 @@ class CredentialStore:
             return text[:200]
         return ""
 
+    @staticmethod
+    def _qps(lane: str) -> float:
+        return float(runtime.get(f"p115.{lane}_qps") or QPS_DEFAULTS[lane])
+
+    @property
+    def _cooldown_sec(self) -> int:
+        return max(1, int(runtime.get("p115.risk_cooldown_sec") or RISK_COOLDOWN_SEC))
+
     def _wait_for_request(self, lane: str, async_: bool = False):
+        gate = self._gates[lane]
+        if isinstance(gate, _RateGate) and gate.qps != self._qps(lane):
+            gate.set_qps(self._qps(lane))
         with self._cooldown_lock:
             wait = max(0.0, self._cooldown_until - time.time())
         if async_:
@@ -298,9 +311,9 @@ class CredentialStore:
     # ------------------------------------------------------------------ #
     @property
     def cookies(self) -> str:
-        """当前生效 cookie：文件优先，其次环境变量。"""
+        """当前生效 cookie（凭证文件）。"""
         self.reload_if_changed()
-        return str(self._data.get("cookies") or os.getenv("REELAY_115_COOKIES") or "")
+        return str(self._data.get("cookies") or "")
 
     @property
     def has_cookie(self) -> bool:
@@ -321,8 +334,6 @@ class CredentialStore:
                 self._data.pop("cookies", None)
                 self._data.pop("cookie_updated_at", None)
             self._save()
-            if cookies:
-                os.environ["REELAY_115_COOKIES"] = cookies
             self._cookie_client = None
             self.cookie_state, self.cookie_error, self.cookie_checked_at = (
                 AuthState.UNKNOWN, "", 0.0)
@@ -372,20 +383,17 @@ class CredentialStore:
     # ------------------------------------------------------------------ #
     @property
     def app_id(self) -> int:
-        return int(self._data.get("app_id")
-                   or os.getenv("REELAY_115_APP_ID") or DEFAULT_APP_ID)
+        return int(self._data.get("app_id") or DEFAULT_APP_ID)
 
     @property
     def access_token(self) -> str:
         self.reload_if_changed()
-        return str(self._data.get("access_token")
-                   or os.getenv("REELAY_115_ACCESS_TOKEN") or "")
+        return str(self._data.get("access_token") or "")
 
     @property
     def refresh_token(self) -> str:
         self.reload_if_changed()
-        return str(self._data.get("refresh_token")
-                   or os.getenv("REELAY_115_REFRESH_TOKEN") or "")
+        return str(self._data.get("refresh_token") or "")
 
     @property
     def has_oauth(self) -> bool:
@@ -399,7 +407,7 @@ class CredentialStore:
             self._data["app_id"] = int(app_id or self.app_id)
             now = int(time.time())
             self._data["oauth_updated_at"] = now
-            self._data["oauth_expires_at"] = now + int(os.getenv("REELAY_115_OAUTH_LIFETIME_SEC", "7200"))
+            self._data["oauth_expires_at"] = now + OAUTH_LIFETIME_SEC
             self._save()
             self._open_client = None
             self.oauth_state, self.oauth_error, self.oauth_checked_at = (
@@ -473,7 +481,7 @@ class CredentialStore:
         if not self.has_oauth:
             return False
         expires = float(self._data.get("oauth_expires_at") or 0)
-        advance = int(os.getenv("REELAY_115_OAUTH_REFRESH_ADVANCE_SEC", "900"))
+        advance = OAUTH_REFRESH_ADVANCE_SEC
         if not force and expires and time.time() < expires - advance:
             return False
         client = self.open_client()
@@ -513,8 +521,7 @@ class CredentialStore:
         from p115client import P115Client
 
         # 默认绑定独立 TV 会话，降低与网页端/手机端既有会话互踢概率。
-        default = _env("REELAY_115_COOKIE_QR_APP", "tv")
-        device = (app or default).strip() or default
+        device = (app or COOKIE_QR_APP).strip() or COOKIE_QR_APP
         # 二维码 token 固定从 web 入口申请；确认后再绑定到独立 device 会话。
         # 这与 p115client.login_with_qrcode 的实现一致。
         resp = P115Client.login_qrcode_token()
@@ -775,8 +782,7 @@ class CredentialStore:
             "cookie": {
                 "state": self.cookie_state,
                 "configured": self.has_cookie,
-                "source": "file" if self.cookie_from_file else (
-                    "env" if self.has_cookie else "none"),
+                "source": "file" if self.cookie_from_file else "none",
                 "error": self.cookie_error,
                 "checked_at": self.cookie_checked_at or None,
             },
@@ -797,9 +803,9 @@ class CredentialStore:
                 "cooldown_until": self._cooldown_until or None,
                 "cooldown_remaining": max(0, int(self._cooldown_until - time.time())),
                 "cooldown_reason": self._cooldown_reason,
-                "open_qps": self._gates["open"].qps,
-                "cookie_qps": self._gates["cookie"].qps,
-                "share_qps": self._gates["share"].qps,
+                "open_qps": self._qps("open"),
+                "cookie_qps": self._qps("cookie"),
+                "share_qps": self._qps("share"),
             },
             "ready": self.has_cookie or self.has_oauth,
             "writes_via": "oauth" if self.has_oauth else (

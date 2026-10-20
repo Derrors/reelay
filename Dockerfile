@@ -19,7 +19,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY reelay/ ./reelay/
 RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" ".[all]" \
     && useradd --create-home --uid 10001 reelay \
-    && mkdir -p /app/data /app/config /app/plugins /app/web/dist \
+    && mkdir -p /app/data/plugins /app/config /app/web/dist \
     && chown -R reelay:reelay /app/data /app/config
 COPY --from=frontend /build/web/dist/ ./web/dist/
 USER reelay

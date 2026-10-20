@@ -151,7 +151,7 @@ export default function LoginGate({ onOk }: { onOk: () => void }) {
         </form>
 
         <p className="mt-5 text-center text-xs leading-5 text-muted-foreground">
-          密码由部署时的 <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">REELAY_WEB_PASSWORD</code> 设置
+          密码在「设置 → 运行与安全」中设置；忘记时删掉 <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">data/secrets.json</code> 里的 web_password
         </p>
       </main>
       <ThemeToggle className="absolute bottom-5 right-5" />

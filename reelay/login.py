@@ -1,22 +1,22 @@
-"""首次部署时在交互终端建立个人 Telegram 会话。"""
+"""首次部署时在交互终端建立个人 Telegram 会话（API ID / Hash 先在管理台「设置」中填写）。"""
 from __future__ import annotations
 
 import asyncio
-import os
-from pathlib import Path
 
+from .core import bootstrap, paths, secret_store
 from .core.config import load_env
 
 
 async def login() -> None:
     from telethon import TelegramClient
-    load_env()
-    api_id, api_hash = os.getenv("REELAY_TG_API_ID"), os.getenv("REELAY_TG_API_HASH")
+    load_env(str(paths.ENV_FILE))
+    bootstrap.prepare()
+    store = secret_store.use(paths.SECRETS)
+    api_id, api_hash = store.get("telegram_api_id"), store.get("telegram_api_hash")
     if not api_id or not api_hash:
-        raise RuntimeError("请先配置个人账号的 Telegram API_ID/API_HASH")
-    session = os.getenv("REELAY_TG_SESSION", "data/userbot.session")
-    Path(session).parent.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(session, int(api_id), api_hash)
+        raise RuntimeError("请先在管理台「设置 → Telegram 与控制 Bot」中填写个人账号的 API ID 与 API Hash")
+    paths.USERBOT_SESSION.parent.mkdir(parents=True, exist_ok=True)
+    client = TelegramClient(str(paths.USERBOT_SESSION), int(api_id), api_hash)
     try:
         await client.start()
         account = await client.get_me()

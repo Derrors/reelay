@@ -3,12 +3,11 @@
 搜索结果不再直接取第一条：按标题相似度（含原名）和年份打分，低于阈值视为未匹配，
 保留 AI 标题而不是写入错误的规范名。结果（含未命中）进程内缓存一天。
 
-``REELAY_TMDB_API_KEY`` 同时支持 v3 API Key 与 v4 Read Access Token（``eyJ`` 开头）。
+TMDB 密钥同时支持 v3 API Key 与 v4 Read Access Token（``eyJ`` 开头）。
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 import unicodedata
@@ -17,6 +16,8 @@ import urllib.request
 from collections import OrderedDict
 from difflib import SequenceMatcher
 from typing import Any
+
+from . import runtime, secret_store
 
 DEFAULT_BASE = "https://api.themoviedb.org/3"
 ACCEPT_SCORE = 0.8          # 年份无冲突时的最低标题相似度
@@ -27,18 +28,18 @@ _CACHE_SIZE = 512
 
 
 def api_key() -> str | None:
-    return os.getenv("REELAY_TMDB_API_KEY") or None
+    return secret_store.get("tmdb_api_key")
 
 
 def base_url() -> str:
-    """请求时才读取：入口模块会先导入本模块再加载 .env，导入时读取会忽略 .env 里的地址。"""
-    return os.getenv("REELAY_TMDB_BASE_URL") or DEFAULT_BASE
+    """系统配置 tmdb.base_url，留空用官方地址；请求时读取，管理台改了立即生效。"""
+    return str(runtime.get("tmdb.base_url") or "") or DEFAULT_BASE
 
 
 def _request(path: str, params: dict[str, Any], *, timeout: float) -> dict:
     key = api_key()
     if not key:
-        raise RuntimeError("未配置 REELAY_TMDB_API_KEY")
+        raise RuntimeError("未配置 TMDB API Key")
     headers = {"Accept": "application/json"}
     query = dict(params)
     if key.startswith("eyJ"):

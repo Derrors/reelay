@@ -275,7 +275,7 @@ def _verified_files(expected: list[dict], actual: list[dict]) -> list[dict]:
 
 
 @register(kind='provider', ptype='storage')
-class P115Storage:
+class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
     name = 'p115'
 
     def __init__(self) -> None:
@@ -283,7 +283,6 @@ class P115Storage:
         # 测试替换 ``_auth`` 为伪凭证中心，与生产走同一条代码路径。
         self._dry_run = os.getenv('REELAY_DRY_RUN', '').lower() in {'1', 'true', 'yes'}
         self._auth = get_store()
-        self._client, self._model = ai.make_client()  # 转人工前的 AI 兜底
 
     def _cookie_client(self):
         return None if self._dry_run else self._auth.cookie_client()

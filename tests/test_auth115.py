@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from reelay.core import auth115
+from reelay.core import auth115, runtime
 
 
 class FakeOpenClient:
@@ -136,11 +136,12 @@ class TestCredentialStore(unittest.TestCase):
         self.assertTrue(again.has_cookie)
         self.assertEqual(again.cookie_state, auth115.AuthState.UNKNOWN)
 
-    def test_env_cookie_used_when_file_absent(self):
+    def test_env_cookie_is_not_read_at_runtime(self):
+        # 旧版本的 REELAY_115_COOKIES 只在首次启动时导入凭证文件（见 bootstrap），运行时不再读取
         with patch.dict(os.environ, {"REELAY_115_COOKIES": "UID=9;CID=8"}):
             store = auth115.CredentialStore(self.cred)
-            self.assertTrue(store.has_cookie)
-            self.assertEqual(store.status()["cookie"]["source"], "env")
+            self.assertFalse(store.has_cookie)
+            self.assertEqual(store.status()["cookie"]["source"], "none")
 
     def test_oauth_tokens_persisted(self):
         self.store.save_tokens("a1", "r1", 100195125)
@@ -311,14 +312,14 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(gate.calls, 1)
         self.assertGreaterEqual(self.store._cooldown_until, before + 1)
 
-    def test_settings_loaded_after_import_take_effect(self):
-        # 入口先导入模块再加载 .env：这些设置要在创建凭证存储时读取
-        with patch.dict(os.environ, {"REELAY_115_OAUTH_FILE": str(self.cred), "REELAY_115_SHARE_QPS": "0.5",
-                                     "REELAY_115_RISK_COOLDOWN_SEC": "60"}):
-            store = auth115.CredentialStore()
-        self.assertEqual(store.path, self.cred)
-        self.assertEqual(store.status()["traffic"]["share_qps"], 0.5)
-        self.assertEqual(store._cooldown_sec, 60)
+    def test_rate_limits_follow_system_config_without_restart(self):
+        self.assertEqual(auth115.CredentialStore().path, auth115.paths.CREDENTIALS_115)
+        self.assertEqual(self.store.status()["traffic"]["share_qps"], 1.0)
+        with runtime.scope({"p115": {"share_qps": 0.5, "risk_cooldown_sec": 60}}):
+            self.assertEqual(self.store.status()["traffic"]["share_qps"], 0.5)
+            self.assertEqual(self.store._cooldown_sec, 60)
+            self.store._wait_for_request("share")  # 限流器按新的速率工作
+            self.assertEqual(self.store._gates["share"].interval, 2.0)
 
     def test_rate_lane_and_risk_cooldown(self):
         self.assertEqual(self.store._request_lane("https://proapi.115.com/open/ufile/files"), "open")

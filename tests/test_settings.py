@@ -1,0 +1,272 @@
+"""配置分组（system / plugins）、旧配置与环境变量的迁移、密钥存储与设置接口。全部在临时目录中。"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import yaml
+
+from reelay.core import bootstrap, secret_store
+from reelay.core.auth115 import CredentialStore
+from reelay.core.config import is_legacy, load_config, normalize_config, render, to_file
+from reelay.core.registry import Registry, discover
+
+try:
+    from fastapi.testclient import TestClient
+except ImportError:  # pragma: no cover
+    TestClient = None
+
+LEGACY = {
+    "save_dirs": {"剧集": "2", "默认": "1"},
+    "defaults": {"save_to": "默认"},
+    "organize": {"conflict": "skip"},
+    "dir_router": {"categories": {"movie": {"电影/全部": {}}, "tv": {"剧集/全部": {}}}},
+    "tmdb": {"language": "en-US"},
+    "daily_report": {"narrative": False},
+    "episode_tracker": {"lookback_days": 14, "subscriptions": [{"title": "剧", "season": 1}]},
+    "plugins": {"strm": False},
+    "audit": {"level": "info"},  # 外部插件的旧配置：认不出归属，原样保留
+}
+
+
+class TestFileStructure(unittest.TestCase):
+    def test_legacy_file_is_converted_to_system_and_plugins(self):
+        self.assertTrue(is_legacy(LEGACY))
+        cfg = normalize_config(LEGACY)
+        self.assertEqual(cfg["subscriptions"], [{"title": "剧", "season": 1}])
+        self.assertEqual(cfg["tmdb"]["language"], "en-US")
+        plugins = cfg["plugins"]
+        self.assertEqual(plugins["organizer"]["conflict"], "skip")
+        self.assertIn("tv", plugins["organizer"]["naming"])  # 内置插件补齐默认设置
+        self.assertEqual(plugins["dir_router"]["categories"]["tv"], {"剧集/全部": {}})
+        self.assertEqual(plugins["daily_report"], {"narrative": False})
+        self.assertEqual(plugins["episode_tracker"], {"lookback_days": 14})
+        self.assertEqual(plugins["strm"], {"enabled": False})
+        for key in ("organize", "dir_router", "daily_report", "episode_tracker"):
+            self.assertNotIn(key, cfg)
+        self.assertEqual(cfg["audit"], {"level": "info"})
+
+    def test_file_round_trip_keeps_the_same_config(self):
+        cfg = normalize_config(LEGACY)
+        data = to_file(cfg)
+        self.assertEqual(set(data), {"system", "plugins", "audit"})
+        self.assertIn("subscriptions", data["system"])
+        self.assertNotIn("plugins", data["system"])
+        self.assertFalse(is_legacy(data))
+        text = render(cfg)
+        self.assertTrue(text.startswith("# Reelay 配置"))
+        self.assertEqual(normalize_config(yaml.safe_load(text)), cfg)
+
+    def test_example_config_is_valid(self):
+        cfg = load_config(Path(__file__).resolve().parents[1] / "config.example.yaml")
+        discover().validate_config(cfg)
+        self.assertEqual(cfg["plugins"]["strm"], {"enabled": False})
+
+    def test_new_sections_are_validated(self):
+        for bad in ({"llm": {"base_url": "ftp://x"}}, {"llm": {"model": " "}}, {"tmdb": {"timeout": 0}},
+                    {"telegram": {"owner_id": "abc"}}, {"runtime": {"concurrency": 0}},
+                    {"runtime": {"log_level": "TRACE"}}, {"p115": {"share_qps": 0}},
+                    {"plugins": {"strm": {"enabled": "yes"}}}, {"plugins": {"strm": True, "x": 1}},
+                    {"system": {"defaults": {}}, "defaults": {}}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                normalize_config(bad)
+        cfg = normalize_config({"telegram": {"owner_id": 12345}, "llm": {"base_url": "https://api.example.com/v1/"}})
+        self.assertEqual((cfg["telegram"]["owner_id"], cfg["llm"]["base_url"]), ("12345", "https://api.example.com/v1"))
+
+    def test_plugin_switch_and_field_paths(self):
+        registry = discover()
+        strm = next(h for h in registry.hooks["after_save"] if h.name == "strm")
+        self.assertFalse(Registry.is_enabled(strm, normalize_config({})))
+        self.assertTrue(Registry.is_enabled(strm, normalize_config({"plugins": {"strm": {"enabled": True}}})))
+        catalog = registry.catalog(normalize_config({}))
+        daily = next(x for x in catalog["events"] if x["name"] == "daily_report")
+        self.assertEqual((daily["config_section"], daily["fields"][0]["path"]),
+                         ("plugins.daily_report", "plugins.daily_report.narrative"))
+        with self.assertRaises(ValueError):  # 插件字段按声明的类型校验
+            registry.validate_config(normalize_config({"plugins": {"daily_report": {"narrative": "no"}}}))
+
+
+class TestSecretStore(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / "secrets.json"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_values_are_private_reloaded_and_password_is_hashed(self):
+        store = secret_store.SecretStore(self.path)
+        store.update({"llm_api_key": "sk-1", "web_password": "pw"})
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        raw = json.loads(self.path.read_text())
+        self.assertNotIn("pw", raw["values"]["web_password"])
+        self.assertTrue(store.check_password("pw"))
+        self.assertFalse(store.check_password("other"))
+        # 另一个进程写入后按修改时间重新读取
+        other = secret_store.SecretStore(self.path)
+        os.utime(self.path, (1, 1))
+        other.update({"llm_api_key": None})
+        self.assertIsNone(store.get("llm_api_key"))
+        self.assertEqual(store.status()["web_password"], True)
+        with self.assertRaises(ValueError):
+            store.update({"unknown": "x"})
+        with self.assertRaises(ValueError):
+            store.update({"telegram_api_id": "abc"})
+
+    def test_nothing_is_configured_until_an_entry_point_loads_secrets(self):
+        with patch.object(secret_store, "_current", None):
+            self.assertIsNone(secret_store.get("llm_api_key"))
+        with secret_store.override(llm_api_key="k"):
+            self.assertEqual(secret_store.get("llm_api_key"), "k")
+
+
+class TestBootstrap(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.data = self.root / "data"
+        self.data.mkdir()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def secrets(self):
+        return secret_store.SecretStore(self.data / "secrets.json")
+
+    def test_legacy_config_is_backed_up_and_rewritten(self):
+        (self.data / "config.yaml").write_text(json.dumps(LEGACY, ensure_ascii=False), encoding="utf-8")
+        bootstrap.prepare(self.data, env={})
+        self.assertEqual(len(list(self.data.glob("config.yaml.bak-*"))), 1)
+        data = yaml.safe_load((self.data / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(set(data), {"system", "plugins", "audit"})
+        self.assertEqual(load_config(self.data / "config.yaml"), normalize_config(LEGACY))
+        bootstrap.prepare(self.data, env={})  # 已是新结构：不再备份、不再改写
+        self.assertEqual(len(list(self.data.glob("config.yaml.bak-*"))), 1)
+
+    def test_config_in_a_legacy_location_is_moved_into_data(self):
+        legacy = self.root / "custom.yaml"
+        legacy.write_text(json.dumps({"save_dirs": {"默认": "7"}, "defaults": {"save_to": "默认"}}), encoding="utf-8")
+        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_CONFIG_PATH": str(legacy)})
+        self.assertFalse(legacy.exists())
+        self.assertTrue((self.root / "custom.yaml.migrated").exists())
+        self.assertEqual(load_config(self.data / "config.yaml")["save_dirs"], {"默认": "7"})
+
+    def test_environment_is_imported_once_and_web_changes_win(self):
+        env = {"REELAY_LLM_API_KEY": "sk-old", "REELAY_LLM_MODEL": "m1", "REELAY_OWNER_ID": "42",
+               "REELAY_TG_BACKFILL_MAX_DAYS": "3", "REELAY_115_SHARE_QPS": "0.5", "REELAY_WEB_PASSWORD": "pw",
+               "REELAY_115_COOKIES": "UID=1;CID=2", "REELAY_STRM_SECRET": "strm"}
+        bootstrap.prepare(self.data, env=env)
+        cfg = load_config(self.data / "config.yaml")
+        self.assertEqual((cfg["llm"]["model"], cfg["telegram"]["owner_id"], cfg["telegram"]["backfill_max_days"],
+                          cfg["p115"]["share_qps"]), ("m1", "42", 3, 0.5))
+        secrets = self.secrets()
+        self.assertEqual(secrets.get("llm_api_key"), "sk-old")
+        self.assertTrue(secrets.check_password("pw"))
+        self.assertNotIn("sk-old", (self.data / "config.yaml").read_text(encoding="utf-8"))
+        self.assertIn("UID=1", CredentialStore(self.data / "115_credentials.json").cookies)
+        self.assertEqual((self.data / "strm.secret").read_text(), "strm")
+        # 管理台清除了密钥、改了模型：.env 没变就不会再覆盖回去
+        secrets.update({"llm_api_key": None})
+        path = self.data / "config.yaml"
+        path.write_text(path.read_text(encoding="utf-8").replace("model: m1", "model: m2"), encoding="utf-8")
+        bootstrap.prepare(self.data, env=env)
+        self.assertIsNone(self.secrets().get("llm_api_key"))
+        self.assertEqual(load_config(path)["llm"]["model"], "m2")
+        # .env 里换了新值：再导入一次
+        bootstrap.prepare(self.data, env={**env, "REELAY_LLM_API_KEY": "sk-new"})
+        self.assertEqual(self.secrets().get("llm_api_key"), "sk-new")
+
+    def test_existing_credentials_and_invalid_values_are_not_overwritten(self):
+        CredentialStore(self.data / "115_credentials.json").set_cookies("UID=fresh")
+        bootstrap.prepare(self.data, env={"REELAY_115_COOKIES": "UID=old", "REELAY_WORKER_CONCURRENCY": "lots"})
+        self.assertEqual(CredentialStore(self.data / "115_credentials.json").cookies, "UID=fresh")
+        self.assertEqual(load_config(self.data / "config.yaml")["runtime"]["concurrency"], 3)
+        self.assertNotIn("REELAY_WORKER_CONCURRENCY", self.secrets().imported())
+
+    def test_broken_config_is_left_alone(self):
+        (self.data / "config.yaml").write_text("[broken", encoding="utf-8")
+        bootstrap.prepare(self.data, env={"REELAY_LLM_MODEL": "m", "REELAY_LLM_API_KEY": "k"})
+        self.assertEqual((self.data / "config.yaml").read_text(encoding="utf-8"), "[broken")
+        self.assertEqual(self.secrets().get("llm_api_key"), "k")
+        self.assertNotIn("REELAY_LLM_MODEL", self.secrets().imported())
+
+    def test_database_elsewhere_must_be_moved_by_hand(self):
+        old = self.root / "old.db"
+        old.write_bytes(b"")
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "mv"):
+            bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_DB_PATH": str(old)})
+        session = self.root / "custom.session"
+        session.write_text("s")
+        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_TG_SESSION": str(session)})
+        self.assertEqual((self.data / "userbot.session").read_text(), "s")
+
+
+@unittest.skipIf(TestClient is None, "未安装 web 可选依赖")
+class TestSettingsApi(unittest.TestCase):
+    def setUp(self):
+        from reelay import web_extras
+        from reelay.web import create_app
+        self.env = patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "tmdb-key"}, clear=True)
+        self.env.start()
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
+                                          encoding="utf-8")
+        web_extras._SESSIONS.clear()
+        self.app = create_app(data_dir=root)
+        self.client = TestClient(self.app)
+        self.client.__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+        self.temp.cleanup()
+        self.env.stop()
+
+    def test_secrets_are_set_but_never_returned(self):
+        body = self.client.get("/api/config").json()
+        self.assertTrue(body["secrets"]["tmdb_api_key"]["set"])  # 从环境变量导入
+        self.assertFalse(body["secrets"]["llm_api_key"]["set"])
+        self.assertNotIn("tmdb-key", json.dumps(body))
+        self.assertTrue(body["text"].startswith("# Reelay 配置"))
+        res = self.client.put("/api/settings/secrets", json={"changes": {"llm_api_key": "sk-xyz"}})
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json()["llm_api_key"]["set"])
+        self.assertTrue(self.client.get("/api/dashboard").json()["connections"]["llm"]["configured"])
+        self.assertNotIn("sk-xyz", self.client.get("/api/config").text)
+        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"nope": "x"}}).status_code, 422)
+
+    def test_password_change_requires_the_current_one_and_resets_sessions(self):
+        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "one"}}).status_code, 200)
+        self.assertEqual(self.client.get("/api/config").status_code, 200)  # 当前页面换了新会话继续使用
+        other = TestClient(self.app)
+        self.assertEqual(other.get("/api/config").status_code, 401)
+        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "two"},
+                                                                         "current_password": "bad"}).status_code, 409)
+        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "two"},
+                                                                         "current_password": "one"}).status_code, 200)
+        self.assertEqual(other.post("/api/auth/login", json={"password": "one"}).status_code, 401)
+        self.assertEqual(other.post("/api/auth/login", json={"password": "two"}).status_code, 200)
+
+    def test_system_and_plugin_sections_save_back_to_the_file(self):
+        cfg = self.client.get("/api/config").json()
+        plugins = {**cfg["config"]["plugins"], "daily_report": {"enabled": True, "narrative": False}}
+        res = self.client.patch("/api/config/sections", json={"revision": cfg["revision"], "sections": {
+            "llm": {"base_url": "https://llm.example/v1", "model": "m"}, "plugins": plugins}})
+        self.assertEqual(res.status_code, 200, res.text)
+        data = yaml.safe_load(self.client.get("/api/config").json()["text"].split("\n", 3)[-1])
+        self.assertEqual(data["system"]["llm"]["model"], "m")
+        self.assertEqual(data["plugins"]["daily_report"], {"enabled": True, "narrative": False})
+        cfg = self.client.get("/api/config").json()
+        bad = {**cfg["config"]["plugins"], "typo_plugin": {"enabled": True}}
+        res = self.client.patch("/api/config/sections", json={"revision": cfg["revision"], "sections": {"plugins": bad}})
+        self.assertEqual(res.status_code, 422)
+        self.assertIn("typo_plugin", res.text)
+
+
+if __name__ == "__main__":
+    unittest.main()

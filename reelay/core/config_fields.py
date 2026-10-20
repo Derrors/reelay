@@ -7,9 +7,9 @@ from .naming_template import validate_template
 
 def validate_naming(naming: dict) -> None:
     if not isinstance(naming, dict) or not {'movie', 'tv'} <= set(naming):
-        raise ValueError('organize.naming 必须包含 movie 和 tv Jinja2 模板')
+        raise ValueError('plugins.organizer.naming 必须包含 movie 和 tv Jinja2 模板')
     for kind, template in naming.items():
-        validate_template(template, f'organize.naming.{kind}')
+        validate_template(template, f'plugins.organizer.naming.{kind}')
 
 
 def validate_declared_field(config: dict, field: dict) -> None:

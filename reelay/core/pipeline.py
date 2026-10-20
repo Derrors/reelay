@@ -46,6 +46,7 @@ class Pipeline:
         self.reg = registry
         self.store = store
         self.cfg = normalize_config(config)
+        runtime.set_process_config(self.cfg)
         self.revision = config_revision(self.cfg)
         self.config_path: Path | None = None
         self.config_error: str | None = None
@@ -67,6 +68,7 @@ class Pipeline:
         cfg = normalize_config(config)
         self.reg.validate_config(cfg)
         self.cfg, self.save_dirs = cfg, cfg["save_dirs"]
+        runtime.set_process_config(cfg)
         self.revision = config_revision(cfg)
         self.config_error = None
 

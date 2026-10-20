@@ -101,14 +101,11 @@ def is_final(ctx: PipelineContext, retries: int) -> bool:
 
 
 @register(kind="event", event="on_failed")
-class FailureExplainer:
+class FailureExplainer(ai.UsesAI):
     name = "failure_explainer"
     ui_label = "失败解释"
     ui_description = "任务失败或转为待人工时说明原因，并指出该用哪个操作；任务停下来等人处理时通知一次。"
     event = "on_failed"
-
-    def __init__(self) -> None:
-        self._client, self._model = ai.make_client()
 
     async def handle(self, ctx: PipelineContext) -> None:
         services = runtime.services()

@@ -8,15 +8,16 @@ import { Page } from '@/components/app/Page';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { IConfigResponse, IExtension } from '@/lib/types';
+import type { IConfigResponse, IExtension, ISecretStatus } from '@/lib/types';
 import { BasicTab } from './BasicTab';
 import { ConnectionsTab } from './ConnectionsTab';
 import { ExtensionsTab } from './ExtensionsTab';
 import { Notice } from './fields';
 import { RecognitionTab } from './RecognitionTab';
+import { ServicesTab, SystemTab, TelegramTab } from './ServiceTabs';
 import { SourcesTab } from './SourcesTab';
 import {
-  CONFIG_SECTIONS, SYSTEM_KEYS, equal, extensionKeys, getPath, mergeByName, obj, problems, sortHooks, text,
+  CONFIG_SECTIONS, SYSTEM_KEYS, equal, extensionKeys, getPath, mergeByName, obj, problems, setPath, sortHooks, text,
   type Catalog, type Obj,
 } from './shared';
 
@@ -24,7 +25,10 @@ const TABS = [
   { value: 'common', label: '基础' },
   { value: 'sources', label: '监听来源' },
   { value: 'advanced', label: '识别与确认' },
-  { value: 'connections', label: '115 连接' },
+  { value: 'services', label: 'AI 与 TMDB' },
+  { value: 'telegram', label: 'Telegram' },
+  { value: 'connections', label: '115 网盘' },
+  { value: 'system', label: '运行与安全' },
 ];
 const CORE_KEYS = ['providers', 'defaults'];
 const TRIGGER_CLASS = [
@@ -101,15 +105,15 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
   const hooks = sortHooks(mergeByName(catalog?.hooks ?? []));
   const events = mergeByName(catalog?.events ?? []);
   const extensionList = [...hooks, ...events];
-  const scopeKeys = extensionsOnly ? [...new Set([...CORE_KEYS, ...extensionList.flatMap(extensionKeys)])] : SYSTEM_KEYS;
+  // 插件页：核心能力 + 各插件在 plugins.<名> 下的设置
+  const scopeKeys = extensionsOnly ? [...CORE_KEYS, 'plugins'] : SYSTEM_KEYS;
   const dirtyKeys = data ? scopeKeys.filter(k => !equal(config[k], data.config[k])) : [];
   const dirty = dirtyKeys.length > 0;
-  const dirtySections = data && !extensionsOnly
-    ? CONFIG_SECTIONS.filter(s => s.paths.some(p => !equal(getPath(config, p), getPath(data.config, p))))
-    : [];
+  const changed = (path: string) => data !== null && !equal(getPath(config, path), getPath(data.config, path));
+  const dirtySections = data && !extensionsOnly ? CONFIG_SECTIONS.filter(s => s.paths.some(changed)) : [];
   const dirtyLabels = extensionsOnly
-    ? [...new Set(dirtyKeys.flatMap(k => CORE_KEYS.includes(k) ? ['核心能力']
-      : extensionList.filter(x => extensionKeys(x).includes(k)).map(x => x.label)))]
+    ? [...(CORE_KEYS.some(changed) ? ['核心能力'] : []),
+      ...extensionList.filter(x => extensionKeys(x).some(changed)).map(x => x.label)]
     : dirtySections.map(s => s.label);
   const dirtyTabs = new Set(dirtySections.map(s => s.tab));
 
@@ -126,11 +130,13 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
   const update = (key: string, value: unknown) => setConfig(c => ({ ...c, [key]: value }));
   const setField = (key: string, name: string, value: unknown) =>
     setConfig(c => ({ ...c, [key]: { ...obj(c[key]), [name]: value } }));
-  const restore = (keys: string[]) => {
+  /** 撤销修改；paths 可以是顶层键，也可以是 plugins.<名> 这样的路径。 */
+  const restore = (paths: string[]) => {
     if (!data) return;
-    setConfig(c => ({ ...c, ...Object.fromEntries(keys.map(k => [k, structuredClone(data.config[k])])) }));
+    setConfig(c => paths.reduce((acc, path) => setPath(acc, path, structuredClone(getPath(data.config, path))), c));
     setErrors([]);
   };
+  const setSecrets = (secrets: ISecretStatus) => setData(d => (d ? { ...d, secrets } : d));
 
   const persist = async () => {
     if (!data) return;
@@ -178,7 +184,8 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
   /** 插件开关即时保存，只提交 plugins，不带上页面上其他未保存的修改。 */
   const toggleExtension = async (x: IExtension, enabled: boolean) => {
     if (!data || busy) return;
-    const plugins = { ...obj(data.config.plugins), [x.name]: enabled };
+    const saved = obj(data.config.plugins);
+    const plugins = { ...saved, [x.name]: { ...obj(saved[x.name]), enabled } };
     setConfig(c => ({ ...c, plugins }));
     setBusy(true);
     try {
@@ -200,7 +207,7 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
       title={extensionsOnly ? '插件' : '设置'}
       description={extensionsOnly
         ? '选择各环节的实现方式，开关附加功能并调整参数。开关立即生效，参数修改需保存。'
-        : '保存目录、监听来源、确认方式与 115 连接。修改后在页面底部保存，立即生效。'}
+        : '系统配置：保存目录、监听来源、确认方式、AI 与 TMDB、Telegram、115 网盘与访问安全。修改后在页面底部保存，与配置文件同步。'}
       actions={data ? (
         <>
           {!dirty ? (
@@ -248,7 +255,7 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
             />
           ) : null) : (
             <Tabs value={tab} onValueChange={setTab} className="gap-5">
-              <TabsList className="grid h-auto w-full grid-cols-4 rounded-lg bg-muted p-1 sm:inline-flex sm:w-fit">
+              <TabsList className="grid h-auto w-full grid-cols-4 rounded-lg bg-muted p-1 md:inline-flex md:w-fit">
                 {TABS.map(t => (
                   <TabsTrigger key={t.value} value={t.value} className={TRIGGER_CLASS}>
                     {t.label}
@@ -269,8 +276,17 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
               <TabsContent value="advanced">
                 <RecognitionTab config={config} setField={setField} />
               </TabsContent>
+              <TabsContent value="services">
+                <ServicesTab config={config} setField={setField} secrets={data.secrets} onSecrets={setSecrets} />
+              </TabsContent>
+              <TabsContent value="telegram">
+                <TelegramTab config={config} setField={setField} secrets={data.secrets} onSecrets={setSecrets} />
+              </TabsContent>
               <TabsContent value="connections">
-                <ConnectionsTab connections={data.connections} />
+                <ConnectionsTab connections={data.connections} config={config} setField={setField} />
+              </TabsContent>
+              <TabsContent value="system">
+                <SystemTab config={config} setField={setField} secrets={data.secrets} onSecrets={setSecrets} />
               </TabsContent>
             </Tabs>
           )}

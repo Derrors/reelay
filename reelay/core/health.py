@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
 from pathlib import Path
@@ -23,4 +22,5 @@ def check_worker(db_path: str | Path, *, max_age: float = 30) -> bool:
 
 
 if __name__ == "__main__":
-    raise SystemExit(0 if check_worker(os.getenv("REELAY_DB_PATH", "data/reelay.db")) else 1)
+    from .paths import DATABASE
+    raise SystemExit(0 if check_worker(DATABASE) else 1)

@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from reelay.core import confidence, tmdb
+from reelay.core import confidence, runtime, secret_store, tmdb
 from reelay.core.config import normalize_config
 from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
 from reelay.core.pipeline import Pipeline
@@ -69,8 +69,11 @@ def message(text=f"剧 (2026) 第3集 {SHARE}", urls=(SHARE,), msg_id="1", sourc
 
 class Base(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.env = patch.dict(os.environ, {"REELAY_LLM_RETRY_DELAY": "0"}, clear=True)
+        self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
+        no_delay = patch("reelay.core.ai.RETRY_DELAY", 0)  # 瞬时错误重试不真的等待
+        no_delay.start()
+        self.addCleanup(no_delay.stop)
         # 凭证中心默认读仓库 data/ 下的凭证文件：开发机上可能有真实 cookie，测试里分享读取不能访问 115
         self.no_115 = patch("reelay.plugins.share_probe.get_store", return_value=types.SimpleNamespace(has_cookie=False))
         self.no_115.start()
@@ -417,7 +420,7 @@ class TestSourceBackfillAndAlerts(Base):
         async def emit(raw):
             emitted.append(raw.msg_id)
 
-        with patch.dict(os.environ, {"REELAY_TG_BACKFILL_LIMIT": "3"}):
+        with runtime.scope({"telegram": {"backfill_limit": 3, "backfill_max_days": 7}}):
             self.assertEqual(await source.backfill(emit), 3)
         self.assertEqual(emitted, ["413", "414", "415"])
         emitted.clear()
@@ -497,11 +500,11 @@ class TestSourceBackfillAndAlerts(Base):
         registry.add_provider("source", Disconnected())
         pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"},
                                   "providers": {"source": "flaky", "notify": ["console"]}}, registry)
-        with patch.dict(os.environ, {"REELAY_SOURCE_ALERT_SEC": "1"}):
-            loop = asyncio.create_task(_source_loop(pipeline, None, poll_interval=0.05))
-            await asyncio.sleep(1.3)
-            loop.cancel()
-            await asyncio.gather(loop, return_exceptions=True)
+        pipeline.cfg["telegram"]["alert_after_sec"] = 1  # 校验下限是 10 秒，测试直接改有效配置
+        loop = asyncio.create_task(_source_loop(pipeline, None, poll_interval=0.05))
+        await asyncio.sleep(1.3)
+        loop.cancel()
+        await asyncio.gather(loop, return_exceptions=True)
         self.assertEqual([a["key"] for a in self.store.active_alerts()], ["source"])
 
 
@@ -636,7 +639,7 @@ class TestManualDirectoryChoice(Base):
     async def test_llm_calls_are_reported_to_connection_status(self):
         await self.pending()
         later = time.time() + 86400  # 只在真实调用时记录，长时间没有新消息也不算过期
-        with patch.dict(os.environ, {"REELAY_LLM_API_KEY": "k"}), patch("time.time", return_value=later):
+        with secret_store.override(llm_api_key="k"), patch("time.time", return_value=later):
             self.assertEqual(self.service.connection_status()["llm"]["status"], "connected")
         self.registry.get_provider("parser", "llm")._client = FakeAI(ValueError("bad request"))
         await self.pl.process_new(message(text=f"另一部剧 第1集 {SHARE}", msg_id="2"))
@@ -650,9 +653,10 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
 
     def setUp(self):
         super().setUp()
-        with patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "k"}):
-            registry = discover()
-        self.pl = self.pipeline({"save_dirs": {"剧集": "2", "默认": "1"}, "defaults": {"save_to": "默认"}}, registry)
+        secrets = secret_store.override(tmdb_api_key="k")  # 密钥在用到时读取：整个用例期间都要有
+        secrets.__enter__()
+        self.addCleanup(secrets.__exit__, None, None, None)
+        self.pl = self.pipeline({"save_dirs": {"剧集": "2", "默认": "1"}, "defaults": {"save_to": "默认"}}, discover())
 
     def task(self, title, state=TaskState.PENDING_APPROVAL, msg_id="1"):
         """配置 TMDB 之前识别的任务：meta["tmdb"] 记着未查询的原因。"""
@@ -733,7 +737,7 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
     async def test_nothing_to_refresh_without_tmdb_key(self):
         self.task("美人余")
         pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"}}, discover())
-        with patch.object(tmdb, "best_match") as match:
+        with secret_store.override(), patch.object(tmdb, "best_match") as match:
             self.assertEqual(await pipeline.refresh_metadata(), 0)
         match.assert_not_called()
 
@@ -942,8 +946,8 @@ class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
             tmdb.search("movie", "流浪地球 2", 2023, language="zh-CN", timeout=1)
         self.assertEqual(request.call_count, 1)
 
-    def test_base_url_set_after_import_is_used(self):
-        # 入口先导入模块再加载 .env：地址要在请求时读取
+    def test_base_url_from_system_config_is_used(self):
+        # 系统配置 tmdb.base_url 在请求时读取，管理台改了立即生效
         seen = []
 
         class Resp:
@@ -956,7 +960,7 @@ class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
             def read(self):
                 return b'{"results": []}'
 
-        with patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "k", "REELAY_TMDB_BASE_URL": "https://tmdb.example/3"}), \
+        with secret_store.override(tmdb_api_key="k"), runtime.scope({"tmdb": {"base_url": "https://tmdb.example/3"}}), \
                 patch("urllib.request.urlopen", side_effect=lambda req, timeout: seen.append(req.full_url) or Resp()):
             tmdb.search("movie", "流浪地球2", 2023, language="zh-CN", timeout=1)
         self.assertTrue(seen[0].startswith("https://tmdb.example/3/search/movie?"))
@@ -967,7 +971,7 @@ class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(search_kinds("movie", False), ["movie"])
 
     async def test_movie_match_keeps_ai_origin_country(self):
-        with patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "k"}, clear=True), \
+        with secret_store.override(tmdb_api_key="k"), \
                 patch.object(tmdb, "_request", return_value={"results": self.RESULTS}):
             hook = TmdbEnrich()
             ctx = message()
@@ -1039,8 +1043,11 @@ class TestDailyAndEpisodeTracker(Base):
 
     def test_subscription_config_is_validated(self):
         with self.assertRaises(ValueError):
-            EpisodeTracker().validate_config({"episode_tracker": {"subscriptions": [{"season": 1}]}})
-        EpisodeTracker().validate_config({"episode_tracker": {"subscriptions": [{"title": "剧", "total": 12}]}})
+            normalize_config({"subscriptions": [{"season": 1}]})
+        # 旧版本把订阅写在 episode_tracker 下：读取时移到系统配置
+        cfg = normalize_config({"episode_tracker": {"subscriptions": [{"title": "剧", "total": 12}], "lookback_days": 7}})
+        self.assertEqual(cfg["subscriptions"], [{"title": "剧", "total": 12}])
+        self.assertEqual(cfg["plugins"]["episode_tracker"], {"lookback_days": 7})
 
 
 class TestExternalPlugins(unittest.TestCase):
@@ -1054,51 +1061,43 @@ class TestExternalPlugins(unittest.TestCase):
                 "    async def run(self, ctx):\n"
                 "        return True\n", encoding="utf-8")
             Path(root, "broken.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
-            with patch.dict(os.environ, {"REELAY_PLUGIN_DIRS": root}, clear=True):
-                registry = discover()
-                again = discover()
+            registry = discover(plugin_dirs=[root])
+            again = discover(plugin_dirs=[root])
         names = [registry.extension_name(h) for h in registry.hooks.get("after_parse", [])]
         self.assertIn("audit_hook", names)
         self.assertEqual(sum(1 for h in again.hooks["after_parse"] if h.name == "audit_hook"), 1)
         self.assertTrue(any("broken.py" in e["source"] for e in registry.load_errors))
-        with patch.dict(os.environ, {}, clear=True):
-            plain = discover()
+        plain = discover(plugin_dirs=[])
         self.assertNotIn("audit_hook", [h.name for h in plain.hooks.get("after_parse", [])])
 
     def test_opt_in_extensions_default_disabled(self):
-        with patch.dict(os.environ, {}, clear=True):
-            registry = discover()
+        registry = discover()
         names = [registry.extension_name(h) for h in registry.hooks_for("after_save", {})]
         self.assertNotIn("strm", names)
         self.assertIn("strm", [registry.extension_name(h)
-                               for h in registry.hooks_for("after_save", {"plugins": {"strm": True}})])
+                               for h in registry.hooks_for("after_save", {"plugins": {"strm": {"enabled": True}}})])
 
 
 class TestEntrypointsLoadEnvFirst(unittest.TestCase):
-    """本地直接运行时，.env 里的日志与监听配置必须在被读取之前加载。"""
+    """主进程启动顺序：先加载 .env，再迁移（导入旧环境变量），再按数据目录加载密钥与凭证。"""
 
-    def test_main_loads_env_before_setting_up_logging(self):
+    def test_main_imports_env_before_using_data_dir(self):
         from reelay import main as entry
-        seen = {}
+        calls = []
 
         def fake_run(coro):
             coro.close()
             return 0
 
-        with tempfile.TemporaryDirectory() as root:
-            Path(root, ".env").write_text("REELAY_LOG_FILE=data/reelay.log\nREELAY_LOG_LEVEL=DEBUG\n",
-                                          encoding="utf-8")
-            cwd = os.getcwd()
-            os.chdir(root)
-            try:
-                with patch.dict(os.environ, {}, clear=True), patch("sys.argv", ["reelay"]), \
-                        patch.object(entry, "_setup_log", lambda: seen.update(os.environ)), \
-                        patch.object(entry.asyncio, "run", fake_run), self.assertRaises(SystemExit):
-                    entry.main()
-            finally:
-                os.chdir(cwd)
-        self.assertEqual(seen.get("REELAY_LOG_FILE"), "data/reelay.log")
-        self.assertEqual(seen.get("REELAY_LOG_LEVEL"), "DEBUG")
+        with patch("sys.argv", ["reelay"]), \
+                patch.object(entry, "load_env", lambda path: calls.append(("load_env", path))), \
+                patch.object(entry, "_setup_log", lambda **kw: calls.append(("log", kw["to_file"]))), \
+                patch.object(entry.bootstrap, "prepare", lambda: calls.append(("prepare",))), \
+                patch.object(entry.paths, "use_data_dir", lambda d: calls.append(("use", d))), \
+                patch.object(entry.asyncio, "run", fake_run), self.assertRaises(SystemExit):
+            entry.main()
+        from reelay.core import paths
+        self.assertEqual(calls, [("load_env", str(paths.ENV_FILE)), ("log", True), ("prepare",), ("use", paths.DATA)])
 
     def test_web_main_reads_host_and_port_from_env_file(self):
         try:
@@ -1129,7 +1128,7 @@ class TestWebAuthGuard(unittest.TestCase):
         web_extras._FAILURES.clear()
         (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
                                           encoding="utf-8")
-        self.app = create_app(db_path=str(root / "t.db"), config_path=str(root / "config.yaml"))
+        self.app = create_app(data_dir=root)
         self.client = TestClient(self.app)
         self.client.__enter__()
 
@@ -1222,13 +1221,13 @@ class TestConsoleApi(unittest.TestCase):
         from reelay.web import create_app
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.env = patch.dict(os.environ, {"REELAY_115_OAUTH_FILE": str(root / "cred.json")}, clear=True)
+        self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.loader = patch("reelay.web.load_env")
         self.loader.start()
         (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "1", "剧集": "2"},
                                                       "defaults": {"save_to": "默认"}}), encoding="utf-8")
-        self.app = create_app(db_path=str(root / "t.db"), config_path=str(root / "config.yaml"))
+        self.app = create_app(data_dir=root)
         self.client = TestClient(self.app)
         self.client.__enter__()
         store = self.app.state.store

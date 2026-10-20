@@ -1,6 +1,6 @@
 """控制 Bot —— 可观测与人工干预（评审 P0-03）。
 
-用你自己的 Telegram Bot（``REELAY_CONTROL_BOT_TOKEN``）作为控制入口，提供：
+用你自己的 Telegram Bot（管理台「设置」中填写 Bot Token）作为控制入口，提供：
 
 - 命令：``/status``（队列积压、各状态计数、在线状态）、``/failed``（失败列表+重试）、
   ``/pending``（待确认/待整理）、``/retry <task_id>``、``/help``
@@ -11,14 +11,14 @@
 - 对外暴露 ``send(...)``：给 NotifyProvider 用来推确认卡片（带按钮）与结果通知
 
 未配置 token（dry-run / 未接入）时，本模块不启动，通知走 ConsoleNotify 打印。
-消息只发给 ``REELAY_OWNER_ID``（你自己的数字 id），不广播。
+消息只发给 ``telegram.owner_id``（你自己的数字 id），不广播。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
+from ..core import paths, secret_store
 from ..core.contracts import TaskState
 from ..core.service import ConflictError, ManagementService, NotFoundError
 from .assistant import Assistant
@@ -38,8 +38,9 @@ class ControlBot:
     def __init__(self, service: ManagementService):
         self.service = service
         self.assistant = Assistant(service)
-        self._token = os.getenv("REELAY_CONTROL_BOT_TOKEN")
-        self._owner = os.getenv("REELAY_OWNER_ID")
+        # 在管理台「设置」填写；改了要重启主进程
+        self._token = secret_store.get("control_bot_token")
+        self._owner = service.pipeline.cfg["telegram"]["owner_id"] or None
         self._client = None
         self._Button = None
 
@@ -54,9 +55,9 @@ class ControlBot:
         from telethon import TelegramClient, events, Button  # 延迟导入
         self._Button = Button
 
-        api_id = int(os.getenv("REELAY_TG_API_ID", "0"))
-        api_hash = os.getenv("REELAY_TG_API_HASH", "")
-        self._client = TelegramClient(os.getenv("REELAY_CONTROL_BOT_SESSION", "data/controlbot.session"), api_id, api_hash)
+        api_id = int(secret_store.get("telegram_api_id") or 0)
+        api_hash = secret_store.get("telegram_api_hash") or ""
+        self._client = TelegramClient(str(paths.CONTROL_BOT_SESSION), api_id, api_hash)
 
         self._register_handlers(events)
         await self._client.start(bot_token=self._token)

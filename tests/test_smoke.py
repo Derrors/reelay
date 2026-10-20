@@ -207,10 +207,10 @@ class TestDirRouter(unittest.TestCase):
 class TestOrganizerPlan(unittest.TestCase):
     def setUp(self):
         from reelay.core import runtime
-        runtime.set_config({"organize": {"naming": {
+        runtime.set_config({"plugins": {"organizer": {"naming": {
             "movie": "{title} ({year})/{title} ({year}) - {resolution}.{ext}",
             "tv": "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}",
-        }}})
+        }}}})
         from reelay.plugins.organizer import Organizer
         self.org = Organizer()
 
@@ -383,8 +383,6 @@ class TestTelegramUserbotGuard(unittest.TestCase):
 
 class TestTmdbDegrade(unittest.TestCase):
     def test_no_key_pass_through(self):
-        import os
-        os.environ.pop("REELAY_TMDB_API_KEY", None)
         from reelay.plugins.tmdb_enrich import TmdbEnrich
         h = TmdbEnrich()
         ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="1", text="x"))

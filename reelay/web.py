@@ -1,7 +1,7 @@
 """FastAPI 管理服务。
 
 开发期通过 Vite 代理访问 ``/api``；生产构建后若 ``web/dist`` 存在，会由同一个
-Python 服务托管 SPA。默认只绑定本机；暴露到其他机器时必须设置 REELAY_WEB_PASSWORD。
+Python 服务托管 SPA。默认只绑定本机；暴露到其他机器时必须在「设置」中设置 Web 登录密码。
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ try:
 except ImportError as exc:  # pragma: no cover - 仅在未装 web 依赖时触发
     raise RuntimeError('Web 管理服务未安装，请执行 pip install -e ".[web]"') from exc
 
+from .core import bootstrap, paths
 from .core.config import load_config, load_env
 from .core.pipeline import Pipeline
 from .core.registry import discover
@@ -67,24 +68,24 @@ def _error(exc: Exception) -> HTTPException:
 
 def create_app(
     *,
-    db_path: str | None = None,
-    config_path: str | None = None,
+    data_dir: str | Path | None = None,
     start_worker: bool = False,
     frontend_dir: str | Path | None = None,
 ) -> FastAPI:
-    load_env(str(PROJECT_ROOT / ".env"))
-    config_file = config_path or os.getenv("REELAY_CONFIG_PATH", str(PROJECT_ROOT / "config.yaml"))
+    """data_dir 默认是项目的 data/（数据库、配置、密钥、日志都在里面）；测试传临时目录。"""
+    if data_dir is None:
+        load_env(str(paths.ENV_FILE))  # 只为首次启动导入旧的环境变量
+    data = Path(data_dir or paths.DATA)
+    bootstrap.prepare(data)
+    paths.use_data_dir(data)
+    config_file = data / paths.CONFIG_NAME
     cfg = load_config(config_file)
     registry = discover()
     registry.validate_config(cfg)
-    store = Store(db_path or os.getenv("REELAY_DB_PATH", str(PROJECT_ROOT / "data/reelay.db")))
+    store = Store(str(data / paths.DATABASE_NAME))
     pipeline = Pipeline(registry, store, cfg)
     service = ManagementService(store, pipeline, config_path=config_file)
-    worker = Worker(
-        pipeline,
-        store,
-        concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")),
-    )
+    worker = Worker(pipeline, store, concurrency=cfg["runtime"]["concurrency"])
     bus = EventBus(store=store, service=service)
 
     @asynccontextmanager
@@ -125,7 +126,7 @@ def create_app(
     # 额外 API（鉴权/日志/115浏览/源测试/统计/高级检索）必须在所有业务路由
     # （含 /api/tasks/{task_id} 这类带路径参数的）之前注册，否则
     # /api/tasks/advanced 会被当成 task_id="advanced" 命中详情接口。
-    register_extras(app, project_root=PROJECT_ROOT, store=store,
+    register_extras(app, log_file=data / paths.LOG.name, store=store,
                     service=service, registry=registry)
     register_ai(app, service=service)
 
@@ -297,6 +298,7 @@ def create_app(
             "config_error": pipeline.config_error,
             "revision": pipeline.revision,
             "extensions": registry.catalog(service.get_config()),
+            "secrets": service.secret_status(),
         }
 
     @app.put("/api/config")

@@ -307,7 +307,7 @@ class TestAiRoutes(unittest.TestCase):
         self.loader.start()
         (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
                                           encoding="utf-8")
-        self.client = TestClient(create_app(db_path=str(root / "t.db"), config_path=str(root / "config.yaml")))
+        self.client = TestClient(create_app(data_dir=root))
         self.client.__enter__()
 
     def tearDown(self):

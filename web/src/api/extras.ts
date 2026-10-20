@@ -41,7 +41,7 @@ export interface IDirItem { id: string; name: string; pid?: string | null }
 export interface IAuth115Side {
   state: 'unknown' | 'active' | 'expired' | 'error';
   configured: boolean;
-  source?: 'file' | 'env' | 'none';
+  source?: 'file' | 'none';
   error?: string;
   checked_at?: number | null;
   has_access_token?: boolean;

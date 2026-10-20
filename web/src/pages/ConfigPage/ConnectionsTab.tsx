@@ -6,17 +6,21 @@ import { ToneBadge } from '@/components/app/StatusBadge';
 import { fullTime, relativeTime } from '@/lib/format';
 import { connectionLabels } from '@/lib/status';
 import type { IConnection } from '@/lib/types';
-import { CONNECTION_TONE } from './shared';
+import { P115LimitsPanel } from './ServiceTabs';
+import { CONNECTION_TONE, type Obj } from './shared';
 
 const ICONS: Record<string, LucideIcon> = { telegram: Send, control_bot: Bot, llm: Sparkles, tmdb: Film };
 
-export function ConnectionsTab({ connections }: { connections: Record<string, IConnection> }) {
+export function ConnectionsTab({ connections, config, setField }: {
+  connections: Record<string, IConnection>; config: Obj; setField: (key: string, name: string, value: unknown) => void;
+}) {
   const others = Object.entries(connections).filter(([key]) => key !== 'p115');
   return (
     <div className="space-y-5">
       <Auth115Card />
+      <P115LimitsPanel config={config} setField={setField} />
       {others.length ? (
-        <Panel icon={PlugZap} title="其他连接" description="已填写凭证不等于连接成功，以运行中实际观察到的状态为准。" bodyClassName="p-4 sm:p-5">
+        <Panel icon={PlugZap} title="其他连接" description="已填写凭证不等于连接成功，以运行中实际观察到的状态为准；凭证在「AI 与 TMDB」「Telegram」中填写。" bodyClassName="p-4 sm:p-5">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {others.map(([key, c]) => {
               const Icon = ICONS[key] ?? PlugZap;

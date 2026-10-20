@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 _CONFIG: dict[str, Any] = {}
+# 进程当前的有效配置（Pipeline 设置）：不在任务作用域里的调用（如 Web 发起的 TMDB 查询）读系统配置用
+_PROCESS: dict[str, Any] = {}
 _SCOPED: ContextVar[dict[str, Any] | None] = ContextVar("reelay_config", default=None)
 _SERVICES: ContextVar["Services | None"] = ContextVar("reelay_services", default=None)
 
@@ -91,13 +93,26 @@ def set_config(cfg: dict[str, Any]) -> None:
     _CONFIG = cfg or {}
 
 
+def set_process_config(cfg: dict[str, Any]) -> None:
+    global _PROCESS
+    _PROCESS = cfg or {}
+
+
 def get_config() -> dict[str, Any]:
     scoped = _SCOPED.get()
-    return _CONFIG if scoped is None else scoped
+    if scoped is not None:
+        return scoped
+    return _CONFIG or _PROCESS
+
+
+def plugin_config(name: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """插件自己的设置 ``plugins.<name>``（不含 enabled）；cfg 省略时用当前作用域的配置。"""
+    section = ((get_config() if cfg is None else cfg).get("plugins") or {}).get(name) or {}
+    return {key: value for key, value in section.items() if key != "enabled"} if isinstance(section, dict) else {}
 
 
 def get(path: str, default: Any = None) -> Any:
-    """点路径取配置，如 get('organize.naming.tv')。"""
+    """点路径取配置，如 get('plugins.organizer.naming.tv')。"""
     cur: Any = get_config()
     for part in path.split("."):
         if isinstance(cur, dict) and part in cur:

@@ -6,8 +6,8 @@
 
 内置包之外还会加载：
 
-- ``REELAY_PLUGIN_DIRS``（``os.pathsep`` 分隔）中的 ``*.py`` 文件或包目录，
-  容器部署挂载目录即可加扩展，无需重建镜像；
+- ``data/plugins/`` 中的 ``*.py`` 文件或包目录，容器部署把扩展目录挂载到
+  ``/app/data/plugins`` 即可，无需重建镜像；
 - 已安装发行包声明的 ``reelay.plugins`` entry point。
 
 外部扩展导入失败只记录到 ``Registry.load_errors``，不影响内置能力。
@@ -19,11 +19,12 @@ import hashlib
 import importlib
 import importlib.util
 import logging
-import os
 import pkgutil
 import sys
 from pathlib import Path
 from typing import Any, Callable
+
+from . import paths
 
 log = logging.getLogger("reelay.registry")
 
@@ -79,9 +80,18 @@ class Registry:
 
     @staticmethod
     def is_enabled(instance: Any, config: dict | None) -> bool:
-        """未显式配置时按扩展声明的 ``default_enabled``（默认 True）。"""
-        toggles = (config or {}).get("plugins", {})
-        return toggles.get(Registry.extension_name(instance), getattr(instance, "default_enabled", True))
+        """``plugins.<名>.enabled``；未显式配置时按扩展声明的 ``default_enabled``（默认 True）。"""
+        section = ((config or {}).get("plugins") or {}).get(Registry.extension_name(instance))
+        if type(section) is bool:  # 未经规范化的旧写法
+            return section
+        if isinstance(section, dict) and type(section.get("enabled")) is bool:
+            return section["enabled"]
+        return getattr(instance, "default_enabled", True)
+
+    @staticmethod
+    def config_path(instance: Any, kind: str | None = None) -> str:
+        """扩展自己的设置在 plugins.<名> 下；ui_fields 声明的是相对这里的路径。"""
+        return f"plugins.{Registry.extension_name(instance)}"
 
     def _enabled(self, instances: list, config: dict | None) -> list:
         return [obj for obj in instances if self.is_enabled(obj, config)]
@@ -97,35 +107,51 @@ class Registry:
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
         from .config_fields import validate_declared_field
-        objects = [obj for entries in self.providers.values() for obj in entries.values()]
-        objects += [obj for groups in (self.hooks, self.listeners) for entries in groups.values() for obj in entries]
-        for obj in objects:
+        objects = [(obj, "provider") for entries in self.providers.values() for obj in entries.values()]
+        objects += [(obj, "plugin") for groups in (self.hooks, self.listeners)
+                    for entries in groups.values() for obj in entries]
+        for obj, kind in objects:
+            prefix = self.config_path(obj, kind)
             for field in getattr(obj, 'ui_fields', []):
-                validate_declared_field(cfg, field)
+                validate_declared_field(cfg, {**field, "path": f"{prefix}.{field['path']}"})
             # 扩展自己的复杂配置（数组、对象）由扩展校验；只校验已启用的扩展。
             if hasattr(obj, 'validate_config') and self.is_enabled(obj, cfg):
                 obj.validate_config(cfg)
-        extensions = {self.extension_name(obj) for groups in (self.hooks, self.listeners)
-                      for items in groups.values() for obj in items}
-        if set(cfg["plugins"]) - extensions:
-            raise ValueError("plugins 包含未注册的扩展名称")
-        if "organizer" in extensions and cfg["plugins"].get("organizer", True):
+        # 插件被删除后留下的 plugins.<名> 不影响运行，启动日志里提示（见 unclaimed_sections）
+        organizer = next((obj for groups in (self.hooks, self.listeners) for items in groups.values()
+                          for obj in items if self.extension_name(obj) == "organizer"), None)
+        if organizer is not None and self.is_enabled(organizer, cfg):
             if any(rule.get("storage", cfg["defaults"]["storage"]) != "p115"
                    for rule in [cfg["defaults"], *cfg["sources"]]):
                 raise ValueError("organizer 仅支持 p115；其他存储需关闭它并注册对应的整理扩展")
+
+    def plugin_names(self) -> set[str]:
+        """所有扩展（含能力槽的实现）的名称，即 plugins 下允许出现的键。"""
+        names = {self.extension_name(obj) for groups in (self.hooks, self.listeners)
+                 for items in groups.values() for obj in items}
+        return names | {self.extension_name(obj) for entries in self.providers.values() for obj in entries.values()}
+
+    def unclaimed_sections(self, cfg: dict) -> list[str]:
+        """没有对应插件的 plugins.<名>，以及认不出归属的顶层配置（多半是外部插件的旧配置）。"""
+        from .config import SYSTEM_KEYS
+        extensions = self.plugin_names()
+        return ([f"plugins.{name}" for name in cfg.get("plugins", {}) if name not in extensions]
+                + [key for key in cfg if key not in SYSTEM_KEYS and key != "plugins"])
 
     def catalog(self, config: dict) -> dict[str, Any]:
         """目录直接来自已加载注册表；新扩展声明 ui_fields 即可获得配置表单。"""
         def describe(obj, kind, slot):
             name = self.extension_name(obj)
+            prefix = self.config_path(obj, kind)
             return {
                 'name': name, 'kind': kind, 'slot': slot,
                 'label': getattr(obj, 'ui_label', name),
                 'description': getattr(obj, 'ui_description', (obj.__doc__ or '').strip().split('\n')[0]),
                 'enabled': self.is_enabled(obj, config),
                 'order': getattr(obj, 'order', None),
-                'fields': getattr(obj, 'ui_fields', []),
-                'config_section': getattr(obj, 'ui_section', None),
+                # 前端按完整路径读写；插件声明的 ui_fields 是相对 plugins.<名> 的路径
+                'fields': [{**f, 'path': f"{prefix}.{f['path']}"} for f in getattr(obj, 'ui_fields', [])],
+                'config_section': prefix,
                 'config_type': getattr(obj, 'ui_config_type', None),
                 'required_storage': getattr(obj, 'storage_provider', None),
             }
@@ -212,13 +238,14 @@ def _instantiate(registry: Registry, errors: list[dict[str, str]] | None = None,
             registry.add_listener(obj)
 
 
-def _load_external(errors: list[dict[str, str]]) -> set[str]:
-    """导入外部扩展目录与 entry point，返回本次配置涉及的模块名；同一文件在进程内只执行一次。"""
+def _load_external(errors: list[dict[str, str]], plugin_dirs: list[str | Path] | None) -> set[str]:
+    """导入外部扩展目录（默认 data/plugins）与 entry point，返回本次配置涉及的模块名；同一文件在进程内只执行一次。"""
     active: set[str] = set()
-    for directory in filter(None, os.getenv("REELAY_PLUGIN_DIRS", "").split(os.pathsep)):
+    for directory in (plugin_dirs if plugin_dirs is not None else [paths.PLUGINS]):
         root = Path(directory).expanduser()
         if not root.is_dir():
-            errors.append({"source": str(root), "error": "扩展目录不存在"})
+            if plugin_dirs is not None:  # 默认目录没建就是没有外部扩展
+                errors.append({"source": str(root), "error": "扩展目录不存在"})
             continue
         for path in sorted(root.iterdir()):
             if path.name.startswith(("_", ".")):
@@ -260,8 +287,9 @@ def _load_external(errors: list[dict[str, str]]) -> set[str]:
     return active
 
 
-def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins")) -> Registry:
-    """导入内置包与外部扩展，触发 ``@register``，再统一实例化。"""
+def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins"),
+             plugin_dirs: list[str | Path] | None = None) -> Registry:
+    """导入内置包与外部扩展，触发 ``@register``，再统一实例化。plugin_dirs 默认只有 data/plugins。"""
     for pkg_name in packages:
         try:
             pkg = importlib.import_module(pkg_name)
@@ -272,7 +300,7 @@ def discover(packages: tuple[str, ...] = ("reelay.providers", "reelay.plugins"))
                 continue
             importlib.import_module(f"{pkg_name}.{mod.name}")
     errors: list[dict[str, str]] = []
-    active = _load_external(errors)
+    active = _load_external(errors, plugin_dirs)
     registry = Registry()
     _instantiate(registry, errors, active)
     registry.load_errors = errors

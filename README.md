@@ -48,13 +48,12 @@ python -m reelay.main --dry-run
 ```bash
 pip install -e ".[all]"
 (cd web && npm ci && npm run build)
-cp .env.example .env && cp config.example.yaml config.yaml   # 填写凭证
+python -m reelay.web          # 管理台 http://127.0.0.1:28080：在「设置」填写凭证
 python -m reelay.login        # 登录个人 Telegram 账号
-python -m reelay.web          # 管理台 http://127.0.0.1:28080
 python -m reelay.main         # 监听 + Worker（另开终端）
 ```
 
-然后在管理台扫码登录 115、选择保存目录、添加监听来源。完整步骤见 [快速开始](docs/quickstart.md)；常驻运行推荐 [Docker 部署](docs/deployment.md)。
+所有配置与密钥都在管理台修改，保存在 `data/` 目录（`data/config.yaml` 与 `data/secrets.json`）。然后在管理台扫码登录 115、选择保存目录、添加监听来源。完整步骤见 [快速开始](docs/quickstart.md)；常驻运行推荐 [Docker 部署](docs/deployment.md)。
 
 ## MCP
 

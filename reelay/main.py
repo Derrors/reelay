@@ -6,6 +6,9 @@
     python3 -m reelay.main               # 正常运行：真实源 + worker 长驻
 
 --dry-run 用内置 DryRunSource 与 115 占位实现，端到端验证内核骨架，不碰网络与凭证。
+
+运行文件都在 data/ 下（见 ``core/paths.py``）；配置与密钥在管理台修改。启动时先做一次迁移
+（旧位置的配置、.env 里的旧环境变量，见 ``core/bootstrap.py``）。
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import asyncio
 import logging
 import os
 
+from .core import bootstrap, paths
 from .core.config import load_config, load_env
 from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
@@ -25,15 +29,23 @@ from .core.worker import Worker
 from .control.panel import ControlPanel
 
 
-def _setup_log() -> None:
+# 审批超时扫描间隔（秒）
+SWEEP_INTERVAL_SEC = 3600
+
+
+def _setup_log(*, to_file: bool) -> None:
+    """日志级别取系统配置 runtime.log_level（重启生效）；正常运行时同时写入 data/reelay.log 供管理台查看。"""
     handlers: list[logging.Handler] = [logging.StreamHandler()]
-    log_file = os.getenv("REELAY_LOG_FILE")
-    if log_file:
-        path = __import__("pathlib").Path(log_file)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(path, encoding="utf-8"))
+    level = "INFO"
+    if to_file:
+        paths.LOG.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(paths.LOG, encoding="utf-8"))
+        try:
+            level = load_config()["runtime"]["log_level"]
+        except ValueError:
+            pass  # 配置无效时启动流程会报出具体原因
     logging.basicConfig(
-        level=os.getenv("REELAY_LOG_LEVEL", "INFO"),
+        level=level,
         format="%(asctime)s %(levelname)s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
         handlers=handlers,
@@ -104,12 +116,12 @@ async def _run_dry() -> int:
 async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) -> None:
     """监听来源、目标清单都跟随有效配置；切换来源先关闭旧会话。
 
-    断开超过 REELAY_SOURCE_ALERT_SEC（默认 120 秒）告警一次，恢复后发送恢复通知；
+    断开超过 telegram.alert_after_sec（默认 120 秒）告警一次，恢复后发送恢复通知；
     监听意外停止时先落告警再退出，由容器重启拉起，告警经 Outbox 在新进程中送达。
     """
     import time
-    alert_after = max(1, int(os.getenv("REELAY_SOURCE_ALERT_SEC", "120")))
     while True:
+        alert_after = int(pipeline.cfg["telegram"]["alert_after_sec"])
         name = pipeline.cfg["providers"]["source"]
         source = pipeline.reg.get_provider("source", name)
         if hasattr(source, "configure"):
@@ -170,9 +182,11 @@ async def _run_live() -> int:
     reg.validate_config(cfg)
     log = logging.getLogger("reelay")
     log.info("已注册：%s", reg.summary())
-    store = Store(os.getenv("REELAY_DB_PATH", "data/reelay.db"))
+    for name in reg.unclaimed_sections(cfg):
+        log.warning("配置 %s 没有对应的插件，已忽略（外部插件的设置请移到 plugins.<插件名> 下）", name)
+    store = Store(str(paths.DATABASE))
     pipeline = Pipeline(reg, store, cfg)
-    service = ManagementService(store, pipeline, config_path=os.getenv("REELAY_CONFIG_PATH", "config.yaml"))
+    service = ManagementService(store, pipeline, config_path=paths.CONFIG)
     from .control.bot import ControlBot
     bot = ControlBot(service)
     tasks = []
@@ -185,11 +199,11 @@ async def _run_live() -> int:
         async def emit(raw: RawMessage) -> None:
             await pipeline.accept(PipelineContext(raw=raw))
 
-        worker = Worker(pipeline, store, concurrency=int(os.getenv("REELAY_WORKER_CONCURRENCY", "3")))
+        worker = Worker(pipeline, store, concurrency=cfg["runtime"]["concurrency"])
         pipeline.hold_daily(900)  # 日报等启动补拉的消息解析完再发，最多等 15 分钟
 
         async def sweep_loop() -> None:
-            interval = max(1, int(os.getenv("REELAY_SWEEP_INTERVAL_SEC", "3600")))
+            interval = SWEEP_INTERVAL_SEC
             while True:
                 await pipeline.sweep_approval_timeouts()
                 store.heartbeat("control_bot", **bot.health())
@@ -222,8 +236,15 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="无依赖端到端冒烟")
     args = ap.parse_args()
     if not args.dry_run:
-        load_env()  # 须早于 _setup_log，否则 .env 中的 REELAY_LOG_FILE / REELAY_LOG_LEVEL 不生效
-    _setup_log()
+        load_env(str(paths.ENV_FILE))  # 只为首次启动导入旧的环境变量
+    _setup_log(to_file=not args.dry_run)
+    if not args.dry_run:
+        try:
+            bootstrap.prepare()
+        except bootstrap.BootstrapError as exc:
+            logging.getLogger("reelay").error("%s", exc)
+            raise SystemExit(1) from None
+        paths.use_data_dir(paths.DATA)
     async def run_with_signals():
         import signal
         loop = asyncio.get_running_loop()

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from reelay.core import runtime
+from reelay.core import runtime, secret_store
 from reelay.core.config import load_config, normalize_config
 from reelay.core.contracts import Decision, ParsedResource, PipelineContext, RawMessage, TaskState
 from reelay.core.health import check_worker
@@ -265,10 +265,10 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def test_default_config_does_not_share_mutable_nested_objects(self):
         a = normalize_config({})
         a["defaults"]["parser"] = "changed"
-        a["organize"]["naming"]["tv"] = "changed"
+        a["plugins"]["organizer"]["naming"]["tv"] = "changed"
         b = normalize_config({})
         self.assertEqual(b["defaults"]["parser"], "llm")
-        self.assertNotEqual(b["organize"]["naming"]["tv"], "changed")
+        self.assertNotEqual(b["plugins"]["organizer"]["naming"]["tv"], "changed")
         path = Path(self.temp.name) / "bad.yaml"
         path.write_text("[broken")
         with self.assertRaises(ValueError):
@@ -602,7 +602,7 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         client = Client()
         module.TelegramClient = lambda *args, **kwargs: client
         module.events = types.SimpleNamespace(NewMessage=lambda **kwargs: object())
-        with patch.dict("sys.modules", {"telethon": module}), patch.dict("os.environ", {"REELAY_TG_API_ID": "1", "REELAY_TG_API_HASH": "dummy"}):
+        with patch.dict("sys.modules", {"telethon": module}), secret_store.override(telegram_api_id="1", telegram_api_hash="dummy"):
             source = TelegramUserbotSource()
             with self.assertRaisesRegex(RuntimeError, "个人"):
                 await source.listen(lambda raw: None)
@@ -644,7 +644,7 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         module.events = types.SimpleNamespace(NewMessage=lambda **kwargs: object())
         async def emit(raw):
             emitted.append(raw)
-        with patch.dict('sys.modules', {'telethon': module}), patch.dict('os.environ', {'REELAY_TG_API_ID': '1', 'REELAY_TG_API_HASH': 'dummy'}):
+        with patch.dict('sys.modules', {'telethon': module}), secret_store.override(telegram_api_id='1', telegram_api_hash='dummy'):
             source = TelegramUserbotSource()
             source.configure(['@test'])
             await source.listen(emit)

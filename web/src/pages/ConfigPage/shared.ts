@@ -85,13 +85,8 @@ export const CHOICE_LABELS: Record<string, string> = {
   'zh-CN': '简体中文', 'zh-TW': '繁體中文', 'en-US': 'English',
 };
 
-/** 插件字段未写入配置时后端实际使用的值；目录暂不声明默认值，这里仅用于展示。 */
-const FIELD_DEFAULTS: Record<string, unknown> = {
-  'tmdb.language': 'zh-CN', 'tmdb.timeout': 10,
-  'episode_tracker.track_all': true, 'episode_tracker.lookback_days': 30,
-};
-export const fieldDefault = (f: IExtensionField): unknown =>
-  f.default ?? FIELD_DEFAULTS[f.path];
+/** 插件字段未写入配置时后端实际使用的值（插件在 ui_fields 里声明）。 */
+export const fieldDefault = (f: IExtensionField): unknown => f.default;
 
 /** 同名扩展（订阅多个事件）合并为一项，运行时机用逗号拼接；兼容未合并的旧后端。 */
 export function mergeByName(items: IExtension[]): IExtension[] {
@@ -119,14 +114,14 @@ export function sortHooks(items: IExtension[]): IExtension[] {
   return [...items].sort((a, b) => rank(a) - rank(b) || (a.order ?? 0) - (b.order ?? 0));
 }
 
-export const extensionKeys = (x: IExtension) => [...new Set([
-  ...(x.config_section ? [x.config_section] : []),
-  ...x.fields.map(f => f.path.split('.')[0]),
-])];
+/** 扩展设置在配置里的位置（plugins.<名>），用于判断是否有未保存的修改与撤销。 */
+export const extensionKeys = (x: IExtension) => [x.config_section ?? `plugins.${x.name}`];
 
-/** 显式开关优先；未设置时用目录给出的默认状态（如 STRM 默认关闭）。 */
-export const isEnabled = (x: IExtension, toggles: Obj) =>
-  typeof toggles[x.name] === 'boolean' ? toggles[x.name] as boolean : x.enabled;
+/** plugins.<名>.enabled 优先；未设置时用目录给出的默认状态（如 STRM 默认关闭）。 */
+export const isEnabled = (x: IExtension, plugins: Obj) => {
+  const value = obj(plugins[x.name]).enabled;
+  return typeof value === 'boolean' ? value : x.enabled;
+};
 
 /** 默认规则与各来源实际使用的网盘。 */
 export function storagesInUse(cfg: Obj): string[] {
@@ -149,8 +144,14 @@ export const CONFIG_SECTIONS = [
   { label: '确认超时', tab: 'advanced', paths: ['approval'] },
   { label: 'AI 能力', tab: 'advanced', paths: ['ai'] },
   { label: '版本偏好', tab: 'advanced', paths: ['release'] },
+  { label: 'AI 服务', tab: 'services', paths: ['llm'] },
+  { label: 'TMDB', tab: 'services', paths: ['tmdb'] },
+  { label: 'Telegram', tab: 'telegram', paths: ['telegram'] },
+  { label: '115 请求限速', tab: 'connections', paths: ['p115'] },
+  { label: '运行参数', tab: 'system', paths: ['runtime'] },
 ];
-export const SYSTEM_KEYS = ['save_dirs', 'defaults', 'sources', 'forward', 'approval', 'ai', 'release'];
+export const SYSTEM_KEYS = ['save_dirs', 'defaults', 'sources', 'forward', 'approval', 'ai', 'release',
+  'llm', 'tmdb', 'telegram', 'p115', 'runtime'];
 
 export function problems(cfg: Obj, extensions: IConfigResponse['extensions'] | undefined): string[] {
   const out: string[] = []; const dirs = obj(cfg.save_dirs); const d = obj(cfg.defaults);
@@ -186,6 +187,30 @@ export function problems(cfg: Obj, extensions: IConfigResponse['extensions'] | u
     if (!Object.hasOwn(dirs, text(r.default ?? r.dir))) out.push(`分类规则 ${i + 1}：目标目录不存在`);
     if (!Object.hasOwn(r, 'default') && !text(r.when).trim()) out.push(`分类规则 ${i + 1}：条件不能为空`);
   });
+  // AI 与 TMDB、Telegram、115 限速、运行参数：与后端校验的范围一致
+  const ranges: Array<[string, string, number, number, boolean]> = [
+    ['tmdb.timeout', 'TMDB：请求超时', 1, 60, false],
+    ['telegram.backfill_limit', 'Telegram：补拉条数', 0, 5000, true],
+    ['telegram.backfill_max_days', 'Telegram：补拉天数', 0, 365, false],
+    ['telegram.alert_after_sec', 'Telegram：断开告警秒数', 10, 86400, true],
+    ['p115.open_qps', '115 请求限速：开放平台接口', 0.1, 20, false],
+    ['p115.cookie_qps', '115 请求限速：网页接口', 0.1, 20, false],
+    ['p115.share_qps', '115 请求限速：分享与转存', 0.1, 20, false],
+    ['p115.risk_cooldown_sec', '115 请求限速：风控后暂停秒数', 60, 86400, true],
+    ['runtime.concurrency', '运行参数：同时转存的任务数', 1, 20, true],
+  ];
+  for (const [path, label, min, max, integer] of ranges) {
+    const v = getPath(cfg, path);
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max || (integer && !Number.isInteger(v))) {
+      out.push(`${label}必须是 ${min} 到 ${max} 之间的${integer ? '整数' : '数'}`);
+    }
+  }
+  for (const [path, label] of [['llm.base_url', 'AI 服务'], ['tmdb.base_url', 'TMDB']] as const) {
+    const url = text(getPath(cfg, path)).trim();
+    if (url && !/^https?:\/\/[^/\s]+/.test(url)) out.push(`${label}：接口地址需以 http:// 或 https:// 开头，留空使用默认`);
+  }
+  if (!text(getPath(cfg, 'llm.model')).trim()) out.push('AI 服务：模型不能为空');
+  if (!/^\d*$/.test(text(getPath(cfg, 'telegram.owner_id')).trim())) out.push('Telegram：机主 ID 必须是数字');
   for (const x of [...(extensions?.hooks ?? []), ...(extensions?.events ?? [])]) for (const f of x.fields) {
     const v = getPath(cfg, f.path);
     if (v === undefined && !f.required) continue;

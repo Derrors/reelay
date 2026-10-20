@@ -26,6 +26,8 @@ POLL_INTERVAL = 1.0
 # 需要 115 凭证的阶段；鉴权不可用时暂停领取。
 STORAGE_STATES = (TaskState.QUEUED, TaskState.STORED)
 AUTH_ALERT = "p115_auth"
+# 115 凭证探活间隔（秒）；凭证失效暂停转存期间固定 30 秒探活，恢复后自动继续
+AUTH_CHECK_SEC = 300
 
 
 def is_auth_failure(message: str | None) -> bool:
@@ -160,7 +162,7 @@ class Worker:
                                "请在管理台「连接状态」重新扫码，恢复后自动继续")
         elif cookie_state == AuthState.ACTIVE:
             self.resume_storage()
-        interval = 30 if self.storage_paused else max(30, int(os.getenv("REELAY_115_AUTH_CHECK_SEC", "300")))
+        interval = 30 if self.storage_paused else AUTH_CHECK_SEC
         self._next_auth_check = time.time() + interval
         # 探活按间隔进行，带上间隔供管理台判断这条观察是否过期
         self.store.heartbeat("p115_cookie", status=cookie_state, error=auth.cookie_error, check_interval=interval)

@@ -7,13 +7,13 @@ tmdbid 与最近更新时间。每日巡检：
   的断档，以及 TMDB 已播出但尚未入库的新集——中途开始追的剧不会天天提示缺前面的集；
 - 显式订阅（subscriptions）：从第 1 集开始检查，可用 total 指定总集数。
 
-配置示例::
+配置示例（订阅清单是系统配置 ``subscriptions``，在管理台「追剧订阅」维护）::
 
-    episode_tracker:
-      track_all: true
-      lookback_days: 30
-      subscriptions:
-        - {title: 一瓯春, season: 1, total: 36}
+    plugins:
+      episode_tracker:
+        enabled: true
+        track_all: true
+        lookback_days: 30
 """
 from __future__ import annotations
 
@@ -56,15 +56,12 @@ def missing_episodes(have: set[int], *, total: int | None, aired: int | None, fr
 class _Base:
     name = "episode_tracker"
     ui_label = "缺集追更"
-    ui_description = "记录剧集入库进度，每日巡检断档与 TMDB 已播未入库的新集并提醒；订阅清单在配置文件中维护。"
+    ui_description = "记录剧集入库进度，每日巡检断档与 TMDB 已播未入库的新集并提醒；订阅的剧在「追剧订阅」中维护。"
     ui_fields = [
-        {'path': 'episode_tracker.track_all', 'label': '自动跟踪所有在追剧集', 'type': 'boolean'},
-        {'path': 'episode_tracker.lookback_days', 'label': '自动跟踪：最近 N 天有更新', 'type': 'number',
-         'min': 1, 'max': 365},
+        {'path': 'track_all', 'label': '自动跟踪所有在追剧集', 'type': 'boolean', 'default': True},
+        {'path': 'lookback_days', 'label': '自动跟踪：最近 N 天有更新', 'type': 'number',
+         'min': 1, 'max': 365, 'default': 30},
     ]
-
-    def validate_config(self, cfg: dict) -> None:
-        subscriptions.validate(cfg)
 
 
 @register(kind="event", event="on_saved")
@@ -91,7 +88,7 @@ class EpisodeTracker(_Base):
     async def handle(self, ctx: PipelineContext) -> None:
         services = runtime.services()
         state = services.state(self.name)
-        config = runtime.get("episode_tracker", {}) or {}
+        config = runtime.plugin_config(self.name)
         records = {key: value for key, value in state.items().items() if key.startswith("series:")}
         stored = services.store.stored_series()
         targets: dict[tuple[str, int], dict] = {}
@@ -100,7 +97,7 @@ class EpisodeTracker(_Base):
             for record in records.values():
                 if record.get("updated_at", 0) >= since:
                     targets[(record["title"], record["season"])] = {"tmdbid": record.get("tmdbid"), "from_first": True}
-        for item in subscriptions.items({"episode_tracker": config}):
+        for item in subscriptions.items(runtime.get_config()):
             season = item["season"]
             record = records.get(f"series:{item['title']}|S{season:02d}", {})
             targets[(item["title"], season)] = {"tmdbid": item["tmdbid"] or record.get("tmdbid"),

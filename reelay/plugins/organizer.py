@@ -51,7 +51,6 @@ class Organizer:
     name = "organizer"
     ui_label = "媒体库整理"
     ui_description = "转存后按已持久化计划建目录、改名、移动，并读回核验。"
-    ui_section = "organize"
     ui_config_type = "naming_templates"
     storage_provider = "p115"
     stage = "after_save"
@@ -184,7 +183,7 @@ class Organizer:
     def _build_plan(self, p, landed: list[dict], category_path: str = "",
                     mapping: dict[str, tuple] | None = None) -> list[dict]:
         from ..core.naming_template import render_path
-        naming = runtime.get("organize.naming", {}) or {}
+        naming = runtime.get("plugins.organizer.naming", {}) or {}
         title = _safe(p.title)
         is_tv = p.media_type == "tv" or bool(p.episodes)
         plan = []
@@ -265,7 +264,7 @@ class Organizer:
             dir_cache[rel_dir] = pid
             return pid
 
-        strategy = runtime.get("organize.conflict", "manual")
+        strategy = runtime.get("plugins.organizer.conflict", "manual")
         state = runtime.services().state(self.name)
         conflicts = ctx.ns("organize").setdefault("conflicts", [])
         new_rank = resolution_rank(p.resolution)

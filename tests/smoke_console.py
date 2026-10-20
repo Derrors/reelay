@@ -21,7 +21,7 @@ def main():
         (root / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
         with patch.dict(os.environ, environment, clear=True), patch('reelay.web.load_env'):
             reset_store(CredentialStore(root / 'credentials.json'))
-            app = create_app(db_path=str(root / 'test.db'), config_path=str(root / 'config.yaml'), start_worker=False)
+            app = create_app(data_dir=root, start_worker=False)
             uvicorn.run(app, host='127.0.0.1', port=28081)
 
 

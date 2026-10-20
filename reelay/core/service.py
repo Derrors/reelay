@@ -16,8 +16,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import ai, inbox, library, release, subscriptions, tmdb
-from .config import config_revision, merge_config, normalize_config
+from . import ai, inbox, library, release, secret_store, subscriptions, tmdb
+from .config import config_revision, merge_config, normalize_config, render as render_config
 from .validation import MEDIA_SCHEMA, validate_resource
 from .contracts import ParsedResource, PipelineContext, TaskState
 from .media import multi_season
@@ -53,7 +53,7 @@ class ManagementService:
         store: Store,
         pipeline: Pipeline,
         *,
-        config_path: str = "config.yaml",
+        config_path: str | Path,
     ) -> None:
         self.store = store
         self.pipeline = pipeline
@@ -103,16 +103,15 @@ class ManagementService:
         return {"received_24h": summary["received"], "done_24h": summary["done_count"]}
 
     def connection_status(self) -> dict[str, dict[str, Any]]:
-        import os
         import time
 
         connections = {
             "telegram": {
-                "configured": bool(os.getenv("REELAY_TG_API_ID") and os.getenv("REELAY_TG_API_HASH")),
+                "configured": bool(secret_store.get("telegram_api_id") and secret_store.get("telegram_api_hash")),
                 "label": "Telegram 监听",
             },
             "control_bot": {
-                "configured": bool(os.getenv("REELAY_CONTROL_BOT_TOKEN") and os.getenv("REELAY_OWNER_ID")),
+                "configured": bool(secret_store.get("control_bot_token") and self.pipeline.cfg["telegram"]["owner_id"]),
                 "label": "控制 Bot",
             },
             "p115": {
@@ -120,11 +119,11 @@ class ManagementService:
                 "label": "115 网盘",
             },
             "llm": {
-                "configured": bool(os.getenv("REELAY_LLM_API_KEY")),
+                "configured": bool(secret_store.get("llm_api_key")),
                 "label": "AI 解析",
             },
             "tmdb": {
-                "configured": bool(os.getenv("REELAY_TMDB_API_KEY")),
+                "configured": bool(secret_store.get("tmdb_api_key")),
                 "label": "TMDB 元数据",
             },
         }
@@ -721,7 +720,7 @@ class ManagementService:
                 "revision": config_revision(cfg)}
 
     # ------------------------------------------------------------------ #
-    # 剧集订阅：订阅的剧后续新集由订阅决策自动放行（配置 episode_tracker.subscriptions）
+    # 剧集订阅：订阅的剧后续新集由订阅决策自动放行（系统配置 subscriptions）
     # ------------------------------------------------------------------ #
     def list_subscriptions(self) -> dict[str, Any]:
         cfg = self.get_config()
@@ -842,10 +841,9 @@ class ManagementService:
             entry["auto"] = False
         if subscriptions.identity(entry) in {subscriptions.identity(s) for s in subscriptions.items(cfg)}:
             raise ConflictError(f"已经订阅过《{entry['title']}》第 {entry['season']} 季")
-        section = cfg.setdefault("episode_tracker", {})
-        section["subscriptions"] = [*section.get("subscriptions", []), entry]
+        cfg["subscriptions"] = [*cfg["subscriptions"], entry]
         await self.save_config(cfg)
-        normalized = subscriptions.items({"episode_tracker": {"subscriptions": [entry]}})
+        normalized = subscriptions.items({"subscriptions": [entry]})
         pending = [row["task_id"] for row in self.store.list_by_state(TaskState.PENDING_APPROVAL, 1000)
                    if (ctx := self.store.get_task(row["task_id"])) and subscriptions.match(
                        normalized, ctx.parsed, ctx.meta.get("tmdb", {}), seasons=subscriptions.seasons_of(ctx),
@@ -882,11 +880,11 @@ class ManagementService:
             raise ConflictError("配置文件当前无效，先修复原始文件")
         key = subscriptions.identity({"title": str(item.get("title", "")), "season": item.get("season"),
                                       "tmdbid": item.get("tmdbid")})
-        current = cfg.get("episode_tracker", {}).get("subscriptions", [])
+        current = cfg["subscriptions"]
         kept = [s for s in current if subscriptions.identity(s) != key]
         if len(kept) == len(current):
             raise NotFoundError("没有这条订阅")
-        cfg["episode_tracker"]["subscriptions"] = kept
+        cfg["subscriptions"] = kept
         await self.save_config(cfg)
 
     # ------------------------------------------------------------------ #
@@ -909,7 +907,7 @@ class ManagementService:
     def _require_ai(self) -> tuple[Any, str]:
         client, model = self.ai_client()
         if client is None:
-            raise ConflictError("未配置 AI（REELAY_LLM_API_KEY），无法使用这项功能")
+            raise ConflictError("未配置 AI 接口密钥（「设置 → AI 与 TMDB」中填写），无法使用这项功能")
         return client, model
 
     # ------------------------------------------------------------------ #
@@ -944,15 +942,10 @@ class ManagementService:
         return copy.deepcopy(self.pipeline.cfg)
 
     def get_config_text(self) -> str:
-        """返回配置原文；文件不存在时返回 JSON（合法 YAML 子集）。"""
+        """返回配置原文（system / plugins 结构，不含密钥）；文件不存在时按当前配置生成。"""
         if self.config_path.exists():
             return self.config_path.read_text(encoding="utf-8")
-        try:
-            import yaml
-            return yaml.safe_dump(self.get_config(), allow_unicode=True, sort_keys=False)
-        except ImportError:
-            import json
-            return json.dumps(self.get_config(), ensure_ascii=False, indent=2)
+        return render_config(self.get_config())
 
     async def save_config_text(self, text: str) -> dict[str, Any]:
         try:
@@ -973,12 +966,11 @@ class ManagementService:
     async def save_config(self, config: dict[str, Any]) -> dict[str, Any]:
         config = normalize_config(config)
         self.pipeline.reg.validate_config(config)
-        try:
-            import yaml
-            rendered = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
-        except ImportError:
-            import json
-            rendered = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
+        # 新写入的插件设置必须对应已安装的插件（防止写错名字）；删除插件后留下的旧设置不拦着保存
+        unknown = set(config["plugins"]) - self.pipeline.reg.plugin_names() - set(self.pipeline.cfg["plugins"])
+        if unknown:
+            raise ValueError(f"plugins 包含未安装的插件：{'、'.join(sorted(unknown))}")
+        rendered = render_config(config)
         async with self._config_lock:
             target = self.config_path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1000,6 +992,27 @@ class ManagementService:
     @staticmethod
     def validate_config(config: dict[str, Any]) -> None:
         normalize_config(config)
+
+    # ------------------------------------------------------------------ #
+    # 密钥：只能设置、替换或清除，读不回原值
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def secret_status() -> dict[str, dict[str, Any]]:
+        store = secret_store.current()
+        status = store.status() if store is not None else {name: False for name in secret_store.NAMES}
+        return {name: {"label": label, "set": status[name]} for name, label in secret_store.NAMES.items()}
+
+    def update_secrets(self, changes: dict[str, str | None], *, current_password: str | None = None) -> dict[str, Any]:
+        """changes 里值为空表示清除。已设置 Web 密码时，修改或清除它要先输入当前密码。"""
+        store = secret_store.current()
+        if store is None:
+            raise ConflictError("当前进程没有加载密钥文件")
+        if not isinstance(changes, dict) or not changes:
+            raise ValueError("没有要修改的密钥")
+        if "web_password" in changes and store.get("web_password") and not store.check_password(current_password or ""):
+            raise ConflictError("当前 Web 登录密码不正确")
+        store.update(changes)
+        return self.secret_status()
 
     def _require_context(self, task_id: str) -> PipelineContext:
         self.pipeline.reload_config()

@@ -18,8 +18,8 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "plugins"
 
 class TestExamplePlugins(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        with patch.dict(os.environ, {"REELAY_PLUGIN_DIRS": str(EXAMPLES)}, clear=True):
-            self.registry = discover()
+        with patch.dict(os.environ, {}, clear=True):
+            self.registry = discover(plugin_dirs=[EXAMPLES])
 
     def test_examples_load_without_errors(self):
         self.assertEqual(self.registry.load_errors, [])
@@ -51,7 +51,7 @@ class TestExamplePlugins(unittest.IsolatedAsyncioTestCase):
         ctx = PipelineContext(RawMessage("@a", "1", "x"))
         ctx.parsed = ParsedResource(is_media=True, title="剧", episodes=[3], share_code="secret")
         ctx.state = TaskState.DONE
-        with runtime.scope({"webhook": {"url": f"http://127.0.0.1:{server.server_port}/hook"}}):
+        with runtime.scope({"plugins": {"webhook": {"url": f"http://127.0.0.1:{server.server_port}/hook"}}}):
             await webhook.notify(ctx, "saved")
             await webhook.notice("日报")
         self.assertEqual([r["event"] for r in received], ["saved", "notice"])

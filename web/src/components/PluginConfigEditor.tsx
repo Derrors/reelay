@@ -38,10 +38,18 @@ const NAMING_VARS: Array<[string, string]> = [
 ];
 function at(root: Obj, key: string) { return obj(root[key]); }
 
+type SectionProps = { section: Obj; setSection: (update: (section: Obj) => Obj) => void };
+
+/** 插件自己的设置在 plugins.<名> 下：编辑器只读写这一段。 */
 export default function PluginConfigEditor({ extension, config, setConfig }:
   { extension: IExtension; config: Obj; setConfig: Dispatch<SetStateAction<Obj>> }) {
-  if (extension.config_type === 'naming_templates') return <NamingEditor config={config} setConfig={setConfig} />;
-  if (extension.config_type === 'category_strategy') return <CategoryEditor config={config} setConfig={setConfig} />;
+  const section = at(at(config, 'plugins'), extension.name);
+  const setSection = (update: (section: Obj) => Obj) => setConfig(c => {
+    const plugins = at(c, 'plugins');
+    return { ...c, plugins: { ...plugins, [extension.name]: update(at(plugins, extension.name)) } };
+  });
+  if (extension.config_type === 'naming_templates') return <NamingEditor section={section} setSection={setSection} />;
+  if (extension.config_type === 'category_strategy') return <CategoryEditor section={section} setSection={setSection} />;
   return null;
 }
 
@@ -57,12 +65,12 @@ function EditorHeading({ title, description, action }: { title: string; descript
   );
 }
 
-function NamingEditor({ config, setConfig }: { config: Obj; setConfig: Dispatch<SetStateAction<Obj>> }) {
-  const naming = at(at(config, 'organize'), 'naming');
+function NamingEditor({ section, setSection }: SectionProps) {
+  const naming = at(section, 'naming');
   const [preview, setPreview] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState<Kind | null>(null);
   const update = (kind: Kind, value: string) => {
-    setConfig(c => ({ ...c, organize: { ...at(c, 'organize'), naming: { ...at(at(c, 'organize'), 'naming'), [kind]: value } } }));
+    setSection(s => ({ ...s, naming: { ...at(s, 'naming'), [kind]: value } }));
     setPreview(p => ({ ...p, [kind]: '' }));
   };
   const test = async (kind: Kind) => {
@@ -149,13 +157,13 @@ function PathInput({ value, taken, label, onCommit }: { value: string; taken: st
 
 const ROW_COLS = 'md:grid-cols-[1.5rem_minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem_6.5rem]';
 
-function CategoryEditor({ config, setConfig }: { config: Obj; setConfig: Dispatch<SetStateAction<Obj>> }) {
-  const categories = at(at(config, 'dir_router'), 'categories') as Categories;
+function CategoryEditor({ section, setSection }: SectionProps) {
+  const categories = at(section, 'categories') as Categories;
   const [sample, setSample] = useState({ media_type: 'movie', genre_ids: '16', origin_country: 'JP' });
   const [result, setResult] = useState('');
   const [testing, setTesting] = useState(false);
   const updateAll = (value: Categories) => {
-    setConfig(c => ({ ...c, dir_router: { ...at(c, 'dir_router'), categories: value } }));
+    setSection(s => ({ ...s, categories: value }));
     setResult('');
   };
   const entries = (kind: Kind) => Object.entries(obj(categories?.[kind])) as [string, Conditions][];

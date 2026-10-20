@@ -19,18 +19,17 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
 
-from .core import ai, tmdb
-from .core.config import load_env
+from .core import ai, bootstrap, paths, runtime, secret_store, tmdb
+from .core.config import load_config, load_env
 from .core.contracts import PipelineContext, RawMessage
 from .core.store import Store
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EVAL_DIR = PROJECT_ROOT / "data" / "eval"
+EVAL_DIR = paths.EVAL
 FIELDS = ("is_media", "media_type", "title", "year", "season", "episodes")
 
 
@@ -147,10 +146,13 @@ def _load_samples(args) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    load_env(str(PROJECT_ROOT / ".env"))
+    load_env(str(paths.ENV_FILE))
+    bootstrap.prepare()
+    secret_store.use(paths.SECRETS)
+    runtime.set_process_config(load_config())  # AI 接口地址与模型取系统配置
     parser = argparse.ArgumentParser(prog="reelay.eval", description="用人工裁决样本评测识别提示词与模型（只在本地运行）")
     sub = parser.add_subparsers(dest="command", required=True)
-    db = os.getenv("REELAY_DB_PATH", str(PROJECT_ROOT / "data" / "reelay.db"))
+    db = str(paths.DATABASE)
     exp = sub.add_parser("export", help="从数据库导出样本")
     exp.add_argument("--db", default=db)
     exp.add_argument("--out", default=str(EVAL_DIR / "samples.jsonl"))
@@ -158,7 +160,7 @@ def main(argv: list[str] | None = None) -> None:
     rn.add_argument("--db", default=db)
     rn.add_argument("--dataset", help="使用导出的 jsonl 样本，而不是直接读数据库")
     rn.add_argument("--limit", type=int, default=0, help="只评测最近的 N 条")
-    rn.add_argument("--model", help="覆盖 REELAY_LLM_MODEL")
+    rn.add_argument("--model", help="覆盖系统配置里的模型（llm.model）")
     rn.add_argument("--examples", type=int, default=3, help="每条附带的同来源修正示例数（0 关闭）")
     cmp = sub.add_parser("compare", help="对比两份报告")
     cmp.add_argument("old")
@@ -182,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("没有可用样本：在管理台批准或修正一些识别结果后再评测")
     client, model = ai.make_client()
     if client is None:
-        raise SystemExit("未配置 REELAY_LLM_API_KEY，无法评测")
+        raise SystemExit("未配置 AI 接口密钥（管理台「设置」中填写），无法评测")
     report = asyncio.run(run(samples, client=client, model=args.model or model, examples=args.examples))
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     path = EVAL_DIR / f"report-{time.strftime('%Y%m%d-%H%M%S')}.json"

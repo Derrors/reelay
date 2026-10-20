@@ -4,17 +4,15 @@ services:
     build: .
     init: true
     restart: unless-stopped
+    # .env 只剩部署参数；旧版本写在里面的设置首次启动时导入管理台
     env_file: .env
-    environment:
-      REELAY_DB_PATH: /app/data/reelay.db
-      REELAY_CONFIG_PATH: /app/config/config.yaml
-      REELAY_TG_SESSION: /app/data/userbot.session
-      REELAY_CONTROL_BOT_SESSION: /app/data/controlbot.session
-      REELAY_PLUGIN_DIRS: /app/plugins
     volumes:
+      # 数据库、配置、密钥、会话、115 凭证与日志都在这个数据卷里
       - reelay-data:/app/data
+      # 外部扩展（只读）
+      - ./deploy/plugins:/app/data/plugins:ro
+      # 仅用于从旧版本迁移：首次启动把 deploy/config/config.yaml 移进数据卷，之后可以删掉这一行
       - ./deploy/config:/app/config
-      - ./deploy/plugins:/app/plugins:ro
     healthcheck:
       test: ["CMD", "python", "-m", "reelay.core.health"]
       interval: 15s
@@ -31,15 +29,12 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      REELAY_DB_PATH: /app/data/reelay.db
-      REELAY_CONFIG_PATH: /app/config/config.yaml
       REELAY_WEB_HOST: 0.0.0.0
       REELAY_WEB_PORT: "28080"
-      REELAY_PLUGIN_DIRS: /app/plugins
     volumes:
       - reelay-data:/app/data
+      - ./deploy/plugins:/app/data/plugins:ro
       - ./deploy/config:/app/config
-      - ./deploy/plugins:/app/plugins:ro
     ports:
       - "127.0.0.1:28080:28080"
     healthcheck:

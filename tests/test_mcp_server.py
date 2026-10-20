@@ -29,7 +29,7 @@ class TestReelayTools(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name)
-        self.env = patch.dict(os.environ, {"REELAY_115_OAUTH_FILE": str(root / "creds.json")}, clear=True)
+        self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.creds = patch.object(auth115, "get_store",
                                   lambda: auth115.CredentialStore(root / "creds.json"))

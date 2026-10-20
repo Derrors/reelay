@@ -81,7 +81,7 @@ interface ExtensionCardProps {
 function ExtensionCard({ x, config, saved, setConfig, busy, open, catalog, onOpenChange, onToggle, onRestore }: ExtensionCardProps) {
   const configurable = x.fields.length > 0 || Boolean(x.config_type);
   const enabled = isEnabled(x, obj(config.plugins));
-  const dirty = extensionKeys(x).some(k => !equal(config[k], saved[k]));
+  const dirty = extensionKeys(x).some(path => !equal(getPath(config, path), getPath(saved, path)));
   const mismatched = x.required_storage
     ? storagesInUse(config).filter(s => s !== x.required_storage) : [];
   const expanded = configurable && open;
