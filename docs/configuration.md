@@ -111,7 +111,7 @@ plugins:
 | --- | --- | --- |
 | `llm.base_url` | 空 | OpenAI 兼容接口地址，留空用 OpenAI 官方地址 |
 | `llm.model` | `gpt-4o-mini` | 模型名。管理台打开时用已保存的密钥从接口获取模型列表，只能从列表中选择（直接编辑配置文件不受限制） |
-| `llm.reasoning_effort` | 空 | 推理强度，随每次请求作为 `reasoning_effort` 发送：`none` / `minimal` / `low` / `medium` / `high`；留空不传，由模型决定。只对支持推理的模型生效，不支持的模型或网关可能报错 |
+| `llm.reasoning_effort` | 空 | 推理强度，随每次请求作为 `reasoning_effort` 发送：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；留空不传，由模型决定。各家支持的取值不同（如 DeepSeek 只认 `low` / `high` / `xhigh` / `max`），管理台会检测当前模型支持哪些并禁用其余选项；请求因推理强度被拒时自动去掉这个参数重发，不会让识别失败 |
 | `tmdb.base_url` | 空 | 留空用 `https://api.themoviedb.org/3`；国内该域名常被 DNS 污染，可改用官方备用域名 `https://api.tmdb.org/3` 或自己的反向代理 |
 | `tmdb.language` / `tmdb.timeout` | `zh-CN` / `10` | TMDB 匹配语言与超时秒数 |
 

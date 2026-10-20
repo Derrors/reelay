@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 export interface SelectOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 interface SelectProps extends Omit<React.ComponentProps<'select'>, 'onChange'> {
@@ -23,7 +24,7 @@ export function Select({ options, onValueChange, placeholder, className, ...prop
       >
         {placeholder ? <NativeSelectOption value="">{placeholder}</NativeSelectOption> : null}
         {options.map((option) => (
-          <NativeSelectOption key={option.value} value={option.value}>{option.label}</NativeSelectOption>
+          <NativeSelectOption key={option.value} value={option.value} disabled={option.disabled}>{option.label}</NativeSelectOption>
         ))}
       </NativeSelect>
     </div>

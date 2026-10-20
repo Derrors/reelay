@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bot, CircleAlert, CircleCheck, Film, Gauge, Info, Loader2, PlugZap, RefreshCw, Send, ServerCog, ShieldCheck, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
-import { ai, type ILlmTest } from '@/api/ai';
+import { ai, type ILlmEfforts, type ILlmTest } from '@/api/ai';
 import { Panel } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
@@ -37,6 +37,7 @@ const EFFORTS = [
   { value: '', label: '默认（不传，由模型决定）' }, { value: 'none', label: '关闭推理（none）' },
   { value: 'minimal', label: '最低（minimal）' }, { value: 'low', label: '低（low）' },
   { value: 'medium', label: '中（medium）' }, { value: 'high', label: '高（high）' },
+  { value: 'xhigh', label: '更高（xhigh）' }, { value: 'max', label: '最高（max）' },
 ];
 const errorText = (e: unknown) => (e instanceof Error ? e.message : '请求失败');
 
@@ -64,6 +65,34 @@ function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; 
     await load(form.base_url);
     setLoading(null);
   };
+  // 推理强度：每个模型检测一次（结果由后端记住），不支持的选项不能选
+  const [efforts, setEfforts] = useState<(ILlmEfforts & { probing?: boolean }) | null>(null);
+  const probe = (model: string, url: string) => {
+    setEfforts({ model, efforts: null, probing: true });
+    return ai.probeLlmEfforts({ base_url: url, model })
+      .then(r => setEfforts(r))
+      .catch((e: unknown) => setEfforts({ model, efforts: null, note: errorText(e) }));
+  };
+  useEffect(() => {
+    if (!keySet || !current) return;
+    let active = true;
+    ai.llmEfforts({ base_url: initialUrl.current, model: current })
+      .then(r => { if (active) { if (r.efforts) setEfforts(r); else void probe(current, initialUrl.current); } })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [keySet, current]);
+  const known = efforts?.model === current ? efforts.efforts : null;
+  const effort = text(llm.reasoning_effort);
+  const effortOptions = EFFORTS.map(o => {
+    const state = o.value ? known?.[o.value] : 'supported';
+    return { ...o, disabled: state === 'unsupported' && o.value !== effort,
+             label: state === 'unsupported' ? `${o.label} · 此模型不支持` : state === 'unknown' ? `${o.label} · 未能确认` : o.label };
+  });
+  const effortHint = efforts?.probing && efforts.model === current ? '正在检测这个模型支持哪些推理强度…'
+    : known?.[effort] === 'unsupported' ? `这个模型不支持「${effort}」：请求时会自动不传这个参数，请改选其他强度后保存。`
+    : known ? '只列出这个模型能用的强度；强度越高越慢、输出 token 越多。'
+    : '对支持推理的模型生效：强度越高越慢、输出 token 越多。';
+
   const test = async () => {
     setLoading('test'); setResult(null);
     try { setResult(await ai.llmTest(form)); } catch (e) { toast.error(errorText(e)); } finally { setLoading(null); }
@@ -96,9 +125,15 @@ function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; 
           </Button>
         </div>
       </Field>
-      <Field label="推理强度" hint="对支持推理的模型生效：强度越高越慢、输出 token 越多。不支持的模型可能报错，改了先测试一下。">
-        <Select value={text(llm.reasoning_effort)} options={EFFORTS}
-          onValueChange={v => { setField('llm', 'reasoning_effort', v); setResult(null); }} />
+      <Field label="推理强度" hint={<span className={known?.[effort] === 'unsupported' ? 'text-destructive' : undefined}>{effortHint}</span>}>
+        <div className="flex gap-2">
+          <Select className="min-w-0 flex-1" value={effort} options={effortOptions}
+            onValueChange={v => { setField('llm', 'reasoning_effort', v); setResult(null); }} />
+          <Button variant="outline" disabled={!keySet || !current || Boolean(efforts?.probing)}
+            onClick={() => void probe(current, form.base_url)}>
+            {efforts?.probing ? <Loader2 className="animate-spin" /> : <RefreshCw />}重新检测
+          </Button>
+        </div>
       </Field>
       <div className="space-y-2">
         <Button variant="outline" size="sm" disabled={!keySet || !form.model || loading !== null} onClick={() => void test()}

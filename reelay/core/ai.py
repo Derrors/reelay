@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -42,6 +43,7 @@ def dry_run() -> bool:
     return os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
 
 
+log = logging.getLogger("reelay.ai")
 _CLIENTS: dict[tuple[str, str], Any] = {}
 
 
@@ -125,27 +127,45 @@ def _tokens(usage: Any, name: str) -> int | None:
     return value if type(value) is int else None
 
 
+# 模型拒绝过的推理强度：(模型, 强度)。之后不再对这个模型发送它，免得每次请求都先失败一次
+_REJECTED_EFFORTS: set[tuple[str, str]] = set()
+
+
+def effort_rejected(exc: Exception) -> bool:
+    """接口因 reasoning_effort 不被支持而拒绝了请求（HTTP 400 且错误说明提到它）。"""
+    return getattr(exc, "status_code", None) == 400 and "reasoning" in str(exc).lower()
+
+
 async def request(client, *, purpose: str = "other", task_id: str | None = None,
                   **params: Any) -> tuple[Any, float]:
     """发送一次请求，只对瞬时错误退避重试；参数错误、拒绝等立即抛出交给调用方降级。
 
-    返回 (响应, 开始时间)：失败的请求在这里记录，成功的由调用方校验输出后再记录结果。
+    系统配置的推理强度（llm.reasoning_effort）被模型拒绝时，去掉它立即重发：一项偏好设置不能让所有
+    AI 调用都失败。返回 (响应, 开始时间)：失败的请求在这里记录，成功的由调用方校验输出后再记录结果。
     """
     retries, delay = RETRIES, RETRY_DELAY
-    effort = runtime.get("llm.reasoning_effort")
-    if effort and "reasoning_effort" not in params:
-        params["reasoning_effort"] = effort  # 系统配置 llm.reasoning_effort，留空不传
     model = str(params.get("model", ""))
-    for attempt in range(retries + 1):
+    effort = str(runtime.get("llm.reasoning_effort") or "")
+    configured = bool(effort) and "reasoning_effort" not in params and (model, effort) not in _REJECTED_EFFORTS
+    if configured:
+        params["reasoning_effort"] = effort
+    attempt = 0
+    while True:
         started = time.monotonic()
         try:
             return await client.chat.completions.create(**params), started
         except Exception as exc:
             record(purpose, model, started, outcome="error", error=type(exc).__name__, task_id=task_id)
+            if configured and effort_rejected(exc):
+                configured = False
+                params.pop("reasoning_effort", None)
+                _REJECTED_EFFORTS.add((model, effort))
+                log.warning("模型 %s 不支持推理强度 %s，已改为不传；请在「设置 → AI 与 TMDB」重新选择", model, effort)
+                continue
             if attempt >= retries or not is_transient(exc):
                 raise
             await asyncio.sleep(delay * 2 ** attempt)
-    raise AssertionError("unreachable")
+            attempt += 1
 
 
 def response_format(schema: dict, name: str, rule: dict | None) -> dict:

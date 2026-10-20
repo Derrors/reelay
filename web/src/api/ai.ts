@@ -182,7 +182,13 @@ export interface ILlmTest {
 /** 地址、模型与推理强度用表单里的值（可以还没保存）；密钥总是用已保存的。 */
 export interface ILlmForm { base_url?: string; model?: string; reasoning_effort?: string }
 
+/** 某个模型支持的推理强度：supported / unsupported（接口明确拒绝）/ unknown（超时等，未能确认）。efforts 为 null 表示没检测过。 */
+export interface ILlmEfforts { model: string; efforts: Record<string, 'supported' | 'unsupported' | 'unknown'> | null; note?: string | null }
+
 export const ai = {
+  llmEfforts: (form: ILlmForm) =>
+    req<ILlmEfforts>(`ai/efforts?${new URLSearchParams({ base_url: form.base_url ?? '', model: form.model ?? '' })}`),
+  probeLlmEfforts: (form: ILlmForm) => post<ILlmEfforts>('ai/efforts', form),
   llmModels: (form: ILlmForm) => post<{ models: string[] }>('ai/models', form),
   llmTest: (form: ILlmForm) => post<ILlmTest>('ai/test', form),
   insights: () => req<IInsights>('insights'),

@@ -943,7 +943,6 @@ class ManagementService:
     async def llm_test(self, *, base_url: str | None = None, model: str | None = None,
                        reasoning_effort: str | None = None) -> dict[str, Any]:
         """用一次很短的对话测试地址、密钥、模型与推理强度能否使用；不写入调用记录。"""
-        import time
         from .config import REASONING_EFFORTS
         client, _ = self._llm_client_for(base_url)
         model = (model or str(runtime.get("llm.model") or "")).strip()
@@ -952,22 +951,50 @@ class ManagementService:
         effort = (reasoning_effort if reasoning_effort is not None else str(runtime.get("llm.reasoning_effort") or ""))
         if effort not in REASONING_EFFORTS:
             raise ValueError("推理强度无效")
+        return await self._llm_try(client, model, effort)
+
+    async def _llm_try(self, client, model: str, effort: str, timeout: float = 60) -> dict[str, Any]:
+        import time
         params: dict[str, Any] = {"model": model, "temperature": 0,
                                   "messages": [{"role": "user", "content": "只回复两个字：正常"}]}
         if effort:
             params["reasoning_effort"] = effort
         started = time.monotonic()
         try:
-            response = await client.chat.completions.create(**params, timeout=60)
+            response = await client.chat.completions.create(**params, timeout=timeout)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "model": model, "error": self._llm_error(exc),
-                    "seconds": round(time.monotonic() - started, 1)}
+                    "effort_rejected": ai.effort_rejected(exc), "seconds": round(time.monotonic() - started, 1)}
         usage = getattr(response, "usage", None)
         reply = ((response.choices[0].message.content or "") if response.choices else "").strip()
         return {"ok": True, "model": getattr(response, "model", None) or model, "reply": reply[:100],
                 "seconds": round(time.monotonic() - started, 1),
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
                 "completion_tokens": getattr(usage, "completion_tokens", None)}
+
+    def llm_efforts(self, base_url: str | None = None, model: str | None = None) -> dict[str, Any]:
+        """上次检测到的这个地址与模型支持的推理强度；没检测过时 efforts 为 None。"""
+        url = (base_url if base_url is not None else str(runtime.get("llm.base_url") or "")).strip().rstrip("/")
+        model = (model or str(runtime.get("llm.model") or "")).strip()
+        return {"model": model, **(self.store.state_get("llm_efforts", f"{url}|{model}") or {"efforts": None})}
+
+    async def probe_llm_efforts(self, base_url: str | None = None, model: str | None = None) -> dict[str, Any]:
+        """逐个试推理强度（并发），记下这个模型支持哪些。只有接口明确因推理强度拒绝的才算不支持，
+        超时、限流等其他失败记为「未知」，不让用户误以为不能选。"""
+        import time
+        from .config import REASONING_EFFORTS
+        client, url = self._llm_client_for(base_url)
+        model = (model or str(runtime.get("llm.model") or "")).strip()
+        if not model:
+            raise ValueError("请先选择模型")
+        efforts = [e for e in REASONING_EFFORTS if e]
+        results = await asyncio.gather(*(self._llm_try(client, model, e, timeout=45) for e in efforts))
+        out = {e: ("supported" if r["ok"] else "unsupported" if r.get("effort_rejected") else "unknown")
+               for e, r in zip(efforts, results, strict=True)}
+        unsupported = next((r["error"] for r in results if r.get("effort_rejected")), None)
+        record = {"efforts": out, "note": unsupported, "checked_at": time.time()}
+        self.store.state_set("llm_efforts", f"{url}|{model}", record)
+        return {"model": model, **record}
 
     def _require_ai(self) -> tuple[Any, str]:
         client, model = self.ai_client()

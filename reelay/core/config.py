@@ -32,8 +32,10 @@ DEFAULT_NAMING = {
 }
 CONFLICT_STRATEGIES = {"manual", "skip", "suffix", "upgrade"}
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
-# 推理强度（OpenAI 兼容接口的 reasoning_effort）；空字符串表示不传，由模型或网关决定
-REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high")
+# 推理强度（OpenAI 兼容接口的 reasoning_effort）；空字符串表示不传，由模型或网关决定。
+# 各家支持的取值不同（如 OpenAI 有 minimal / medium，DeepSeek 只认 low / high / xhigh / max），
+# 管理台会检测当前模型支持哪些；请求被拒时去掉这个参数重发，见 ai.request
+REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
 _DEFAULT_CONFIG: dict[str, Any] = {

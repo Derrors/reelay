@@ -288,17 +288,25 @@ class FakeModels:
         return type("Page", (), {"data": [type("M", (), {"id": i})() for i in self.ids]})()
 
 
-class FakeLLM:
-    """OpenAI 兼容客户端的替身：记下请求参数；error 不为空时抛出。"""
+class EffortRejected(Exception):
+    """与 openai.BadRequestError 一样带 status_code。"""
+    status_code = 400
 
-    def __init__(self, ids=(), error=None):
-        self.models, self.calls, self.error = FakeModels(list(ids)), [], error
+
+class FakeLLM:
+    """OpenAI 兼容客户端的替身：记下请求参数；error 不为空时抛出；accepts 之外的推理强度按 HTTP 400 拒绝。"""
+
+    def __init__(self, ids=(), error=None, accepts=None):
+        self.models, self.calls, self.error, self.accepts = FakeModels(list(ids)), [], error, accepts
         self.chat = type("Chat", (), {"completions": self})()
 
     async def create(self, **params):
         self.calls.append(params)
         if self.error:
             raise self.error
+        effort = params.get("reasoning_effort")
+        if effort and self.accepts is not None and effort not in self.accepts:
+            raise EffortRejected("reasoning_effort must be low, high, xhigh, max")
         message = type("Msg", (), {"content": "正常", "refusal": None})()
         usage = type("Usage", (), {"prompt_tokens": 12, "completion_tokens": 30})()
         return type("Resp", (), {"choices": [type("C", (), {"message": message})()], "usage": usage, "model": params["model"]})()
@@ -324,7 +332,7 @@ class TestLlmSettings(unittest.TestCase):
             self.assertEqual((fake.calls[-1]["model"], fake.calls[-1]["reasoning_effort"]), ("gpt-a", "low"))
             self.client.post("/api/ai/test", json={"model": "gpt-a", "reasoning_effort": ""})
             self.assertNotIn("reasoning_effort", fake.calls[-1])  # 留空不传
-            self.assertEqual(self.client.post("/api/ai/test", json={"reasoning_effort": "max"}).status_code, 422)
+            self.assertEqual(self.client.post("/api/ai/test", json={"reasoning_effort": "ultra"}).status_code, 422)
             fake.error = RuntimeError("401 bad key sk-secret")
             res = self.client.post("/api/ai/test", json={"model": "gpt-a"}).json()
             self.assertFalse(res["ok"])
@@ -334,7 +342,7 @@ class TestLlmSettings(unittest.TestCase):
         import asyncio
         from reelay.core import ai, runtime
         with self.assertRaises(ValueError):
-            normalize_config({"llm": {"reasoning_effort": "max"}})
+            normalize_config({"llm": {"reasoning_effort": "ultra"}})
         fake = FakeLLM()
         with runtime.scope(normalize_config({"llm": {"reasoning_effort": "high"}})):
             asyncio.run(ai.request(fake, model="m", messages=[]))
@@ -342,6 +350,32 @@ class TestLlmSettings(unittest.TestCase):
             asyncio.run(ai.request(fake, model="m", messages=[]))
         self.assertEqual(fake.calls[0]["reasoning_effort"], "high")
         self.assertNotIn("reasoning_effort", fake.calls[1])
+
+    def test_rejected_reasoning_effort_does_not_break_requests(self):
+        import asyncio
+        from reelay.core import ai, runtime
+        fake = FakeLLM(accepts={"low", "high"})
+        with patch.object(ai, "_REJECTED_EFFORTS", set()), \
+                runtime.scope(normalize_config({"llm": {"reasoning_effort": "medium"}})):
+            asyncio.run(ai.request(fake, model="m", messages=[]))  # 被拒后去掉参数立即重发
+            asyncio.run(ai.request(fake, model="m", messages=[]))  # 之后不再先失败一次
+        self.assertEqual([c.get("reasoning_effort") for c in fake.calls], ["medium", None, None])
+        other = FakeLLM(error=EffortRejected("bad request: reasoning"))
+        with self.assertRaises(EffortRejected):  # 调用方显式指定的强度被拒：照常报错
+            asyncio.run(ai.request(other, model="m", messages=[], reasoning_effort="high"))
+
+    def test_supported_efforts_are_probed_and_remembered(self):
+        from reelay.core import ai
+        self.client.put("/api/settings/secrets", json={"changes": {"llm_api_key": "sk-secret"}})
+        self.assertIsNone(self.client.get("/api/ai/efforts", params={"model": "m"}).json()["efforts"])
+        fake = FakeLLM(accepts={"low", "high", "xhigh", "max"})
+        with patch.object(ai, "client_for", lambda url: fake):
+            res = self.client.post("/api/ai/efforts", json={"model": "m"}).json()
+        expected = {"none": "unsupported", "minimal": "unsupported", "low": "supported", "medium": "unsupported",
+                    "high": "supported", "xhigh": "supported", "max": "supported"}
+        self.assertEqual(res["efforts"], expected)
+        self.assertIn("reasoning_effort", res["note"])
+        self.assertEqual(self.client.get("/api/ai/efforts", params={"model": "m"}).json()["efforts"], expected)
 
 
 if __name__ == "__main__":

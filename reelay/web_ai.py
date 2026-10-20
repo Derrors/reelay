@@ -88,6 +88,14 @@ def register_ai(app, *, service) -> None:
     async def ai_models(payload: LlmPayload):
         return await call(service.llm_models, payload.base_url)
 
+    @app.get("/api/ai/efforts")
+    async def ai_efforts(base_url: str | None = None, model: str | None = None):
+        return await call(service.llm_efforts, base_url, model)
+
+    @app.post("/api/ai/efforts")
+    async def ai_probe_efforts(payload: LlmPayload):
+        return await call(service.probe_llm_efforts, payload.base_url, payload.model)
+
     @app.post("/api/ai/test")
     async def ai_test(payload: LlmPayload):
         return await call(service.llm_test, base_url=payload.base_url, model=payload.model,
