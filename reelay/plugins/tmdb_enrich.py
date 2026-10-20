@@ -26,7 +26,12 @@ log = logging.getLogger("reelay.plugin.tmdb")
 def search_kinds(media_type: str | None, episodic: bool) -> list[str]:
     if media_type == "anime":
         return ["tv", "movie"] if episodic else ["movie", "tv"]
-    return ["tv"] if media_type == "tv" or episodic else ["movie"]
+    if media_type is None and not episodic:
+        return ["tv", "movie"]  # 识别不出类型（如 AI 降级）：两边都搜，取更像的
+    if media_type == "tv" or episodic:
+        return ["tv"]
+    # 判为电影但没写集数：电影搜不到时再搜剧集。消息只写片名的剧集合集常被当成电影
+    return ["movie", "tv"]
 
 
 @register(kind="hook", stage="after_parse", order=50)
@@ -69,12 +74,17 @@ class TmdbEnrich:
         language = runtime.get("tmdb.language", "zh-CN")
         timeout = runtime.get("tmdb.timeout", 10)
         hit, candidates = None, []
+        unknown = p.media_type is None
         try:
             for kind in search_kinds(p.media_type, bool(p.episodes or p.season)):
-                hit, candidates = await asyncio.to_thread(
+                found, found_candidates = await asyncio.to_thread(
                     tmdb.best_match, kind, p.title, p.year, language=language, timeout=timeout)
-                if hit:
-                    break
+                if found and (hit is None or found["_score"] > hit["_score"]):
+                    hit, candidates = found, found_candidates
+                elif not candidates:
+                    candidates = found_candidates
+                if hit and not unknown:
+                    break  # 类型已知时按顺序取第一个可信匹配；类型未知时两边都比
         except Exception as exc:
             log.warning("TMDB 查询失败：%s", exc)
             ns["matched"] = False
@@ -97,6 +107,10 @@ class TmdbEnrich:
         if year:
             p.year = year
         ns.update(matched=True, tmdbid=hit.get("id"), kind=hit["_kind"], score=hit["_score"])
+        if unknown or (p.media_type == "movie" and hit["_kind"] == "tv"):
+            p.media_type = hit["_kind"]  # 类型以 TMDB 条目为准；动画由类型 ID（16）分类
+            ctx.log(f"类型按 TMDB 条目定为{'剧集' if hit['_kind'] == 'tv' else '电影'}"
+                    + ("，转存时以分享里的文件为准" if hit["_kind"] == "tv" else ""))
         p.raw_fields["tmdbid"] = hit.get("id")
         if hit.get("poster_path"):
             p.raw_fields["poster_path"] = hit["poster_path"]  # 管理台卡片展示海报

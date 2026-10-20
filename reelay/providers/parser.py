@@ -62,6 +62,8 @@ def parse_115_url(text: str, urls: list[str]) -> tuple[str | None, str | None, s
 _YEAR_RE = re.compile(r"\((\d{4})\)")
 _SEASON_RE = re.compile(r"第\s*(\d+)\s*季")
 _EP_RE = re.compile(r"(?:更新至|更至|第)?\s*第?(\d+)\s*集")
+# 剧集的其他写法：S01E02、S01、全集 / 全 36 集、EP02（只用来判断是剧集，不取集数）
+_SERIES_RE = re.compile(r"(?i)(?<![a-z])S\d{1,2}(?:E\d{1,4})?(?![a-z])|全\s*\d*\s*集|(?<![a-z])EP?\d{1,4}(?![a-z])")
 _RES_RE = re.compile(r"(4K|2160p|1080p|720p|WEB-DL|BluRay|HDR)", re.I)
 _SIZE_RE = re.compile(r"([\d.]+\s*[GM]B)", re.I)
 _AD_KW = ("招商", "广告", "投稿", "点击进群", "更多资源关注", "推广")
@@ -101,7 +103,8 @@ def _regex_parse(ctx: PipelineContext) -> ParsedResource:
         is_media=is_media,
         is_ad=is_ad,
         confidence=0.6 if is_media else 0.3,
-        media_type="tv" if season or episodes else ("movie" if is_media else None),
+        # 看不出是剧集时不猜电影：留空，由 TMDB（剧集与电影都搜）和读取分享补上
+        media_type="tv" if season or episodes or _SERIES_RE.search(text) else None,
         title=title,
         year=year,
         season=season,

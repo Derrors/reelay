@@ -968,7 +968,41 @@ class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
     def test_anime_searches_tv_then_movie(self):
         self.assertEqual(search_kinds("anime", True), ["tv", "movie"])
         self.assertEqual(search_kinds("anime", False), ["movie", "tv"])
-        self.assertEqual(search_kinds("movie", False), ["movie"])
+        self.assertEqual(search_kinds("movie", False), ["movie", "tv"])
+        self.assertEqual(search_kinds(None, False), ["tv", "movie"])
+
+    async def test_unknown_type_searches_tv_and_movie_and_takes_the_closer_match(self):
+        from reelay.providers.parser import _regex_parse
+        share = "https://115.com/s/abc123?password=abcd"
+        # 降级到规则解析时看不出是剧集：不猜电影
+        ctx = message(text=f"🎬 嫁金钗 (2026) DV 60FPS\n{share}")
+        ctx.parsed = _regex_parse(ctx)
+        self.assertEqual((ctx.parsed.title, ctx.parsed.media_type), ("嫁金钗", None))
+        for text in ("某剧 S01E05 4K", "某剧 全36集", "某剧 第 3 季"):
+            self.assertEqual(_regex_parse(message(text=f"{text}\n{share}")).media_type, "tv", text)
+        tv_hit = {"id": 7, "name": "嫁金钗", "first_air_date": "2026-09-01", "_kind": "tv", "_score": 1.1}
+        movie_hit = {"id": 8, "title": "嫁金钗", "release_date": "2026-01-01", "_kind": "movie", "_score": 0.9}
+        hits = {"tv": (tv_hit, [tv_hit]), "movie": (movie_hit, [movie_hit])}
+        with secret_store.override(tmdb_api_key="k"), \
+                patch.object(tmdb, "best_match", side_effect=lambda kind, *a, **k: hits[kind]) as match:
+            await TmdbEnrich().run(ctx)
+        self.assertEqual(sorted(call.args[0] for call in match.call_args_list), ["movie", "tv"])
+        self.assertEqual((ctx.parsed.media_type, ctx.meta["tmdb"]["tmdbid"]), ("tv", 7))
+        # AI 判为电影、电影搜不到而剧集能匹配上：改为剧集
+        ctx = message(text=f"🎬 嫁金钗 (2026)\n{share}")
+        ctx.parsed = ParsedResource(is_media=True, title="嫁金钗", year=2026, media_type="movie", share_code="abc123")
+        hits["movie"] = (None, [])
+        with secret_store.override(tmdb_api_key="k"), patch.object(tmdb, "best_match", side_effect=lambda kind, *a, **k: hits[kind]):
+            await TmdbEnrich().run(ctx)
+        self.assertEqual((ctx.parsed.media_type, ctx.meta["tmdb"]["kind"]), ("tv", "tv"))
+        hits["movie"] = (movie_hit, [movie_hit])
+        # 只有电影能匹配上
+        ctx = message(text=f"某片 (2020)\n{share}")
+        ctx.parsed = _regex_parse(ctx)
+        hits["tv"] = (None, [])
+        with secret_store.override(tmdb_api_key="k"), patch.object(tmdb, "best_match", side_effect=lambda kind, *a, **k: hits[kind]):
+            await TmdbEnrich().run(ctx)
+        self.assertEqual(ctx.parsed.media_type, "movie")
 
     async def test_movie_match_keeps_ai_origin_country(self):
         with secret_store.override(tmdb_api_key="k"), \
