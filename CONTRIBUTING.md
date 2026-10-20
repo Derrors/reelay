@@ -48,7 +48,7 @@ CI 会在每个 PR 上运行以上全部检查并构建 Docker 镜像。
 
 维护者发布版本的步骤（GitHub Actions 自动完成检查、镜像与 Release）：
 
-1. 同时修改 `pyproject.toml` 的 `version` 与 `reelay/__init__.py` 的 `__version__`；
+1. 同时修改 `pyproject.toml` 的 `version`、`reelay/__init__.py` 的 `__version__` 与 `web/package.json`（含 `package-lock.json` 开头两处）的 `version`；
 2. 把 `CHANGELOG.md` 的 `[Unreleased]` 改为 `## [x.y.z] - 日期`，上方留一个新的空 `[Unreleased]`；
 3. 提交并推送到 main，CI 通过后打标签并推送：`git tag vx.y.z && git push origin vx.y.z`。
 

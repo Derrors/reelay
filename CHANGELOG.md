@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-20
+
 设计原则更新为「AI 提议，事实源校验，人工裁决，裁决结果反馈给 AI」，见 [架构设计](docs/architecture.md#ai-与规则的分工)。
 
 ### 新增
@@ -124,6 +126,7 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
+[0.3.0]: https://github.com/Derrors/reelay/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Derrors/reelay/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Derrors/reelay/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Derrors/reelay/commits/v0.2.0
