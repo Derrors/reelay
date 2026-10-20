@@ -6,7 +6,7 @@ services:
     image: ghcr.io/derrors/reelay:${REELAY_VERSION:-latest}
     init: true
     restart: unless-stopped
-    # .env 只剩部署参数（可以没有）；旧版本写在里面的设置首次启动时导入管理台
+    # .env 只有部署参数，可以没有（见 .env.example）
     env_file:
       - path: .env
         required: false
@@ -15,8 +15,6 @@ services:
       - reelay-data:/app/data
       # 外部扩展（只读）
       - ./deploy/plugins:/app/data/plugins:ro
-      # 仅用于从旧版本迁移：首次启动把 deploy/config/config.yaml 移进数据卷，之后可以删掉这一行
-      - ./deploy/config:/app/config
     healthcheck:
       test: ["CMD", "python", "-m", "reelay.core.health"]
       interval: 15s
@@ -39,7 +37,6 @@ services:
     volumes:
       - reelay-data:/app/data
       - ./deploy/plugins:/app/data/plugins:ro
-      - ./deploy/config:/app/config
     ports:
       - "127.0.0.1:28080:28080"
     healthcheck:

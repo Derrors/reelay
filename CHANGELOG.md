@@ -17,6 +17,8 @@
 - MCP 的 `search_library` 改为按作品返回（各季已入库的集、清晰度、版本、地区），支持类型、最低清晰度、地区与 TMDB 类型筛选，不再返回逐个文件路径。
 - `list_pending` 返回 `{pending_approval, need_manual}` 两组。
 - `mcp` 依赖最低版本提高到 1.30。
+- 文档重新整理：README 重新设计；新增 [Agent 接入](docs/agents.md)（MCP 与控制 Bot）；「Docker 部署」改为 [部署与运维](docs/deployment.md)（访问与安全、升级回滚、备份、故障处理），首次部署的步骤并入 [快速开始](docs/quickstart.md)；架构图改用 Mermaid；去掉过时的迁移说明与验证范围。
+- `compose.yaml` 不再挂载 `./deploy/config`，它只用于从 0.2.x 迁移配置；从 0.2.x 升级请先用 v0.3.0 的 `compose.yaml` 启动一次完成迁移。
 
 ## [0.3.0] - 2026-10-20
 
@@ -52,7 +54,7 @@
 
 ### 变更
 
-- 配置与环境变量整理（升级时自动迁移，见 [配置参考](docs/configuration.md#从旧版本升级)）：
+- 配置与环境变量整理（升级时自动迁移，见 [v0.3.0 的配置参考](https://github.com/Derrors/reelay/blob/v0.3.0/docs/configuration.md#从旧版本升级)）：
   - 所有设置都能在管理台修改并与配置文件同步。配置文件固定为 `data/config.yaml`，分为 `system`（系统配置）与 `plugins.<插件名>`（插件开关 `enabled` 与插件自己的设置）。原来散在顶层的 `organize`、`dir_router`、`daily_report`、`episode_tracker` 归入对应插件，订阅移到 `system.subscriptions`。
   - 原来只能写在 `.env` 里的设置移进系统配置并在管理台提供表单：AI 接口地址与模型、TMDB 地址、Telegram 机主 ID 与补拉、主进程并发与日志级别、115 限速与风控冷却。设置页新增「AI 与 TMDB」「Telegram」「运行与安全」，「115 网盘」页增加请求限速。
   - 密钥（AI / TMDB key、Telegram API ID / Hash、控制 Bot Token、Web 登录密码）在管理台设置，单独保存在 `data/secrets.json`（权限 600），页面、接口与配置原文都不显示原值；Web 密码只存摘要，修改需输入当前密码，修改后其他会话失效。AI 与 TMDB 的地址和密钥改了立即生效，不用重启。

@@ -1,6 +1,11 @@
 # 配置参考
 
-Reelay 的设置分四类，全部可以在管理台修改，不需要改环境变量或重启（个别项注明需要重启主进程）：
+所有设置都能在管理台修改，保存后约 1 秒生效（个别项注明需要重启主进程）。本页是完整的字段说明，日常使用不需要逐项阅读，遇到具体问题时按目录查找即可。
+
+- [系统配置](#系统配置system)：[目录与来源](#目录与来源save_dirs--sources--providers) · [识别与决策](#识别与决策defaults--sources) · [AI 能力](#ai-能力ai) · [版本偏好](#版本偏好release) · [转发、审批提醒、定时](#转发审批提醒定时) · [剧集订阅](#剧集订阅subscriptions) · [AI 服务与 TMDB](#ai-服务与-tmdbllm--tmdb) · [Telegram](#telegramtelegram) · [115 请求限速](#115-请求限速p115) · [运行参数](#运行参数runtime)
+- [插件配置](#插件配置plugins) · [密钥](#密钥) · [运行文件位置](#运行文件位置) · [环境变量](#环境变量)
+
+设置分四类：
 
 | 类别 | 存放位置 | 在哪里改 |
 | --- | --- | --- |
@@ -197,19 +202,11 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 ## 环境变量
 
-只剩启动前就要知道、或与部署方式绑定的几项：
+只有启动前就要知道、或与部署方式绑定的几项，写在 `.env` 里（参考 `.env.example`）：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `REELAY_WEB_HOST` / `REELAY_WEB_PORT` | `127.0.0.1` / `28080` | 管理台监听地址 |
+| `REELAY_VERSION` | `latest` | 仅 Docker Compose：使用的镜像版本，如 `0.3.0` |
+| `REELAY_WEB_HOST` / `REELAY_WEB_PORT` | `127.0.0.1` / `28080` | 本机运行时管理台的监听地址（Docker 部署改 `compose.yaml` 的 `ports`） |
 | `REELAY_MCP_READONLY` | 空 | 设为 `1` 时 MCP 只暴露查询工具（stdio 与 HTTP 都是，HTTP 的读写令牌也降为只读） |
 | `VITE_BASE_PATH` | `/` | 构建前端时的子路径前缀（反向代理到子路径时使用） |
-
-## 从旧版本升级
-
-旧版本的配置写在项目根目录的 `config.yaml`（或 `REELAY_CONFIG_PATH`、Docker 的 `/app/config/config.yaml`）与 `.env` 里。升级后主进程或管理台第一次启动时自动迁移，不需要手动操作：
-
-- 配置文件移到 `data/config.yaml`，原文件改名为 `*.migrated`；旧结构（系统配置在顶层、插件配置在 `organize` / `dir_router` / `daily_report` / `episode_tracker` 等顶层键、`plugins` 只是开关）先备份为 `config.yaml.bak-日期`，再改写成 `system` / `plugins` 新结构。`episode_tracker.subscriptions` 移到 `system.subscriptions`。
-- `.env` 里的旧变量逐个导入：普通设置写入系统配置，密钥写入 `data/secrets.json`，`REELAY_115_COOKIES` 与开放平台令牌写入 115 凭证文件（文件里已有的不覆盖）。每个值只导入一次：之后在管理台改过或清除的不会被 `.env` 覆盖回去；`.env` 里换了新值会再导入一次。启动日志列出导入了哪些变量，之后可以从 `.env` 删掉它们。
-- `REELAY_TG_SESSION`、`REELAY_CONTROL_BOT_SESSION`、`REELAY_115_OAUTH_FILE` 指向别处的文件会复制到 `data/`。`REELAY_DB_PATH` 指向别处时不自动搬（数据库与 WAL 文件要一起移动），启动会报错并给出移动命令。
-- 外部插件放在 `data/plugins/`（原 `REELAY_PLUGIN_DIRS`）；它们留在配置顶层的旧设置原样保留并在启动日志提示，请移到 `plugins.<插件名>` 下。

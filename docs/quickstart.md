@@ -1,79 +1,105 @@
 # 快速开始
 
-从零跑通"监听 → 识别 → 审批 → 转存 → 整理"。开始前请先阅读 [免责声明](../DISCLAIMER.md)。
+从零到第一条资源整理入库。开始前请先读一遍 [免责声明](../DISCLAIMER.md)。
 
-## 0. 先用模拟模式看一眼（可选，无需任何账号）
+## 1. 准备账号
+
+| 需要什么 | 从哪里来 | 必需 |
+| --- | --- | --- |
+| Telegram `api_id` / `api_hash` | 用个人账号登录 <https://my.telegram.org> → API development tools | 是 |
+| 115 账号 | 启动后在管理台扫码登录 | 是 |
+| 控制 Bot Token | 在 Telegram 找 @BotFather 创建一个 Bot | 推荐 |
+| 你的 Telegram 数字 ID | 给 @userinfobot 发任意消息 | 推荐 |
+| AI 服务（OpenAI 兼容接口） | 任意兼容服务或本地模型 | 推荐 |
+| TMDB API Key 或 Read Access Token | <https://www.themoviedb.org/settings/api> | 可选 |
+
+缺了推荐项也能用，只是少一些自动化：
+
+- **没有控制 Bot**：审批卡片和告警只写日志，在管理台审批；
+- **没有 AI 服务**：识别降级为规则匹配，每条资源都要你确认；
+- **没有 TMDB**：没有规范片名、海报和按类型地区的分类，识别结果也更容易需要确认。
+
+监听用的是**你的个人账号**，只能读到这个账号本来就能看到的消息，所以要先在 Telegram 里关注频道，或者和 Bot 对话过。
+
+## 2. 启动
+
+### Docker（推荐）
+
+需要 Docker Compose v2.24 及以上。不需要源码，只要一个 `compose.yaml`：
+
+```bash
+mkdir reelay && cd reelay
+curl -fsSLO https://raw.githubusercontent.com/Derrors/reelay/main/compose.yaml
+docker compose pull
+# 镜像以 UID 10001 运行，先让数据卷可写
+docker compose run --rm --no-deps --user root worker chown -R 10001:10001 /app/data
+docker compose up -d web
+```
+
+管理台在 <http://127.0.0.1:28080>。默认拉取最新正式版；要固定版本，在同目录建一个 `.env` 写上 `REELAY_VERSION=0.3.0`。
+
+### 本机运行
+
+需要 Python 3.12 与 Node.js（构建管理台）：
 
 ```bash
 git clone https://github.com/Derrors/reelay && cd reelay
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e .
-python -m reelay.main --dry-run
-```
-
-dry-run 使用内存数据库和内置样例消息，走完整条管线后打印每条任务的轨迹，不访问任何网络服务。
-
-## 1. 准备账号与凭证
-
-| 需要什么 | 从哪里来 | 填到哪里 | 必需 |
-| --- | --- | --- | --- |
-| Telegram `api_id` / `api_hash` | 用个人账号登录 <https://my.telegram.org> → API development tools | 管理台「设置 → Telegram」 | 是 |
-| 控制 Bot token | 在 Telegram 找 @BotFather 创建一个 Bot | 管理台「设置 → Telegram」 | 推荐 |
-| 你的 Telegram 数字 ID | 给 @userinfobot 发任意消息 | 管理台「设置 → Telegram」 | 推荐 |
-| LLM（OpenAI 兼容接口） | 任意兼容服务或本地模型 | 管理台「设置 → AI 与 TMDB」 | 推荐 |
-| TMDB API Key 或 Read Access Token | <https://www.themoviedb.org/settings/api> | 管理台「设置 → AI 与 TMDB」 | 可选 |
-| 115 登录态 | 管理台扫码 | 管理台「设置 → 115 网盘」 | 是 |
-
-所有设置都保存在 `data/` 目录：配置在 `data/config.yaml`，密钥在 `data/secrets.json`（不会显示在页面和配置文件里）。
-
-- 不配控制 Bot：审批卡片和告警只写日志，仍可在管理台审批。
-- 不配 LLM：解析降级为规则匹配，所有资源都需要人工确认。
-- 监听用的是**你的个人账号**，只能读到这个账号本来就能看到的消息，所以先在 Telegram 里关注频道或与 Bot 对话过。
-
-## 2. 安装与配置
-
-### 方式 A：Docker（推荐常驻运行）
-
-见 [Docker 部署](deployment.md)。
-
-### 方式 B：本地运行
-
-```bash
 pip install -e ".[all]"
-(cd web && npm ci && npm run build)     # 构建管理台，由后端直接托管
-
-python -m reelay.web                    # 管理台 http://127.0.0.1:28080
+(cd web && npm ci && npm run build)
+python -m reelay.web
 ```
 
-在管理台「设置」填好上表中的凭证后，登录个人 Telegram 账号并启动主进程（另开一个终端）：
+> [!TIP]
+> 想先看看整条流程怎么走，可以运行 `python -m reelay.main --dry-run`：它用内存数据库和内置样例消息走完监听到入库的全过程，打印每条任务的处理轨迹，不需要任何账号，也不访问网络。
+
+## 3. 填写设置
+
+打开管理台，依次完成：
+
+1. **设置 → 运行与安全**：设置登录密码。只在本机访问可以先跳过，要从其他设备访问时必须设置。
+2. **设置 → Telegram**：填写 `api_id` / `api_hash`、控制 Bot Token 和你的数字 ID。
+3. **设置 → AI 与 TMDB**：填写 AI 接口地址与密钥，从接口返回的列表里选择模型，点「测试连通性」确认能用；再填写 TMDB 密钥。
+4. **设置 → 115 网盘**：用 115 App 扫码登录。
+
+所有设置保存在 `data/` 目录：配置在 `data/config.yaml`，密钥单独存放在 `data/secrets.json`，页面上只显示「已设置」。
+
+## 4. 登录 Telegram 并开始监听
+
+登录个人账号需要输入验证码（开了两步验证还要输入密码），在交互终端里完成：
 
 ```bash
-python -m reelay.login   # 交互登录个人 Telegram 账号（验证码/二步密码），生成 data/userbot.session
-python -m reelay.main    # 监听 + 后台 Worker + 控制 Bot
+# Docker
+docker compose run --rm --no-deps -it worker python -m reelay.login
+docker compose up -d
+
+# 本机运行（另开一个终端）
+python -m reelay.login
+python -m reelay.main
 ```
 
-> 管理台默认只监听本机。要从其他设备访问，在 `.env` 设置 `REELAY_WEB_HOST=0.0.0.0`（参考 `.env.example`），同时**必须**在「设置 → 运行与安全」设置登录密码。
+总览页的「后台 Worker」「Telegram 监听」「115 网盘」都显示正常，就说明已经在运行了。
 
-## 3. 在管理台完成首次配置
+## 5. 告诉它存到哪、听谁的
 
-1. **设置 → 115 网盘 → 扫码登录**：用 115 App 扫码，cookie 自动保存并探活。可再点"扫码授权"开启文件管理写接口（可选）。
-2. **设置 → 基础 → 保存目录**：新增目录别名（如 电影、剧集），点「选择 115 目录」从网盘里选中目标文件夹，CID 自动填入。
-3. **设置 → 监听来源 → 添加来源**：填写 Bot 或频道的 `@username`（或数字 ID），确认方式先选"每条都需我确认"。
-4. **工具 → 识别测试**：粘贴一条该来源的真实消息，查看解析结果、置信度和决策，确认识别正确。
-5. 在页面底部的保存栏保存后无需重启，Worker 约 1 秒内采用新配置并开始监听新来源。
+1. **设置 → 基础 → 保存目录**：新增目录别名（如「电影」「剧集」），点「选择 115 目录」从网盘里选中文件夹。别名与默认的一级分类同名时，资源会按「电影 / 国产电影」这样的二级目录自动归类。
+2. **设置 → 监听来源 → 添加来源**：填写频道或 Bot 的 `@username`（或数字 ID），确认方式先选「每条都需我确认」。
+3. **工具 → 识别测试**：贴一条这个来源的真实消息，看看识别结果、置信度和决策是否符合预期。
 
-## 4. 验证第一条资源
+保存后不用重启，约 1 秒后开始监听新来源。
 
-1. 来源发出新消息后，**待审批**里出现一张资源卡片，可以直接点「转存」或「忽略」，也可以多选批量处理；配置了控制 Bot 的话，Telegram 里同时收到带"✅ 转存 / 🚫 忽略"按钮的卡片。
-2. 批准后任务依次经过 `queued → saving → stored → organizing → done`；115 目标目录下出现按媒体库规范命名的目录与文件。
-3. 出现问题时：**任务**里点开任意任务可查看完整处理过程；**总览**显示 Worker、消息源、115 凭证状态和进行中的告警；**工具 → 运行日志**可在线查看主进程日志（`data/reelay.log`）。
+## 6. 处理第一条资源
 
-## 5. 之后可以做的事
+来源发出新消息后：
 
-- 在「待审批」里对在追的剧点「追这部剧」，之后的新集自动转存；按建议批量处理其余条目。
-- 在「设置 → 基础」用一句话描述想收什么、不要什么，AI 起草成规则，确认后生效。
-- 人工确认得多了，「监听来源」和总览会提示哪些来源可以改为自动转存；也可以对信任的来源直接改用 `approval_mode: auto`，配合 `decision: llm` 和自然语言 `preferences`，只把拿不准的资源留给人工——见 [配置参考](configuration.md)。
-- 配置了控制 Bot 后，直接给它发消息：「待审批里有什么」「我有哪些 4K 日本动画」「把《X》这几集都批了」。
-- 配置 TMDB，让分类、命名和 `[tmdbid=…]` 更准确。
-- 用 [插件开发指南](plugins.md) 写自己的扩展。
-- 通过 [MCP](../README.md#mcp) 让 Claude 等 agent 帮你查询和审批。
+1. 管理台的**待审批**出现一张资源卡片（配置了控制 Bot 的话，Telegram 里同时收到一张带按钮的卡片），点「转存」；
+2. 任务依次经过 `queued → saving → stored → organizing → done`，115 的目标目录下出现按媒体库规范命名的文件夹和文件，Telegram 收到入库通知；
+3. 有问题时，在**任务**里点开这条任务查看完整处理轨迹，或在**工具 → 运行日志**查看主进程日志。
+
+## 接下来
+
+- **少审批**：在待审批里对在追的剧点「追这部剧」，之后的新集自动转存；其余条目可以按建议批量处理。
+- **写偏好**：在「设置 → 基础」用一句话描述想要什么、不要什么，AI 起草成过滤与分类规则，确认后生效。
+- **放手自动**：确认得够多之后，「监听来源」和总览会提示哪些来源可以改为自动转存。
+- **用手机或 Agent 操作**：给控制 Bot 发「待审批里有什么」，或用 MCP 让 Claude 帮你处理，见 [Agent 接入](agents.md)。
+- **长期运行**：升级、备份与故障处理见 [部署与运维](deployment.md)；全部设置项见 [配置参考](configuration.md)。

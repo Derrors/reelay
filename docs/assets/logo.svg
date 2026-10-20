@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Reelay">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2FB19E"/><stop offset="1" stop-color="#1B6967"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#g)"/>
+  <!-- 胶片盘（Reel）展开成一条带箭头的胶片（Relay） -->
+  <g transform="translate(50 54)">
+  <circle cx="0" cy="0" r="28" fill="#fff"/>
+  <circle cx="0" cy="0" r="3.36" fill="#1B6967"/>
+  <circle cx="0.00" cy="-15.40" r="5.60" fill="#1B6967"/><circle cx="14.65" cy="-4.76" r="5.60" fill="#1B6967"/><circle cx="9.05" cy="12.46" r="5.60" fill="#1B6967"/><circle cx="-9.05" cy="12.46" r="5.60" fill="#1B6967"/><circle cx="-14.65" cy="-4.76" r="5.60" fill="#1B6967"/>
+</g>
+  <path d="M50 82 H86 Q100 82 100 68 V58" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round"/>
+  <path d="M88 64 L100 48 L112 64 Z" fill="#fff" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+</svg>

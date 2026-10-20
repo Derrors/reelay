@@ -2,7 +2,7 @@
 
 Reelay 的主流程（监听 → 识别 → 转存整理）是固定骨架，所有可变能力都挂在三类扩展点上。加功能就是写一个 Python 文件，不用改内核。
 
-两个可直接运行的示例：
+两个可以直接运行的示例：
 
 - [`examples/plugins/webhook_notify.py`](../examples/plugins/webhook_notify.py)：Webhook 通知渠道（Provider）
 - [`examples/plugins/quality_gate.py`](../examples/plugins/quality_gate.py)：拦截 CAM/TS 等低画质资源（Hook）
@@ -109,7 +109,7 @@ class MyListener:
 
 Provider 由配置选择：`providers.source`、`providers.notify`，以及 `defaults`/`sources[]` 中的 `parser`、`decision`、`storage`。
 
-内置的三个 `decision` 逐层叠加：`default` 只按规则；`subscription`（新安装的默认值）在其上让订阅剧集的新集自动放行；`llm` 再按自然语言偏好筛选。自定义决策器想保留订阅放行，可以继承 `SubscriptionDecision`。无论决策器返回什么，LLM 降级的识别结果都只能转人工。
+内置的三个 `decision` 逐层叠加：`default` 只按规则；`subscription`（默认）在其上让订阅剧集的新集自动放行；`llm` 再按自然语言偏好筛选。自定义决策器想保留订阅放行，可以继承 `SubscriptionDecision`。无论决策器返回什么，LLM 降级的识别结果都只能转人工。
 
 ## 调用 AI
 
@@ -248,8 +248,6 @@ plugins:
 ```
 
 `default` 是未填写时扩展实际使用的值，只用于在表单里提示。数组、对象等复杂配置在 `validate_config` 中自行校验，用户通过配置文件维护。扩展不要读环境变量：需要的地址、开关写成 `ui_fields`；需要的文件放在 `reelay.core.paths.DATA` 下。
-
-旧版本的扩展把设置写在配置顶层（如 `my_hook.threshold`）、`ui_fields` 写完整路径。升级后这些顶层设置原样保留（启动日志会提示），请把它们移到 `plugins.<name>` 下，`ui_fields` 改成相对路径、读取改用 `runtime.plugin_config`。
 
 ## 测试
 

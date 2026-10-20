@@ -7,25 +7,60 @@
 3. **单一 Context 贯穿全程**：一条消息带着 `PipelineContext` 流经所有阶段，每次状态变更都持久化，可追溯、可恢复、可干预。
 4. **失败隔离**：通知和事件先落库再独立投递；转存前置检查和整理失败会阻止任务完成，但不会拖垮其他任务。
 
-```
- Telegram 消息 ──▶ 监听（Source）──▶ 落库 received
-                                      │  Worker
-                                      ▼
-            before_parse ─▶ 解析（Parser）─▶ after_parse（TMDB…）─▶ 确定性置信度 ─▶ 决策（Decision）
-                                                                              │
-                                    ┌─────────────── pending_approval ◀── ask ┤── skip ─▶ rejected / skipped
-                                    │ 人工批准                                 │ save
-                                    ▼                                          ▼
-            before_save（分类路由）─▶ 准备清单 ─▶ 转存（Storage）─▶ 读回核验 ─▶ after_save（整理）─▶ done
+## 一条消息的处理流程
+
+```mermaid
+flowchart LR
+    subgraph recv[接收]
+        direction TB
+        tg([Telegram 消息]) --> src[监听 Source] --> rcv[(落库 received)]
+    end
+    subgraph ident[识别与决策]
+        direction TB
+        bp[before_parse] --> parse[解析 Parser] --> ap["after_parse<br/>TMDB 补全 · 分享预读"] --> conf[确定性置信度] --> dec{决策 Decision}
+    end
+    subgraph store[转存与整理]
+        direction TB
+        bs["before_save<br/>分类路由"] --> prep[准备清单] --> save[转存 Storage] --> verify[读回核验] --> as["after_save<br/>整理"]
+    end
+    recv --> ident
+    ident -- save --> store
+    ident -- ask --> pend[[pending_approval]]
+    pend -- 批准 --> store
+    pend -- 忽略 --> rejected([rejected])
+    ident -- skip --> skipped([skipped])
+    store --> done([done])
 ```
 
 ## 任务状态机
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> received
+    received --> parsed
+    parsed --> pending_approval: 需要确认
+    parsed --> queued: 自动放行
+    parsed --> skipped: 不收
+    pending_approval --> queued: 批准
+    pending_approval --> rejected: 忽略
+    queued --> saving
+    queued --> skipped: 内容已入库
+    saving --> stored: 读回核验通过
+    saving --> need_manual: 结果不明
+    stored --> organizing
+    organizing --> done
+    organizing --> need_manual: 整理失败
+    need_manual --> queued: 核验转存 / 重新整理 / 自动复查
+    received --> failed: 解析失败
+    queued --> failed: 准备或转存失败
+    failed --> received: 重试
+    failed --> queued: 重试
+    failed --> stored: 重试
+    done --> [*]
 ```
-received → parsed → pending_approval → queued → saving → stored → organizing → done
-                └→ queued / rejected / skipped    └→ need_manual       └→ need_manual
-解析或转存准备失败 → failed → 从记录的阶段重试（按 not_before 退避，不占并发槽）
-```
+
+进入 `failed` 的任务从记录的阶段（`retry_from`）重试：临时错误自动退避重试（`not_before`，不占并发槽），分享失效、校验不通过这类重试也没用的只能人工重试。
 
 - **审批态落库**：待确认任务持久化为 `pending_approval`，按钮 callback 只带任务 ID，进程重启后仍可点。
 - **三层去重**：消息级（来源 + 消息 ID）、资源级（存储 Provider + 目标 CID + 分享码）、内容级（存储 Provider + 目标 CID + 标题 + 季 + 集）。剧集按集去重，同一分享链接追更新增的集仍会转存。

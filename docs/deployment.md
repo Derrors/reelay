@@ -1,57 +1,49 @@
-# Docker 单机部署
+# 部署与运维
 
-每个版本发布时，GitHub Actions 自动构建镜像并推送到 `ghcr.io/derrors/reelay`（linux/amd64 与 linux/arm64），标签为版本号（如 `0.3.0`）、次版本号（如 `0.3`）和 `latest`（最新正式版）。镜像使用 Python 3.12 与固定版本的 115 SDK，前端在 Node 构建阶段编译，运行镜像只包含 Python 服务和静态资源。Compose 启动一个监听/Worker 进程和一个 Web 管理进程；两者共享同一个本机 Docker 数据卷 `/app/data`，数据库、配置、密钥、会话、115 凭证与日志都在里面。不要把 SQLite/WAL 与 Worker 文件锁迁移到网络文件系统，也不要同时启动另一个消费同一数据库的 Worker。
+首次部署的步骤见 [快速开始](quickstart.md)。这里说明 Docker 部署长期运行时需要知道的事：怎么访问、怎么升级、怎么备份、出了问题怎么看。
 
-## 首次启动
+## 运行方式
 
-配置与密钥都在管理台里填写，不需要事先编辑配置文件，也不需要下载源码，只要一个 `compose.yaml`（需要 Docker Compose v2.24 及以上）：
+`compose.yaml` 启动两个容器，共用同一个数据卷 `/app/data`：
+
+| 服务 | 进程 | 作用 |
+| --- | --- | --- |
+| `worker` | `python -m reelay.main` | 监听 Telegram、执行识别 / 转存 / 整理、控制 Bot、发送通知 |
+| `web` | `python -m reelay.web` | 管理台与 API、Agent 用的 `/mcp`；只读写任务状态，不执行转存 |
+
+数据库、配置、密钥、Telegram 会话、115 凭证与日志全部在数据卷里。同一个数据库只能有一个 `worker`（启动时用文件锁保证），也不要把数据卷放在网络文件系统上：SQLite 的 WAL 与文件锁在 NFS / SMB 上不可靠。
+
+镜像发布在 `ghcr.io/derrors/reelay`，支持 linux/amd64 与 linux/arm64，标签有版本号（`0.3.0`）、次版本号（`0.3`）和 `latest`（最新正式版）。
+
+## 访问与安全
+
+Compose 默认只把管理台开放在宿主机的 `127.0.0.1:28080`。要从局域网或公网访问：
+
+1. 先在「设置 → 运行与安全」设置登录密码；
+2. 把 `compose.yaml` 里 `web` 的端口改为 `"28080:28080"`，或者经反向代理访问（建议配 HTTPS）；
+3. `docker compose up -d web`。
+
+设置密码后，除登录、登录状态和健康检查外，所有 `/api/*` 接口（含实时推送）都要求登录；同一客户端 5 分钟内连续 5 次密码错误会被暂时拒绝。登录会话有效期 7 天，Web 重启不影响；修改密码后其他会话全部失效。
+
+Agent 经 `/mcp` 接入时用的是独立的 MCP 访问令牌，与登录密码无关，见 [Agent 接入](agents.md)。
+
+## 版本、升级与回滚
+
+升级到 `.env` 里 `REELAY_VERSION` 指定的版本（不写时为 `latest`）：
 
 ```bash
-mkdir reelay && cd reelay
-curl -fsSLO https://raw.githubusercontent.com/Derrors/reelay/main/compose.yaml
-mkdir -p deploy/plugins
 docker compose pull
-# 镜像以 UID 10001 运行；让数据卷可写。
-docker compose run --rm --no-deps --user root worker chown -R 10001:10001 /app/data /app/config
-docker compose up -d web
-```
-
-默认使用 `latest`。要固定版本（便于回滚），在同目录的 `.env` 里写 `REELAY_VERSION=0.3.0`；`.env` 其余可写的部署参数见仓库里的 `.env.example`，没有 `.env` 也能启动。
-
-打开 <http://127.0.0.1:28080>：
-
-1. 「设置 → 运行与安全」设置登录密码（要开放到局域网或公网时必须设置）；
-2. 「设置 → Telegram」填写个人账号的 API ID / API Hash，以及控制 Bot 的 Token 与你的数字 ID；
-3. 「设置 → AI 与 TMDB」填写 AI 接口与 TMDB key；「设置 → 115 网盘」扫码登录。
-
-然后在交互终端登录个人 Telegram 账号（验证码/密码直接交给 Telethon），再启动 Worker：
-
-```bash
-docker compose run --rm --no-deps -it worker python -m reelay.login
 docker compose up -d
-docker compose ps
 ```
 
-Compose 默认只在宿主机回环地址开放 Web。设置登录密码后，除登录、登录状态和健康检查外，所有 `/api/*` 接口（含 SSE）都要求登录，同一客户端 5 分钟内连续 5 次密码错误会被拒绝尝试。
+升级前先看 [GitHub Release](https://github.com/Derrors/reelay/releases) 或 [CHANGELOG](../CHANGELOG.md)。数据库结构会随版本升级，结构升级后旧版本程序会拒绝打开它，所以：
 
-外部 Agent 经 Web 的 `/mcp` 接入（见 [MCP](../README.md#mcp)），不需要进容器：在「设置 → 运行与安全 → Agent 接入」生成 MCP 访问令牌即可，`/mcp` 只认这个令牌，与登录密码无关；没有令牌时 `/mcp` 关闭。Agent 不在宿主机上时，需要像管理台一样把端口开放出去（或经反向代理），反代要放行 `Authorization` 请求头。
-
-### 从旧版本升级
-
-旧版本把配置放在 `deploy/config/config.yaml`、凭证写在 `.env`，镜像在本机构建。换用新的 `compose.yaml`（保留其中 `./deploy/config:/app/config` 这一行，原来的 `.env` 不动），执行 `docker compose pull && docker compose up -d`：首次启动时配置移进数据卷（原文件改名为 `config.yaml.migrated`），`.env` 里的设置和凭证导入管理台，日志会列出导入了哪些变量。确认管理台里的设置无误后，可以删掉 Compose 中的 `./deploy/config` 挂载和 `.env` 里除监听地址外的变量。详见 [配置参考](configuration.md#从旧版本升级)。
-
-## 升级与回滚
-
-```bash
-docker compose pull     # 拉取 REELAY_VERSION 指定的版本（默认 latest）
-docker compose up -d    # 用新镜像重建两个容器，数据卷保留
-```
-
-升级前先看 [CHANGELOG](../CHANGELOG.md) 或 GitHub Release 的说明。数据库结构随版本升级后，旧版本程序会拒绝打开（提示升级 Reelay），所以回滚只适用于没有改动数据库结构的版本；稳妥的做法是升级前停止服务并备份数据卷，回滚时连同数据卷一起恢复，再在 `.env` 里把 `REELAY_VERSION` 改回原版本。
+- 升级前先 [备份](#备份与迁移) 数据卷；
+- 要回滚时，把 `REELAY_VERSION` 改回原来的版本，并连同数据卷一起恢复到升级前的备份。
 
 ## 从源码构建
 
-需要改代码或网络拉不到 GHCR 时，在仓库目录用 `compose.build.yaml` 覆盖镜像，在本机构建：
+需要改代码，或网络拉不到 GHCR 时，在仓库目录用 `compose.build.yaml` 覆盖镜像、在本机构建：
 
 ```bash
 docker compose -f compose.yaml -f compose.build.yaml build \
@@ -60,35 +52,51 @@ docker compose -f compose.yaml -f compose.build.yaml build \
 docker compose -f compose.yaml -f compose.build.yaml up -d
 ```
 
-之后的 `run`、`restart`、`logs` 等命令同样带上这两个 `-f`，否则 Compose 会改用发布的镜像。
+之后的 `run`、`restart`、`logs` 等命令也要带上这两个 `-f`，否则 Compose 会改用发布的镜像。
+
+## 备份与迁移
+
+所有状态都在数据卷 `reelay-data` 里。备份前先停止两个服务，保证数据库与会话一致：
+
+```bash
+docker compose stop
+docker run --rm -v reelay_reelay-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/reelay-data-$(date +%Y%m%d).tgz -C /data .
+docker compose start
+```
+
+数据卷的实际名称是「项目目录名_reelay-data」，可以用 `docker volume ls` 确认。迁移到新机器时，在新机器上恢复同一个数据卷再启动即可；不要用 `docker compose down -v`，它会删除数据卷。
 
 ## 外部扩展
 
-`deploy/plugins` 以只读方式挂载到 `/app/data/plugins`，放入的 `*.py` 文件或包目录在启动时被发现，按 `@register` 声明挂到 Provider/Hook/Event 扩展点，修改后 `docker compose restart` 即可，无需重建镜像。扩展以 Reelay 进程权限运行，只放入你信任的代码。导入失败不影响内置能力，错误显示在管理台「插件」页。
+把扩展（`*.py` 文件或包目录）放进 `compose.yaml` 同目录的 `deploy/plugins/`，它以只读方式挂载到 `/app/data/plugins`，`docker compose restart` 后生效，不用重建镜像。扩展以 Reelay 进程的权限运行，只放你信任的代码；导入失败不影响内置能力，错误显示在管理台「插件」页。写法见 [插件开发](plugins.md)。
 
-个人账号监听与控制 Bot 使用不同的 session 文件，和数据库、配置一样固定放在 `/app/data`。控制 Bot 尚未配置时，审批与故障通知写控制台，任务仍可在 Web 审批；日志输出不是 Telegram 消息投递成功。
+## 健康检查与故障恢复
 
-## 健康状态与恢复
+两个容器都带健康检查：
 
-Worker 的健康检查只读共享 SQLite，要求 Worker 心跳和消息源连接观察都在 30 秒内有效。Web 健康检查验证 API 服务自身，不代表 Worker 已在线或 115 凭证可用；未登录时只返回存活状态，不含运行细节。
+- **worker**：要求主进程心跳和 Telegram 连接在 30 秒内有效；
+- **web**：只检查 API 自身，不代表主进程在线或 115 凭证可用。
 
-以下故障会通过控制 Bot 告警一次，恢复后发送恢复通知（告警与通知经持久化队列投递，进程重启不丢）：
+管理台总览显示主进程心跳、正在使用的配置版本、各项连接状态，以及通知队列的积压与失败。以下故障会通过控制 Bot 告警一次，恢复后再通知（告警经持久化队列投递，重启不丢）：
 
-- 115 cookie 缺失或失效：暂停转存与整理的领取（解析照常），任务回到原阶段等待，不消耗重试次数；在管理台重新扫码后 30 秒内自动继续。
-- 消息源断开超过 `telegram.alert_after_sec`（默认 120 秒）或意外停止；重连后按每个来源已接收的最大消息 ID 补拉停机期间的消息（默认每个来源最多 200 条、7 天内）。管理台展示 Worker 心跳、实际采用的配置版本、消息源连接观察，以及持久化通知/事件队列的积压与失败。
+| 故障 | Reelay 的处理 |
+| --- | --- |
+| 115 登录失效 | 暂停转存与整理（识别照常），任务原地等待、不消耗重试次数；在管理台重新扫码后 30 秒内自动继续 |
+| Telegram 断开超过 `telegram.alert_after_sec`（默认 120 秒） | 告警；重连后按每个来源已收到的最大消息 ID 补拉停机期间的消息（默认每个来源最多 200 条、7 天内） |
+| 转存后 115 迟迟没有落地 | 任务转「待人工」，后台自动只读复查（5 分钟起，间隔加倍，24 小时内），通过后照常整理 |
+| 配置文件写错 | 继续使用上一个有效版本，总览显示错误 |
 
-配置校验失败时，运行进程继续使用上一个有效版本，并报告配置错误。有效配置通常在约 1 秒内被 Worker 采用，监听目标更新及来源切换还需最多一个轮询周期。长请求、系统调度和磁盘压力可能延长这个时间。Telegram 账号、控制 Bot、并发数与日志级别在主进程启动时读取，修改后执行 `docker compose restart worker`；AI 与 TMDB 的地址和密钥、115 限速等改了立即生效。
+**设置何时生效**：多数设置保存后约 1 秒生效；Telegram 账号、控制 Bot、并发数与日志级别在主进程启动时读取，改了之后执行 `docker compose restart worker`。
 
-SIGTERM 会触发协程取消和会话关闭；同步 SDK 请求仍等待线程结束，再释放 Worker 锁。Compose 给出 120 秒退出时间。超过退出时间被强制终止时，下一次启动按已持久化的转存/整理检查点恢复；转存结果未知只核验，不重发。
+**停止与重启**：停止时会等待进行中的请求结束，Compose 留出 120 秒。被强制终止也没关系，下次启动从已保存的检查点继续；转存结果不明的任务只核验，不会重发。
+
+## 常用命令
 
 ```bash
-docker compose logs --tail=100 worker web
-docker compose restart worker web
-docker compose down
+docker compose ps                          # 状态与健康检查
+docker compose logs --tail=100 worker web  # 最近日志（也可以在管理台「工具 → 运行日志」查看）
+docker compose restart worker              # 改了需要重启的设置后
+docker compose run --rm --no-deps -it worker python -m reelay.login   # 重新登录 Telegram
+docker compose down                        # 停止并删除容器，数据卷保留
 ```
-
-`down` 默认保留数据卷；不要使用 `down -v`，除非明确要删除业务状态和登录会话。备份或迁移前停止两个服务，再备份完整数据卷，保证数据库和会话一致。
-
-## 验证边界
-
-真实账号已跑通监听、LLM 识别、人工审批、115 转存与整理（单源、剧集单集）；电影、多集合集、auto/default_pass 模式、多来源、长期断线与容器线上部署尚未实测。镜像由 CI 构建并在容器内跑过模拟运行冒烟测试，但完整的容器部署（扫码、登录 Telegram、长期运行）尚未实测。尚未实现自动撤销已转存文件。
