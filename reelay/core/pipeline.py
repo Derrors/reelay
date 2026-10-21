@@ -452,6 +452,14 @@ class Pipeline:
                 self.store.save_task(ctx)
                 return
             except ShareUnavailable as exc:
+                # 读不到分享就无法按清单去重；消息写明的集都已入库时，这条只是重复消息，不算失败
+                declared = ctx.episode_pairs()
+                stored = {tuple(pair) for pair in ns.get("stored_episodes") or []}
+                if self._episodic(ctx) and declared and stored.issuperset(declared):
+                    ctx.state = TaskState.SKIPPED
+                    ctx.log(f"执行前去重命中：分享不可用（{exc}），但消息写明的 {pairs_label(declared)} 均已入库")
+                    self.store.save_task(ctx)
+                    return
                 await self._fail(ctx, f"分享不可用，无法转存：{exc}", retry_from=TaskState.QUEUED, auto_retry=False)
                 return
             except NeedsManual as exc:
@@ -487,8 +495,7 @@ class Pipeline:
             if ns["phase"] == "ready" and not await self._recheck_manifest(ctx, storage, provider_name):
                 return
 
-        # Worker 后台自动复查（见 Worker.recheck_transfers）：仍未核验通过时已通知过，不再重复通知
-        auto_recheck = ns.pop("auto_recheck_run", False)
+        auto_recheck = ns.pop("auto_recheck_run", False)  # 这一轮是 Worker 的后台自动复查
         try:
             if ns["phase"] == "ready":
                 ns["phase"] = "receiving"
@@ -515,11 +522,14 @@ class Pipeline:
         except Exception as exc:
             ctx.state = TaskState.NEED_MANUAL
             ctx.log(f"转存结果待核验，不自动重发：{exc}")
-            if not auto_recheck:
-                await self._notify_all(ctx, "transfer_uncertain", persist=False)
-                await self._emit("on_failed", ctx, persist=False)
-            else:
+            if not self.auto_rechecks(ctx):
+                await self.notify_uncertain(ctx)
+            elif auto_recheck:
                 log.info("任务 %s 自动复查仍未核验通过：%s", ctx.task_id, exc)
+            else:
+                # 115 落地慢时多数几分钟内就能复查通过，这期间不提醒；24 小时仍未通过时 Worker 再通知
+                log.info("任务 %s《%s》转存待核验，后台自动复查，24 小时内仍未通过再通知：%s",
+                         ctx.task_id, ctx.parsed.title or "未识别片名", exc)
             self.store.save_task(ctx, error=str(exc))
             return  # 保留资源占位，防止另一条消息绕过核验再次转存
 
@@ -550,6 +560,18 @@ class Pipeline:
             await self._notify_all(ctx, "saved" if verified else "organize_failed", persist=False)
             await self._emit("on_saved" if verified else "on_failed", ctx, persist=False)
             self.store.save_task(ctx)
+
+    @staticmethod
+    def auto_rechecks(ctx: PipelineContext) -> bool:
+        """转存结果待核验的任务是否由 Worker 后台自动复查（已发出转存、有清单、还没放弃复查）。"""
+        ns = ctx.ns("storage")
+        return (ns.get("phase") == "receiving" and bool(ns.get("manifest"))
+                and not (ns.get("auto_recheck") or {}).get("gave_up"))
+
+    async def notify_uncertain(self, ctx: PipelineContext) -> None:
+        """提醒转存结果待人工核验（通知渠道与 on_failed 事件）；由调用方保存任务。"""
+        await self._notify_all(ctx, "transfer_uncertain", persist=False)
+        await self._emit("on_failed", ctx, persist=False)
 
     @staticmethod
     def _episodic(ctx: PipelineContext) -> bool:

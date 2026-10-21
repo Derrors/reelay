@@ -156,8 +156,8 @@ class Worker:
     async def recheck_transfers(self, now: float | None = None) -> int:
         """转存请求已发出、核验时暂存目录没到齐的待人工任务：到点后放回队列做一次只读核验（不重发转存）。
 
-        复查记录在 storage.auto_recheck（since / count / next_at）。超过 24 小时仍未到齐就不再自动复查，
-        留给人工「核验转存」。返回本次放回队列的任务数。
+        复查记录在 storage.auto_recheck（since / count / next_at）。复查期间不提醒；超过 24 小时仍未到齐就
+        不再自动复查，这时才通知，留给人工「核验转存」。返回本次放回队列的任务数。
         """
         now = time.time() if now is None else now
         queued = 0
@@ -174,7 +174,11 @@ class Worker:
                 ns["auto_recheck"] = {**record, "since": since, "gave_up": True}
                 ctx.log("24 小时内自动复查都没有核验通过，停止自动复查，请到网盘确认后处理")
                 log.warning("任务 %s 自动复查 24 小时仍未核验通过，留给人工处理", ctx.task_id)
-                self.store.update_task_context(ctx, expected=TaskState.NEED_MANUAL, error=row["error"])
+                await self.pipeline.notify_uncertain(ctx)  # 复查期间没有提醒过，现在才通知
+                try:
+                    self.store.update_task_context(ctx, expected=TaskState.NEED_MANUAL, error=row["error"])
+                except ValueError:
+                    pass  # 期间被人工处理了
                 continue
             count = record.get("count", 0) + 1
             ns["auto_recheck"] = {"since": since, "count": count,

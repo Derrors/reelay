@@ -67,6 +67,9 @@ class ConsoleNotify:
                 "organize_failed": "文件已经转存，整理没有完成。请在管理台修正后点「重新整理」。",
                 "failed": "任务执行失败，请在管理台查看任务轨迹与重试状态。",
             }[event]
+            if event == "transfer_uncertain" and (ctx.ns("storage").get("auto_recheck") or {}).get("gave_up"):
+                reason = "转存请求发出后一直没有核验通过，后台 24 小时的自动复查已停止，系统不会自动重发。" \
+                         "请到网盘确认后，在管理台「待人工」点「核验转存」。"
             await self._send(messages.problem_message(ctx, reason))
 
 

@@ -621,25 +621,30 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute(other)).state, TaskState.SKIPPED)
         self.assertEqual(len(self.cloud.receives()), 1)
 
-    async def test_late_landing_is_rechecked_automatically_without_repeating_notices(self):
+    async def test_late_landing_is_rechecked_automatically_and_only_notified_when_giving_up(self):
         import time
         from reelay.core.worker import RECHECK_FIRST_SEC, RECHECK_WINDOW_SEC
+        self.cfg = {**self.cfg, 'providers': {'notify': ['console']}}
+        self.pipeline = Pipeline(self.reg, self.store, self.cfg)
         self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
         self.cloud.receive_mode['share'] = 'partial'
         ctx = self.task(episodes=(1, 2))
-        with self.assertLogs('reelay.pipeline', 'WARNING') as logs:
+        with self.assertLogs('reelay.pipeline', 'INFO') as logs:
             manual = await self.execute(ctx)
         self.assertEqual(manual.state, TaskState.NEED_MANUAL)
-        self.assertTrue(any(f'任务 {ctx.task_id}' in line and '待人工处理' in line for line in logs.output))
-        outbox = lambda: self.store._conn.execute('SELECT COUNT(*) FROM outbox').fetchone()[0]  # noqa: E731
-        notices = outbox()
+        self.assertTrue(any(f'任务 {ctx.task_id}' in line and '后台自动复查' in line for line in logs.output))
+
+        def notices(task_id):
+            return self.store._conn.execute("SELECT COUNT(*) FROM outbox WHERE task_id=? AND event='transfer_uncertain'",
+                                            (task_id,)).fetchone()[0]
+        self.assertEqual(notices(ctx.task_id), 0)  # 后台还会复查，先不提醒
         worker, now = Worker(self.pipeline, self.store), time.time()
         self.assertEqual(await worker.recheck_transfers(now), 0)  # 还没到 5 分钟
         first = now + RECHECK_FIRST_SEC + 1
         self.assertEqual(await worker.recheck_transfers(first), 1)
         self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.QUEUED)
         self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)  # 还没到齐
-        self.assertEqual(outbox(), notices)  # 已经通知过，不再重复
+        self.assertEqual(notices(ctx.task_id), 0)
         self.assertEqual(await worker.recheck_transfers(first + 1), 0)  # 间隔翻倍
         stage = manual.ns('storage')['manifest']['staging_cid']
         self.cloud.add(self.cloud.shares['share'][1], stage)  # 115 在后台落地了剩下的文件
@@ -650,7 +655,8 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(f'任务 {ctx.task_id}' in line and '已入库' in line for line in logs.output))
         self.assertEqual(len(self.cloud.receives()), 1)
         self.assertTrue(any('自动只读核验转存（第 2 次）' in line for line in done.trail))
-        # 24 小时仍未核验通过：停止自动复查
+        self.assertEqual(notices(ctx.task_id), 0)  # 复查通过，整个过程没有打扰
+        # 24 小时仍未核验通过：停止自动复查，这时才通知
         self.cloud.add_share('other', 'S01E05.mkv', 'S01E06.mkv')
         self.cloud.receive_mode['other'] = 'partial'
         stuck = self.task('other', title='另一部', episodes=(5, 6))
@@ -659,7 +665,26 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await worker.recheck_transfers(late), 0)
         stuck = self.store.get_task(stuck.task_id)
         self.assertEqual((stuck.state, stuck.ns('storage')['auto_recheck']['gave_up']), (TaskState.NEED_MANUAL, True))
+        self.assertEqual(notices(stuck.task_id), 1)
         self.assertEqual(await worker.recheck_transfers(late + RECHECK_WINDOW_SEC), 0)
+        self.assertEqual(notices(stuck.task_id), 1)
+        # 放弃复查后人工「核验转存」仍不通过：照常提醒
+        await self.service.reconcile_transfer(stuck.task_id)
+        self.assertEqual((await self.execute(stuck)).state, TaskState.NEED_MANUAL)
+
+    async def test_expired_share_whose_declared_episodes_are_all_stored_is_a_duplicate(self):
+        self.cloud.add_share('a', 'S01E01.mkv', 'S01E02.mkv')
+        self.assertEqual((await self.execute(self.task('a', episodes=(1, 2)))).state, TaskState.DONE)
+        self.cloud.add_share('b', 'S01E01.mkv', 'S01E02.mkv')
+        self.cloud.share_gone['b'] = '链接已过期'
+        duplicate = await self.execute(self.task('b', episodes=(1, 2)))
+        self.assertEqual(duplicate.state, TaskState.SKIPPED)
+        self.assertIn('均已入库', duplicate.trail[-1])
+        self.cloud.add_share('c', 'S01E02.mkv', 'S01E03.mkv')
+        self.cloud.share_gone['c'] = '链接已过期'
+        failed = await self.execute(self.task('c', episodes=(2, 3)))  # E03 还没入库：仍是失败，提醒换个资源
+        self.assertEqual(failed.state, TaskState.FAILED)
+        self.assertEqual(self.claims(), 0)
 
     async def test_corrupt_landed_content_is_not_committed_as_success(self):
         self.cloud.add_share('share', 'S01E01.mkv')
