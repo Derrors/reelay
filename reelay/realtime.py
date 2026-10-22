@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import weakref
 from typing import Any, AsyncIterator
 
 # 观察者轮询间隔：这是服务端对 SQLite 的唯一固定查询，成本极低。
@@ -35,6 +36,7 @@ class EventBus:
         self._task: asyncio.Task | None = None
         self._last_signature: tuple | None = None
         self._last_keepalive = 0.0
+        _BUSES.add(self)
 
     # ------------------------------------------------------------------ #
     # 订阅
@@ -75,9 +77,16 @@ class EventBus:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        self.close_streams()
+
+    def close_streams(self) -> None:
+        """结束现有的 SSE 响应（浏览器 EventSource 会自动重连）；观察者不受影响。"""
         for queue in list(self._subscribers):
-            with contextlib.suppress(Exception):
-                queue.put_nowait(None)
+            # 满了就丢最旧的一帧，保证结束标记放得进去，否则这条响应永远不结束
+            with contextlib.suppress(asyncio.QueueEmpty):
+                if queue.full():
+                    queue.get_nowait()
+            queue.put_nowait(None)
         self._subscribers.clear()
 
     async def _watch(self) -> None:
@@ -146,6 +155,17 @@ class EventBus:
         if cur_recent != prev_recent:
             changed.append("tasks")
         return changed, signature
+
+
+# 进程内的全部总线；Web 收到停止信号时据此提前结束推送流（见 web.main）。
+_BUSES: weakref.WeakSet[EventBus] = weakref.WeakSet()
+
+
+def close_all_streams() -> None:
+    """SSE 是不会自己断开的长连接：uvicorn 要等所有连接结束才执行 lifespan 关闭，
+    而 lifespan 里的 ``bus.stop()`` 又要等那时才结束推送流，所以停止时要先在这里结束它们。"""
+    for bus in list(_BUSES):
+        bus.close_streams()
 
 
 async def event_stream(bus: EventBus) -> AsyncIterator[bytes]:

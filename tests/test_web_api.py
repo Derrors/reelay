@@ -354,5 +354,26 @@ class TestAuth115Api(unittest.TestCase):
         r3 = self.client.get("/api/auth115/oauth/qr/image?uid=nope")
         self.assertEqual(r3.status_code, 404)
 
+
+class TestRealtimeShutdown(unittest.IsolatedAsyncioTestCase):
+    async def test_close_all_streams_ends_open_sse_even_when_queue_is_full(self):
+        # 停止时不结束推送流，uvicorn 会一直等这条长连接，直到 systemd / Docker 超时强杀
+        import asyncio
+        from reelay.realtime import EventBus, close_all_streams, event_stream
+        bus = EventBus(store=None, service=None)
+        stream = event_stream(bus)
+        self.assertEqual(await anext(stream), b": connected\n\n")
+        await anext(stream)  # hello
+        for _ in range(64):  # 浏览器卡住，队列积满
+            bus._broadcast({"type": "ping"})
+        close_all_streams()
+
+        async def drain():
+            return [frame async for frame in stream]
+        frames = await asyncio.wait_for(drain(), timeout=2)
+        self.assertEqual(len(frames), 63)  # 丢掉最旧的一帧，放下结束标记
+        self.assertEqual(bus._subscribers, set())
+
+
 if __name__ == "__main__":
     unittest.main()

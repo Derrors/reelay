@@ -1132,12 +1132,18 @@ class TestEntrypointsLoadEnvFirst(unittest.TestCase):
         except ImportError:  # pragma: no cover
             self.skipTest("未安装 web 可选依赖")
         from reelay import web
+        configs = []
+
+        def fake_run(server):
+            configs.append(server.config)
+            server.started = True
+
         with tempfile.TemporaryDirectory() as root:
             Path(root, ".env").write_text("REELAY_WEB_HOST=0.0.0.0\nREELAY_WEB_PORT=28181\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=True), patch.object(web, "PROJECT_ROOT", Path(root)), \
-                    patch("uvicorn.run") as run:
+                    patch("uvicorn.Server.run", fake_run):
                 web.main()
-        self.assertEqual((run.call_args.kwargs["host"], run.call_args.kwargs["port"]), ("0.0.0.0", 28181))
+        self.assertEqual((configs[0].host, configs[0].port), ("0.0.0.0", 28181))
 
 
 @unittest.skipIf(TestClient is None, "未安装 web 可选依赖")

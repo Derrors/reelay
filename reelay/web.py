@@ -7,8 +7,9 @@ Python 服务托管 SPA。默认只绑定本机；暴露到其他机器时必须
 
 from __future__ import annotations
 
+import asyncio
 import os
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from .core.service import ConflictError, ManagementService, NotFoundError
 from .core.store import Store
 from .core.worker import Worker
 from . import __version__
-from .realtime import EventBus, event_stream
+from .realtime import EventBus, close_all_streams, event_stream
 from .web_ai import register_ai
 from .web_extras import api_guard, is_authenticated, register_extras
 
@@ -327,14 +328,29 @@ def main() -> None:
         import uvicorn
     except ImportError as exc:
         raise RuntimeError('Web 管理服务未安装，请执行 pip install -e ".[web]"') from exc
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig, frame) -> None:
+            """开始停止时先结束 SSE 推送流，否则要等 systemd / Docker 超时强制结束。"""
+            super().handle_exit(sig, frame)
+            # 信号处理函数可能打断事件循环里的任意代码，交给事件循环去执行
+            with suppress(RuntimeError):  # 事件循环还没启动
+                asyncio.get_running_loop().call_soon_threadsafe(close_all_streams)
+
     load_env(str(PROJECT_ROOT / ".env"))  # 监听地址与端口也可以写在 .env 里
-    uvicorn.run(
+    server = Server(uvicorn.Config(
         "reelay.web:create_app",
         factory=True,
         host=os.getenv("REELAY_WEB_HOST", "127.0.0.1"),
         port=int(os.getenv("REELAY_WEB_PORT", "28080")),
         reload=False,
-    )
+        # 兜底：其他长连接（如 MCP 客户端的推送流）最多再等 5 秒，之后由 uvicorn 取消
+        timeout_graceful_shutdown=5,
+    ))
+    with suppress(KeyboardInterrupt):  # 与 uvicorn.run 一致：Ctrl+C 不打印回溯
+        server.run()
+    if not server.started:
+        raise SystemExit(3)  # 与 uvicorn.run 一致：启动失败时非零退出，systemd 据此重启
 
 
 if __name__ == "__main__":
