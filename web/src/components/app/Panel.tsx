@@ -36,3 +36,14 @@ export function Panel({ title, description, icon: Icon, actions, children, class
     </section>
   );
 }
+
+/** 两列面板：每列各自往下排，矮面板下面不留空；窄屏合成一列，先左后右。
+ *  两张以上面板并排时用它，不要用按行对齐的 grid，否则同一行里矮的那张下面会空出一块。 */
+export function PanelColumns({ left, right }: { left: ReactNode; right: ReactNode }) {
+  return (
+    <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
+      <div className="grid min-w-0 gap-5">{left}</div>
+      <div className="grid min-w-0 gap-5">{right}</div>
+    </div>
+  );
+}

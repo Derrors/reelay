@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Bot, CircleAlert, CircleCheck, Film, Gauge, Info, Loader2, PlugZap, RefreshCw, Send, ServerCog, ShieldCheck, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { ai, type ILlmEfforts, type ILlmTest } from '@/api/ai';
-import { Panel } from '@/components/app/Panel';
+import { Panel, PanelColumns } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -264,36 +264,41 @@ const LOG_LEVELS = [
 export function SystemTab({ config, setField, secrets, onSecrets }: { config: Obj; setField: SetField } & SecretProps) {
   const runtime = obj(config.runtime);
   return (
-    <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
-      <Panel icon={ShieldCheck} title="访问安全" bodyClassName="p-4 sm:p-5">
-        <PasswordField secrets={secrets} onSaved={onSecrets} />
-      </Panel>
-      <Panel icon={Bot} title="Agent 接入（MCP）" description="外部 Agent（如 Claude Code）凭访问令牌经管理台的 /mcp 查询和操作 Reelay。"
-        bodyClassName="p-4 sm:p-5">
-        <div className="space-y-4">
-          <SecretField name="mcp_token" secrets={secrets} onSaved={onSecrets} generate placeholder="至少 24 个字符"
-            hint="可以查询，也可以批准、忽略、重试与订阅；批准和重试会发起真实的 115 转存。" />
-          <SecretField name="mcp_readonly_token" secrets={secrets} onSaved={onSecrets} generate placeholder="至少 24 个字符"
-            hint="只能查询，看不到写操作工具。" />
-          <p className="text-xs leading-5 text-muted-foreground">
-            地址 <code className={CODE}>{window.location.origin}/mcp</code>，请求头
-            <code className={CODE}>Authorization: Bearer 令牌</code>。令牌保存后读不回原值，生成后先复制再保存；两个都没设置时
-            /mcp 不可用。与 Reelay 同机时也可以用 stdio 方式（reelay-mcp），见 README。
+    <PanelColumns
+      left={<>
+        <Panel icon={ShieldCheck} title="访问安全" bodyClassName="p-4 sm:p-5">
+          <PasswordField secrets={secrets} onSaved={onSecrets} />
+        </Panel>
+
+        <Panel icon={ServerCog} title="运行参数" description={RESTART_HINT} bodyClassName="p-4 sm:p-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <NumberField label="同时转存的任务数" min={1} max={20} value={runtime.concurrency}
+              hint="调大会加快积压处理，但更容易触发 115 风控。" onChange={v => setField('runtime', 'concurrency', v)} />
+            <Field label="日志级别" hint="排查问题时改为调试，平时用一般即可。">
+              <Select value={text(runtime.log_level)} onValueChange={v => setField('runtime', 'log_level', v)} options={LOG_LEVELS} />
+            </Field>
+          </div>
+          <p className="mt-4 text-xs leading-5 text-muted-foreground">
+            数据库、配置、密钥、会话、115 凭证与日志都固定放在 data/ 目录（Docker 为数据卷 /app/data），备份时整体复制即可。
           </p>
-        </div>
-      </Panel>
-      <Panel icon={ServerCog} title="运行参数" description={RESTART_HINT} bodyClassName="p-4 sm:p-5">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <NumberField label="同时转存的任务数" min={1} max={20} value={runtime.concurrency}
-            hint="调大会加快积压处理，但更容易触发 115 风控。" onChange={v => setField('runtime', 'concurrency', v)} />
-          <Field label="日志级别" hint="排查问题时改为调试，平时用一般即可。">
-            <Select value={text(runtime.log_level)} onValueChange={v => setField('runtime', 'log_level', v)} options={LOG_LEVELS} />
-          </Field>
-        </div>
-        <p className="mt-4 text-xs leading-5 text-muted-foreground">
-          数据库、配置、密钥、会话、115 凭证与日志都固定放在 data/ 目录（Docker 为数据卷 /app/data），备份时整体复制即可。
-        </p>
-      </Panel>
-    </div>
+        </Panel>
+      </>}
+      right={<>
+        <Panel icon={Bot} title="Agent 接入（MCP）" description="外部 Agent（如 Claude Code）凭访问令牌经管理台的 /mcp 查询和操作 Reelay。"
+          bodyClassName="p-4 sm:p-5">
+          <div className="space-y-4">
+            <SecretField name="mcp_token" secrets={secrets} onSaved={onSecrets} generate placeholder="至少 24 个字符"
+              hint="可以查询，也可以批准、忽略、重试与订阅；批准和重试会发起真实的 115 转存。" />
+            <SecretField name="mcp_readonly_token" secrets={secrets} onSaved={onSecrets} generate placeholder="至少 24 个字符"
+              hint="只能查询，看不到写操作工具。" />
+            <p className="text-xs leading-5 text-muted-foreground">
+              地址 <code className={CODE}>{window.location.origin}/mcp</code>，请求头
+              <code className={CODE}>Authorization: Bearer 令牌</code>。令牌保存后读不回原值，生成后先复制再保存；两个都没设置时
+              /mcp 不可用。与 Reelay 同机时也可以用 stdio 方式（reelay-mcp），见 README。
+            </p>
+          </div>
+        </Panel>
+      </>}
+    />
   );
 }
