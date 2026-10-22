@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
 ### 新增
 
 - MCP 的 HTTP 接入：Web 进程在 `/mcp` 提供 Streamable HTTP，凭管理台「设置 → 运行与安全」生成的 MCP 访问令牌（读写 / 只读各一个）使用；Docker 部署与其他机器上的 Agent 不必再进容器跑 stdio。
@@ -150,6 +152,7 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
+[0.4.0]: https://github.com/Derrors/reelay/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Derrors/reelay/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Derrors/reelay/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Derrors/reelay/releases/tag/v0.2.0

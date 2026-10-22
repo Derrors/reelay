@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reelay"
-version = "0.3.0"
+version = "0.4.0"
 description = "自托管的 Telegram → 115 网盘自动转存：AI 识别分享链接，审批后转存并按媒体库规范整理入库。"
 readme = "README.md"
 requires-python = ">=3.12"
