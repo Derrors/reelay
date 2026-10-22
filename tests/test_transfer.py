@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -950,6 +951,61 @@ class TestPersistenceBoundaries(unittest.TestCase):
         p = ParsedResource(episodes=[1], season=0)
         self.assertEqual([x['id'] for x in _select_video_items(items, p)['files']], ['special'])
         self.assertEqual(Store.episode_key('Show', None, 1), Store.episode_key('Show', 1, 1))
+
+
+class TestStoreThreading(unittest.TestCase):
+    def test_plugin_state_from_organize_thread_does_not_race_event_loop(self):
+        # 整理在线程里读写扩展状态；事件循环同时执行同一条语句曾报 API misuse 或读到对方的结果
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'reelay.db')
+            try:
+                for i in range(50):
+                    store.state_set('organizer', f'file:{i}', {'rank': i})
+                errors, stop = [], threading.Event()
+
+                def organize():
+                    i = 0
+                    while not stop.is_set():
+                        try:
+                            if store.state_get('organizer', f'file:{i % 50}') is None:
+                                raise AssertionError('读到了不属于自己的结果')
+                            store.state_set('organizer', f'file:{i % 50}', {'rank': i})
+                        except Exception as exc:
+                            errors.append(exc)
+                            stop.set()
+                        i += 1
+
+                thread = threading.Thread(target=organize)
+                thread.start()
+                deadline = time.monotonic() + 1.5
+                try:
+                    while time.monotonic() < deadline and not stop.is_set():
+                        store.state_get('inbox_advice', 'missing')
+                        store.heartbeat('worker', status='running')
+                        store.get_task('missing')
+                finally:
+                    stop.set()
+                    thread.join()
+                self.assertEqual(errors, [])
+            finally:
+                store.close()
+
+    def test_store_methods_using_the_connection_hold_the_lock(self):
+        import ast
+        import inspect
+        from reelay.core import store as store_module
+        tree = ast.parse(inspect.getsource(store_module.Store))
+        # 构造时还没有其他线程；_write_task / _stage_notice 只在已持锁的事务里调用
+        exempt = {'__init__', '_migrate', '_init_pragmas', '_write_task', '_stage_notice'}
+        unlocked = []
+        for node in tree.body[0].body:
+            if not isinstance(node, ast.FunctionDef) or node.name in exempt:
+                continue
+            source = ast.unparse(node)
+            decorated = any(isinstance(d, ast.Name) and d.id == '_locked' for d in node.decorator_list)
+            if 'self._conn' in source and not decorated and 'self._lock' not in source:
+                unlocked.append(node.name)
+        self.assertEqual(unlocked, [])
 
 
 if __name__ == '__main__':

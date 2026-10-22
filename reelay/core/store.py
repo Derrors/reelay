@@ -8,12 +8,13 @@
    各司其职，支持追更增量（内容级按 title|season|ep 记录已入库的集）。
 3. **可观测/干预的数据基础**：按状态查询、失败重试、待确认列表都从这里取数。
 
-并发写用事务、线程锁、WAL 与 busy_timeout；网盘副作用前的检查点必须提交。
+并发用事务、线程锁（读写都持锁）、WAL 与 busy_timeout；网盘副作用前的检查点必须提交。
 Telethon 自己的 session 库与本业务库分文件，互不干扰。
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
 from dataclasses import asdict
@@ -144,8 +145,25 @@ MIGRATIONS = (lambda conn: None, _add_task_not_before)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 
+def _locked(method):
+    """读也要持锁：整理等同步网盘操作在线程里读写扩展状态，与事件循环共用一个连接。
+
+    sqlite3 按 SQL 文本缓存预编译语句，两个线程同时执行同一条语句会报
+    「bad parameter or other API misuse」，或者读到对方的结果。
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Store:
-    """线程安全的 SQLite 封装。所有写走同一把锁（单写），读可并发。"""
+    """线程安全的 SQLite 封装。共用一个连接，读写都走同一把可重入锁。
+
+    用到 ``self._conn`` 的方法要么持锁（写用 ``with self._lock, self._conn``，读用 ``@_locked``），
+    要么只在已持锁的调用方里使用（``_write_task``、``_stage_notice``）。
+    """
 
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
@@ -281,9 +299,11 @@ class Store:
             self._conn.execute("UPDATE outbox SET status=?, attempts=?, error=?, next_attempt=?, lease_until=0, updated_at=? WHERE id=?",
                                (status, attempts, error, now + delay, now, delivery_id))
 
+    @_locked
     def delivery_counts(self) -> dict[str, int]:
         return {r["status"]: r["n"] for r in self._conn.execute("SELECT status, COUNT(*) n FROM outbox GROUP BY status")}
 
+    @_locked
     def list_deliveries(self, *, status: str = "failed", limit: int = 100) -> list[dict]:
         if status not in {"pending", "delivering", "failed", "done", "skipped"}:
             raise ValueError("投递状态无效")
@@ -301,6 +321,7 @@ class Store:
             self._conn.execute("INSERT INTO runtime_health VALUES (?,?,?) ON CONFLICT(component) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
                                (component, json.dumps(payload, ensure_ascii=False), time.time()))
 
+    @_locked
     def health_status(self, *, stale_after: float = 30) -> dict[str, dict]:
         now = time.time()
         result = {}
@@ -366,6 +387,7 @@ class Store:
         return self.seen(DEDUP_SHARE, f"{_target_prefix(cid, provider)}:{share}") or (
             provider == "p115" and self._legacy_seen(DEDUP_SHARE, share, cid))
 
+    @_locked
     def _legacy_seen(self, kind: str, key: str, cid: str) -> bool:
         """旧版全局去重键只在关联任务能确认目标目录时复用。"""
         row = self._conn.execute(
@@ -436,6 +458,7 @@ class Store:
             ).fetchone()
         return int(row["retries"]) if row else 0
 
+    @_locked
     def get_task(self, task_id: str) -> PipelineContext | None:
         row = self._conn.execute(
             "SELECT snapshot FROM tasks WHERE task_id=?", (task_id,)
@@ -444,6 +467,7 @@ class Store:
             return None
         return _load_ctx(json.loads(row["snapshot"]))
 
+    @_locked
     def list_by_state(self, state: TaskState, limit: int = 50, *,
                       due_only: bool = False) -> list[sqlite3.Row]:
         """due_only=True 时跳过仍在退避期内的任务。"""
@@ -455,6 +479,7 @@ class Store:
             params,
         ).fetchall()
 
+    @_locked
     def list_tasks(
         self,
         *,
@@ -504,6 +529,7 @@ class Store:
             items.append(item)
         return items
 
+    @_locked
     def get_task_record(self, task_id: str) -> dict[str, Any] | None:
         """管理端任务详情：数据库列 + 经过脱敏的上下文快照。"""
         row = self._conn.execute(
@@ -551,12 +577,14 @@ class Store:
             self._conn.commit()
             return cur.rowcount > 0
 
+    @_locked
     def counts_by_state(self) -> dict[str, int]:
         rows = self._conn.execute(
             "SELECT state, COUNT(*) c FROM tasks GROUP BY state"
         ).fetchall()
         return {r["state"]: r["c"] for r in rows}
 
+    @_locked
     def list_recent_updated(self, limit: int = 200) -> list[sqlite3.Row]:
         """最近更新任务的轻量指纹，供 SSE 观察者判断任务是否有推进。"""
         return self._conn.execute(
@@ -565,6 +593,7 @@ class Store:
             (max(1, min(int(limit), 500)),),
         ).fetchall()
 
+    @_locked
     def recover_interrupted(self) -> list[PipelineContext]:
         """所有可执行中间态都有恢复路径；旧版未知转存不能盲目重放。"""
         rows = self._conn.execute(
@@ -596,6 +625,7 @@ class Store:
     # ------------------------------------------------------------------ #
     # 三层去重
     # ------------------------------------------------------------------ #
+    @_locked
     def seen(self, kind: str, key: str) -> bool:
         if not key:
             return False
@@ -618,6 +648,7 @@ class Store:
     def episode_key(title: str, season: int | None, ep: int) -> str:
         return f"{title}|S{season if season is not None else 1:02d}|E{ep:02d}"
 
+    @_locked
     def stored_episode_pairs(self, title: str, cid: str, provider: str = "p115") -> list[list[int]]:
         """某剧在目标目录已入库的 [季, 集]；分享清单据此排除已入库的集。"""
         prefix = f"{_target_prefix(cid, provider)}:{title}|"
@@ -640,6 +671,7 @@ class Store:
                     pairs.add((season or 1, ep))
         return [list(pair) for pair in sorted(pairs)]
 
+    @_locked
     def stored_series(self) -> dict[tuple[str, int], set[int]]:
         """按 (标题, 季) 汇总所有目标目录中已入库的集，供追更检查使用。"""
         series: dict[tuple[str, int], set[int]] = {}
@@ -654,6 +686,7 @@ class Store:
                 series.setdefault((title, season or 1), set()).add(ep)
         return series
 
+    @_locked
     def done_snapshots(self, query: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
         """已入库任务的快照（媒体库问答用），最近入库在前。"""
         where, args = "state=?", [TaskState.DONE.value]
@@ -663,6 +696,7 @@ class Store:
         return [json.loads(r["snapshot"]) for r in self._conn.execute(
             f"SELECT snapshot FROM tasks WHERE {where} ORDER BY updated_at DESC LIMIT ?", (*args, limit))]
 
+    @_locked
     def snapshots_since(self, since: float, limit: int = 20000) -> list[dict[str, Any]]:
         """时间窗口内新收任务的快照与当前状态（来源质量统计用）。"""
         out = []
@@ -674,6 +708,7 @@ class Store:
             out.append(snap)
         return out
 
+    @_locked
     def titles_since(self, since: float) -> list[dict[str, Any]]:
         """时间窗口内收到的影视资源按片名汇总（不含广告与被过滤的），供日报写「本周新收几部剧」。"""
         return [dict(r) for r in self._conn.execute(
@@ -681,18 +716,21 @@ class Store:
             "SUM(state='done') done FROM tasks WHERE created_at>=? AND title IS NOT NULL "
             "AND state NOT IN ('rejected','skipped') GROUP BY title ORDER BY count DESC", (since,))]
 
+    @_locked
     def library_titles(self, media_type: str) -> list[str]:
         """已入库任务的片名（按识别出的媒体类型）。"""
         return [r["title"] for r in self._conn.execute(
             "SELECT DISTINCT title FROM tasks WHERE state=? AND title IS NOT NULL "
             "AND json_extract(snapshot,'$.parsed.media_type')=?", (TaskState.DONE.value, media_type))]
 
+    @_locked
     def titles_for_tmdbid(self, tmdbid: int) -> list[str]:
         """同一 TMDB 条目入库时用过的片名（规范名可能随语言设置变化）。"""
         return [r["title"] for r in self._conn.execute(
             "SELECT DISTINCT title FROM tasks WHERE title IS NOT NULL "
             "AND json_extract(snapshot,'$.parsed.raw_fields.tmdbid')=?", (int(tmdbid),))]
 
+    @_locked
     def source_watermark(self, source: str) -> int | None:
         """某来源已接收的最大消息 ID；重连后从这里补拉，首次监听返回 None。"""
         row = self._conn.execute(
@@ -701,6 +739,7 @@ class Store:
         ).fetchone()
         return int(row["m"]) if row and row["m"] is not None else None
 
+    @_locked
     def summary_since(self, since: float) -> dict[str, Any]:
         """日报数据：时间窗口内新收与完成的任务，以及当前待处理积压。"""
         received = {r["state"]: r["c"] for r in self._conn.execute(
@@ -767,6 +806,7 @@ class Store:
             self._stage_notice(key, f"✅ {text}", targets, "recovered")
             return True
 
+    @_locked
     def active_alerts(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self._conn.execute(
             "SELECT key, text, since, updated_at FROM alerts WHERE active=1 ORDER BY since")]
@@ -787,6 +827,7 @@ class Store:
     # ------------------------------------------------------------------ #
     # 扩展私有状态（按扩展名称隔离的小型 KV）
     # ------------------------------------------------------------------ #
+    @_locked
     def state_get(self, plugin: str, key: str, default: Any = None) -> Any:
         row = self._conn.execute(
             "SELECT value FROM plugin_state WHERE plugin=? AND key=?", (plugin, key)).fetchone()
@@ -811,6 +852,7 @@ class Store:
             self._conn.execute("DELETE FROM web_sessions WHERE expires_at < ?", (time.time(),))
             self._conn.execute("INSERT OR REPLACE INTO web_sessions VALUES (?,?)", (token_hash, expires_at))
 
+    @_locked
     def web_session_expires(self, token_hash: str) -> float | None:
         row = self._conn.execute(
             "SELECT expires_at FROM web_sessions WHERE token_hash=?", (token_hash,)).fetchone()
@@ -824,6 +866,7 @@ class Store:
             else:
                 self._conn.execute("DELETE FROM web_sessions WHERE token_hash=?", (token_hash,))
 
+    @_locked
     def state_items(self, plugin: str) -> dict[str, Any]:
         return {r["key"]: json.loads(r["value"]) for r in self._conn.execute(
             "SELECT key, value FROM plugin_state WHERE plugin=? ORDER BY key", (plugin,))}
@@ -840,6 +883,7 @@ class Store:
                 "completion_tokens, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (purpose, model, task_id, outcome, error, duration_ms, prompt_tokens, completion_tokens, time.time()))
 
+    @_locked
     def llm_usage(self, since: float) -> dict[str, Any]:
         """按用途汇总调用次数、各结果数、平均耗时与 token；另给出按天的次数。"""
         purposes = [dict(r) for r in self._conn.execute(
@@ -879,6 +923,7 @@ class Store:
                  json.dumps(label, ensure_ascii=False), advice, time.time()))
             return int(cur.lastrowid)
 
+    @_locked
     def recent_feedback(self, *, source: str | None, kinds: tuple[str, ...], limit: int,
                         exclude_task: str | None = None) -> list[dict[str, Any]]:
         """某来源最近的裁决样本，每个任务只取最新一条；source 为 None 时不限来源。"""
@@ -905,10 +950,12 @@ class Store:
                 break
         return out
 
+    @_locked
     def feedback_rows(self, *, kinds: tuple[str, ...] = ("approve", "reject", "correct")) -> list[dict[str, Any]]:
         return [_feedback_row(r) for r in self._conn.execute(
             f"SELECT * FROM feedback WHERE kind IN ({','.join('?' * len(kinds))}) ORDER BY id", kinds)]
 
+    @_locked
     def decision_stats(self, window: int) -> dict[str, dict[str, Any]]:
         """按来源统计最近 window 次人工批准 / 忽略（同一任务只算最新一次），以及其中被修正过识别结果的任务数
         与「按建议处理」的次数。"""
