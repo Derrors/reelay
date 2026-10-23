@@ -17,7 +17,7 @@ concurrency:
 jobs:
   backend:
     name: 后端
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
@@ -38,7 +38,7 @@ jobs:
 
   frontend:
     name: 前端
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web
@@ -64,7 +64,7 @@ jobs:
 
   docker:
     name: Docker 镜像
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [backend, frontend]
     steps:
       - name: 检出代码

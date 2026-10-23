@@ -3,7 +3,6 @@ import type { Tone } from '@/lib/status';
 import type { IConfigResponse, IExtension, IExtensionCatalog, IExtensionField } from '@/lib/types';
 
 export type Obj = Record<string, unknown>;
-export type LoadError = { source: string; error: string };
 export type Catalog = IExtensionCatalog;
 
 export const obj = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
@@ -32,6 +31,7 @@ export const SLOT_LABELS: Record<string, string> = {
   source: '消息接入方式', parser: '识别方式', decision: '转存判断方式', storage: '网盘', notify: '通知渠道',
 };
 export const SLOT_ORDER = ['source', 'parser', 'decision', 'storage'];
+
 
 /** 能力实现的内部名 → 中文名；未知实现回退到目录里的 label，再回退到内部名。 */
 const PROVIDER_LABELS: Record<string, Record<string, string>> = {
@@ -87,23 +87,6 @@ export const CHOICE_LABELS: Record<string, string> = {
 
 /** 插件字段未写入配置时后端实际使用的值（插件在 ui_fields 里声明）。 */
 export const fieldDefault = (f: IExtensionField): unknown => f.default;
-
-/** 同名扩展（订阅多个事件）合并为一项，运行时机用逗号拼接；兼容未合并的旧后端。 */
-export function mergeByName(items: IExtension[]): IExtension[] {
-  const merged = new Map<string, IExtension>();
-  for (const item of items) {
-    const prev = merged.get(item.name);
-    if (!prev) { merged.set(item.name, { ...item }); continue; }
-    const slots = new Set([...prev.slot.split(','), ...item.slot.split(',')]);
-    const paths = new Set(prev.fields.map(f => f.path));
-    merged.set(item.name, {
-      ...prev,
-      slot: [...slots].join(','),
-      fields: [...prev.fields, ...item.fields.filter(f => !paths.has(f.path))],
-    });
-  }
-  return [...merged.values()];
-}
 
 /** 自动处理动作按流程环节排序，同一环节按 order。 */
 export function sortHooks(items: IExtension[]): IExtension[] {
@@ -183,10 +166,6 @@ export function problems(cfg: Obj, extensions: IConfigResponse['extensions'] | u
   }
   const h = obj(cfg.approval).timeout_hours;
   if (typeof h !== 'number' || !Number.isFinite(h) || h <= 0) out.push('确认超时：小时数必须大于 0');
-  rows(cfg.routing).forEach((r, i) => {
-    if (!Object.hasOwn(dirs, text(r.default ?? r.dir))) out.push(`分类规则 ${i + 1}：目标目录不存在`);
-    if (!Object.hasOwn(r, 'default') && !text(r.when).trim()) out.push(`分类规则 ${i + 1}：条件不能为空`);
-  });
   // AI 与 TMDB、Telegram、115 限速、运行参数：与后端校验的范围一致
   const ranges: Array<[string, string, number, number, boolean]> = [
     ['tmdb.timeout', 'TMDB：请求超时', 1, 60, false],

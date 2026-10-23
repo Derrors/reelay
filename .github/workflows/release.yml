@@ -20,7 +20,7 @@ env:
 jobs:
   version:
     name: 核对版本号
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
@@ -45,7 +45,7 @@ jobs:
   image:
     name: Docker 镜像
     needs: ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -89,7 +89,7 @@ jobs:
     name: GitHub Release
     if: github.event_name == 'push'
     needs: image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

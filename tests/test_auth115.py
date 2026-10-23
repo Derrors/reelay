@@ -137,7 +137,7 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(again.cookie_state, auth115.AuthState.UNKNOWN)
 
     def test_env_cookie_is_not_read_at_runtime(self):
-        # 旧版本的 REELAY_115_COOKIES 只在首次启动时导入凭证文件（见 bootstrap），运行时不再读取
+        # 115 凭证只在凭证文件里（管理台录入），不读环境变量
         with patch.dict(os.environ, {"REELAY_115_COOKIES": "UID=9;CID=8"}):
             store = auth115.CredentialStore(self.cred)
             self.assertFalse(store.has_cookie)
@@ -220,16 +220,6 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(self.store.ping_oauth(force=True), auth115.AuthState.ACTIVE)
         FakeOpenClient.fail = RuntimeError("[40140125]")
         self.assertEqual(self.store.ping_oauth(force=True), auth115.AuthState.EXPIRED)
-
-    def test_legacy_oauth_file_migration(self):
-        legacy = self.cred.parent / "115_oauth.json"
-        legacy.write_text(json.dumps({
-            "access_token": "old-a", "refresh_token": "old-r", "app_id": 100195125,
-        }))
-        store = auth115.CredentialStore(self.cred)
-        self.assertEqual(store.access_token, "old-a")
-        store.save_tokens("new-a", "new-r", 100195125)
-        self.assertTrue(self.cred.is_file())
 
     def test_qr_start_and_status_without_network_using_fakes(self):
         # 用假的开放平台模块驱动 qr_start / qr_status 状态机

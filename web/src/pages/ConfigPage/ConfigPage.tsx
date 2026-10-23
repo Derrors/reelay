@@ -17,7 +17,7 @@ import { RecognitionTab } from './RecognitionTab';
 import { ServicesTab, SystemTab, TelegramTab } from './ServiceTabs';
 import { SourcesTab } from './SourcesTab';
 import {
-  CONFIG_SECTIONS, SYSTEM_KEYS, equal, extensionKeys, getPath, mergeByName, obj, problems, setPath, sortHooks, text,
+  CONFIG_SECTIONS, SYSTEM_KEYS, equal, extensionKeys, getPath, obj, problems, setPath, sortHooks, text,
   type Catalog, type Obj,
 } from './shared';
 
@@ -102,8 +102,9 @@ export default function ConfigPage({ initialTab = 'common' }: { initialTab?: str
   };
 
   const catalog = (data?.extensions ?? null) as Catalog | null;
-  const hooks = sortHooks(mergeByName(catalog?.hooks ?? []));
-  const events = mergeByName(catalog?.events ?? []);
+  // 同名扩展（多个挂载点或事件）后端已合并为一项
+  const hooks = sortHooks(catalog?.hooks ?? []);
+  const events = catalog?.events ?? [];
   const extensionList = [...hooks, ...events];
   // 插件页：核心能力 + 各插件在 plugins.<名> 下的设置
   const scopeKeys = extensionsOnly ? [...CORE_KEYS, 'plugins'] : SYSTEM_KEYS;

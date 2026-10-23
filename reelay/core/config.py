@@ -6,31 +6,24 @@
     plugins:  # 插件配置：plugins.<插件名> 下是 enabled 开关与该插件自己的设置
 
 运行时内部表示把 ``system`` 平铺到顶层（``cfg["defaults"]`` 等），插件配置在
-``cfg["plugins"][名称]``；只在读写文件时套上或拆掉 ``system``（见 ``to_file``）。
-旧版本的文件（系统配置在顶层、插件配置散在 ``organize`` / ``dir_router`` 等顶层键、
-``plugins`` 只是布尔开关）读取时自动转换；已移除的内置插件（STRM）的设置读取时丢弃。密钥不在这里，见 ``core/secret_store.py``。
+``cfg["plugins"][名称]``；只在读写文件时套上或拆掉 ``system``（见 ``from_file`` / ``to_file``）。
+内置插件的默认设置与校验在插件目录的 ``settings.py``。密钥不在这里，见 ``core/secret_store.py``。
 """
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import math
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from . import paths
 
-# 目录名带 [tmdbid=xxx]（Jellyfin/Emby 均可识别）：匹配到 TMDB 时刮削不再依赖标题猜测。
-DEFAULT_NAMING = {
-    "movie": "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/"
-             "{{ title }}{% if year %} ({{ year }}){% endif %}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}",
-    "tv": "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/"
-          "Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}",
-}
-CONFLICT_STRATEGIES = {"manual", "skip", "suffix", "upgrade"}
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 # 推理强度（OpenAI 兼容接口的 reasoning_effort）；空字符串表示不传，由模型或网关决定。
 # 各家支持的取值不同（如 OpenAI 有 minimal / medium，DeepSeek 只认 low / high / xhigh / max），
@@ -48,7 +41,6 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "sources": [],
     # 剧集订阅：订阅放行与缺集追更共用（每项 title/season/total/tmdbid/auto，见 core/subscriptions.py）
     "subscriptions": [],
-    "routing": [],
     "approval": {"timeout_hours": 24, "on_timeout": "remind", "reminder": "digest", "max_reminders": 3},
     "schedule": {"daily_hour": 9},
     # AI 能力：人工裁决回流、转人工前的方案兜底、收件箱建议与自动审批建议
@@ -70,19 +62,10 @@ _DEFAULT_CONFIG: dict[str, Any] = {
 }
 # 系统配置的键（写文件时放进 system）
 SYSTEM_KEYS = tuple(key for key in _DEFAULT_CONFIG if key != "plugins")
-# 内置插件的默认设置；其他插件未配置时由插件自己给默认值
-PLUGIN_DEFAULTS: dict[str, dict[str, Any]] = {
-    "organizer": {"naming": dict(DEFAULT_NAMING), "conflict": "manual"},
-    "dir_router": {},
-}
-# 旧版本放在顶层的插件配置 → 插件名
-_LEGACY_PLUGIN_SECTIONS = {"organize": "organizer", "dir_router": "dir_router", "daily_report": "daily_report"}
-# 已移除的内置插件：旧配置里它们的设置（顶层或 plugins 下）读取时丢弃，保存时不再写回
-_REMOVED_PLUGINS = ("strm",)
 
 
-def migrate(data: dict) -> dict:
-    """把文件结构或旧版本结构转成内部表示（system 平铺到顶层，插件配置归入 plugins.<名>）。"""
+def from_file(data: dict) -> dict:
+    """文件结构 → 内部表示：system 平铺到顶层。已经是内部表示（没有 system）时原样返回副本。"""
     data = copy.deepcopy(data)
     if "system" in data:
         system = data.pop("system")
@@ -92,51 +75,15 @@ def migrate(data: dict) -> dict:
         if conflict:
             raise ValueError(f"{'、'.join(sorted(conflict))} 不能同时出现在 system 内外")
         data = {**system, **data}
-    plugins = data.get("plugins", {})
-    if not isinstance(plugins, dict):
+    if not isinstance(data.get("plugins", {}), dict):
         raise ValueError("plugins 必须是对象")
-    # 旧版本的 plugins 只是开关：{名: true/false}
-    plugins = {name: {"enabled": value} if type(value) is bool else value for name, value in plugins.items()
-               if name not in _REMOVED_PLUGINS}
-    for name in _REMOVED_PLUGINS:
-        data.pop(name, None)
-    for old, name in _LEGACY_PLUGIN_SECTIONS.items():
-        if old in data:
-            section = data.pop(old)
-            if not isinstance(section, dict):
-                raise ValueError(f"{old} 必须是对象")
-            current = plugins.get(name, {})
-            plugins[name] = {**section, **(current if isinstance(current, dict) else {})}
-    if "episode_tracker" in data:
-        tracker = data.pop("episode_tracker")
-        if not isinstance(tracker, dict):
-            raise ValueError("episode_tracker 必须是对象")
-        tracker = dict(tracker)
-        subs = tracker.pop("subscriptions", None)
-        if subs is not None and "subscriptions" not in data:
-            data["subscriptions"] = subs
-        current = plugins.get("episode_tracker", {})
-        plugins["episode_tracker"] = {**tracker, **(current if isinstance(current, dict) else {})}
-    data["plugins"] = plugins
     return data
 
 
-def is_legacy(data: Any) -> bool:
-    """文件是否还是旧结构（没有 system，或插件配置还在顶层、开关还是布尔值）。"""
-    if not isinstance(data, dict):
-        return False
-    plugins = data.get("plugins") or {}
-    return ("system" not in data and bool(set(data) & set(SYSTEM_KEYS))) or any(
-        key in data for key in (*_LEGACY_PLUGIN_SECTIONS, "episode_tracker")) or (
-        isinstance(plugins, dict) and any(type(v) is bool for v in plugins.values()))
-
-
 def to_file(cfg: dict) -> dict:
-    """内部表示 → 文件结构。认不出的顶层键（如外部插件的旧配置）原样留在顶层。"""
-    out: dict[str, Any] = {"system": {key: copy.deepcopy(cfg[key]) for key in SYSTEM_KEYS if key in cfg},
-                           "plugins": copy.deepcopy(cfg.get("plugins", {}))}
-    out.update({key: copy.deepcopy(value) for key, value in cfg.items() if key not in SYSTEM_KEYS and key != "plugins"})
-    return out
+    """内部表示 → 文件结构。"""
+    return {"system": {key: copy.deepcopy(cfg[key]) for key in SYSTEM_KEYS if key in cfg},
+            "plugins": copy.deepcopy(cfg.get("plugins", {}))}
 
 
 FILE_HEADER = (
@@ -147,11 +94,32 @@ FILE_HEADER = (
 
 
 def render(cfg: dict) -> str:
+    import yaml
+    return FILE_HEADER + yaml.safe_dump(to_file(cfg), allow_unicode=True, sort_keys=False)
+
+
+def write_config(path: str | Path, cfg: dict) -> None:
+    """原子写入配置文件（先写临时文件再替换），进程中断不会留下半个文件。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    temporary = Path(name)
     try:
-        import yaml
-        return FILE_HEADER + yaml.safe_dump(to_file(cfg), allow_unicode=True, sort_keys=False)
-    except ImportError:
-        return json.dumps(to_file(cfg), ensure_ascii=False, indent=2) + "\n"
+        os.chmod(temporary, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(render(cfg))
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def ensure_config(path: str | Path | None = None) -> None:
+    """首次启动时写出默认配置；已存在时不动。各入口程序启动时调用（主进程、Web、MCP、登录与评测工具）。"""
+    target = Path(path or paths.CONFIG)
+    if not target.exists():
+        write_config(target, normalize_config({}))
 
 
 def load_env(path: str = ".env") -> None:
@@ -181,7 +149,10 @@ def normalize_config(data: Any) -> dict[str, Any]:
         raise ValueError("配置根节点必须是对象")
     if any(type(key) is not str for key in data):
         raise ValueError("配置根节点的键必须是字符串")
-    data = migrate(data)
+    data = from_file(data)
+    unknown = set(data) - set(SYSTEM_KEYS) - {"plugins"}
+    if unknown:
+        raise ValueError(f"无法识别的配置项：{'、'.join(sorted(unknown))}（插件的设置放在 plugins.<插件名> 下）")
     cfg = merge_config(_DEFAULT_CONFIG, data)
     # 目录列表是完整映射；不偷偷补回已删除的 CID=0 占位目录。
     if "save_dirs" in data:
@@ -199,7 +170,7 @@ def normalize_config(data: Any) -> dict[str, Any]:
     if any(not re.fullmatch(r'[0-9]+', str(cid)) for cid in dirs.values()):
         raise ValueError("save_dirs CID 必须是十进制非负整数字符串")
     cfg["save_dirs"] = {alias: str(cid) for alias, cid in dirs.items()}
-    for key in ("sources", "routing", "subscriptions"):
+    for key in ("sources", "subscriptions"):
         if not isinstance(cfg[key], list):
             raise ValueError(f"{key} 必须是数组")
     _normalize_plugins(cfg["plugins"])
@@ -226,20 +197,6 @@ def normalize_config(data: Any) -> dict[str, Any]:
             if not isinstance(source["forward"], dict):
                 raise ValueError(f"{label}.forward 必须是对象")
             _validate_forward(merge_config(cfg["forward"], source["forward"]))
-    for rule in cfg["routing"]:  # 旧配置只读兼容
-        if not isinstance(rule, dict):
-            raise ValueError("routing 规则必须是对象")
-        if "default" in rule:
-            target = rule["default"]
-        else:
-            target, when = rule.get("dir"), rule.get("when")
-            if not isinstance(when, str) or not when.strip():
-                raise ValueError("routing 规则缺少 when")
-            for clause in when.split(" and "):
-                if not re.fullmatch(r"\s*(type|media_type|title|year|season|resolution|genre|genres)\s*(==| contains )\s*.+", clause):
-                    raise ValueError(f"routing 条件无效：{when}")
-        if not isinstance(target, str) or target not in dirs:
-            raise ValueError("routing 引用了不存在的目录别名")
     approval = cfg["approval"]
     hours = approval.get("timeout_hours")
     if type(hours) not in (int, float) or not math.isfinite(hours) or hours <= 0:
@@ -267,7 +224,7 @@ def normalize_config(data: Any) -> dict[str, Any]:
 
 
 def _normalize_plugins(plugins: dict) -> None:
-    """plugins.<名> 是对象，enabled 可省略（按插件声明的默认状态）；内置插件补齐默认设置并校验。"""
+    """plugins.<名> 是对象，enabled 可省略（按插件声明的默认状态）；内置插件按各自的 settings.py 补齐默认设置并校验。"""
     for name, section in plugins.items():
         if type(name) is not str or not name:
             raise ValueError("plugins 的键必须是插件名称")
@@ -275,24 +232,23 @@ def _normalize_plugins(plugins: dict) -> None:
             raise ValueError(f"plugins.{name} 必须是对象")
         if "enabled" in section and type(section["enabled"]) is not bool:
             raise ValueError(f"plugins.{name}.enabled 必须是布尔值")
-    for name, defaults in PLUGIN_DEFAULTS.items():
-        plugins[name] = merge_config(defaults, plugins.get(name, {}))
-    organizer = plugins["organizer"]
-    if organizer.get("conflict") not in CONFLICT_STRATEGIES:
-        raise ValueError("plugins.organizer.conflict 必须为 manual、skip、suffix 或 upgrade")
-    naming = organizer.get("naming")
-    if not isinstance(naming, dict) or any(type(v) is not str or not v for v in naming.values()):
-        raise ValueError("plugins.organizer.naming 必须包含非空模板")
-    from .config_fields import validate_naming
-    from .naming_template import migrate_legacy_template
-    for kind, template in list(naming.items()):
-        naming[kind] = migrate_legacy_template(template)
-    validate_naming(naming)
-    from .category_strategy import DEFAULT_CATEGORY_STRATEGY, validate_strategy
-    router = plugins["dir_router"]
-    if router.get("categories") is None:
-        router["categories"] = copy.deepcopy(DEFAULT_CATEGORY_STRATEGY)
-    validate_strategy(router["categories"])
+    for name, settings in builtin_settings().items():
+        plugins[name] = merge_config(settings.DEFAULTS, plugins.get(name, {}))
+        settings.normalize(plugins[name])
+
+
+@functools.cache
+def builtin_settings() -> dict[str, Any]:
+    """内置插件自己的设置模块 ``reelay/plugins/<名>/settings.py``（目录名即插件名）。
+
+    提供 ``DEFAULTS`` 与 ``normalize(section)``。
+    读文件、管理台校验时还没有注册表，所以按目录查找；没有设置模块的插件自己在代码里给默认值。
+    """
+    import importlib
+    from .. import plugins
+    root = Path(plugins.__file__).parent
+    return {d.name: importlib.import_module(f"{plugins.__name__}.{d.name}.settings")
+            for d in sorted(root.iterdir()) if (d / "settings.py").is_file()}
 
 
 def _number(section: dict, key: str, label: str, low: float, high: float, *, integer: bool = False) -> None:
@@ -398,13 +354,10 @@ def read_file(path: str | Path) -> Any:
     p = Path(path)
     if not p.exists():
         return None
-    text = p.read_text(encoding="utf-8")
+    import yaml
     try:
-        import yaml
-        return yaml.safe_load(text)
-    except ImportError:
-        return json.loads(text)
-    except Exception as exc:
+        return yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
         raise ValueError("配置文件格式无效") from exc
 
 

@@ -104,22 +104,9 @@ class TestSnapshotAndStore(Base):
         self.assertEqual(self.store.source_watermark("@bot"), 120)
         self.assertIsNone(self.store.source_watermark("@other"))
 
-    def test_schema_version_is_recorded_and_old_databases_migrate(self):
-        import sqlite3
+    def test_schema_version_is_recorded(self):
         from reelay.core.store import SCHEMA_VERSION
         self.assertEqual(self.store._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
-        legacy = Path(self.temp.name) / "legacy.db"
-        conn = sqlite3.connect(legacy)
-        conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, state TEXT NOT NULL, source TEXT, msg_id TEXT, "
-                     "title TEXT, snapshot TEXT NOT NULL, error TEXT, retries INTEGER NOT NULL DEFAULT 0, "
-                     "created_at REAL NOT NULL, updated_at REAL NOT NULL)")
-        conn.commit()
-        conn.close()
-        migrated = Store(legacy)
-        columns = {r["name"] for r in migrated._conn.execute("PRAGMA table_info(tasks)")}
-        self.assertIn("not_before", columns)
-        self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
-        migrated.close()
 
     def test_newer_database_is_refused(self):
         import sqlite3
@@ -295,10 +282,10 @@ class TestNoticeDelivery(Base):
 
         console.configure(sender=sender)
         registry.add_provider("notify", console)
-        legacy = types.SimpleNamespace(name="legacy")
-        registry.add_provider("notify", legacy)
+        plain = types.SimpleNamespace(name="plain")  # 没有 notice 方法的通知渠道
+        registry.add_provider("notify", plain)
         pipeline = self.pipeline(registry=registry)
-        self.store.stage_notice("x", "你好", ["console", "legacy"])
+        self.store.stage_notice("x", "你好", ["console", "plain"])
         await pipeline.dispatch_deliveries()
         self.assertEqual(sent, [{"text": "你好"}])
         self.assertEqual(self.store.delivery_counts(), {"done": 1, "skipped": 1})
@@ -593,7 +580,7 @@ class TestManualDirectoryChoice(Base):
         self.assertEqual(body["save_dir_paths"], {"测试": "/测试", "剧集": "/测试/剧集"})
         self.assertEqual((body["items"][0]["auto_dir"], body["items"][0]["auto_path"]), ("剧集/国产剧集", "/测试/剧集/国产剧集"))
         self.assertEqual(self.service.get_task(task_id)["auto_path"], "/测试/剧集/国产剧集")
-        self.assertEqual(self.store.get_task(task_id).meta["dir_router"]["preview"], "/测试/剧集/国产剧集")
+        self.assertEqual(self.store.get_task(task_id).meta["library"]["preview"], "/测试/剧集/国产剧集")
         self.assertEqual(self.pl.display_target("测试/其他/综艺节目"), "/测试/其他/综艺节目")
         self.assertEqual((self.pl.display_target("测试"), self.pl.display_target("电影/欧美电影")), ("/测试", "电影/欧美电影"))
 
@@ -624,17 +611,17 @@ class TestManualDirectoryChoice(Base):
     async def test_approval_without_choice_follows_category(self):
         ctx = await self.approve_and_route(await self.pending())
         self.assertEqual(ctx.save_dir_alias, "剧集")
-        self.assertEqual(ctx.meta["dir_router"]["relative_category"], "国产剧集")
+        self.assertEqual(ctx.meta["library"]["relative_category"], "国产剧集")
 
     async def test_manual_choice_wins_and_skips_category_subfolder(self):
         ctx = await self.approve_and_route(await self.pending(), "测试")
         self.assertEqual(ctx.save_dir_alias, "测试")
-        self.assertNotIn("relative_category", ctx.meta["dir_router"])
+        self.assertNotIn("relative_category", ctx.meta["library"])
         self.assertTrue(any("手动指定目录「测试」" in line for line in ctx.trail))
 
     async def test_manual_choice_matching_category_root_keeps_subfolder(self):
         ctx = await self.approve_and_route(await self.pending(), "剧集")
-        self.assertEqual((ctx.save_dir_alias, ctx.meta["dir_router"]["relative_category"]), ("剧集", "国产剧集"))
+        self.assertEqual((ctx.save_dir_alias, ctx.meta["library"]["relative_category"]), ("剧集", "国产剧集"))
 
     async def test_llm_calls_are_reported_to_connection_status(self):
         await self.pending()
@@ -683,7 +670,7 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
                          (TaskState.PENDING_APPROVAL, "/poster.jpg", 294446))
         self.assertEqual((ctx.parsed.genre_ids, ctx.parsed.origin_country), ([18], ["CN"]))
         self.assertTrue(ctx.meta["confidence"]["checks"]["tmdb"])
-        self.assertEqual(ctx.meta["dir_router"]["preview"], "剧集/国产剧集")
+        self.assertEqual(ctx.meta["library"]["preview"], "剧集/国产剧集")
         self.assertTrue(any("补跑元数据补全" in line for line in ctx.trail))
         self.assertEqual(self.updated_at(task_id), before)  # 审批超时不重新计时
 
@@ -1078,10 +1065,8 @@ class TestDailyAndEpisodeTracker(Base):
     def test_subscription_config_is_validated(self):
         with self.assertRaises(ValueError):
             normalize_config({"subscriptions": [{"season": 1}]})
-        # 旧版本把订阅写在 episode_tracker 下：读取时移到系统配置
-        cfg = normalize_config({"episode_tracker": {"subscriptions": [{"title": "剧", "total": 12}], "lookback_days": 7}})
+        cfg = normalize_config({"subscriptions": [{"title": "剧", "total": 12}]})
         self.assertEqual(cfg["subscriptions"], [{"title": "剧", "total": 12}])
-        self.assertEqual(cfg["plugins"]["episode_tracker"], {"lookback_days": 7})
 
 
 class TestExternalPlugins(unittest.TestCase):
@@ -1105,10 +1090,10 @@ class TestExternalPlugins(unittest.TestCase):
         self.assertNotIn("audit_hook", [h.name for h in plain.hooks.get("after_parse", [])])
 
 
-class TestEntrypointsLoadEnvFirst(unittest.TestCase):
-    """主进程启动顺序：先加载 .env，再迁移（导入旧环境变量），再按数据目录加载密钥与凭证。"""
+class TestEntrypoints(unittest.TestCase):
+    """主进程启动顺序：先写出默认配置（首次启动），再按数据目录加载密钥与凭证。"""
 
-    def test_main_imports_env_before_using_data_dir(self):
+    def test_main_writes_default_config_before_using_data_dir(self):
         from reelay import main as entry
         calls = []
 
@@ -1117,14 +1102,13 @@ class TestEntrypointsLoadEnvFirst(unittest.TestCase):
             return 0
 
         with patch("sys.argv", ["reelay"]), \
-                patch.object(entry, "load_env", lambda path: calls.append(("load_env", path))), \
                 patch.object(entry, "_setup_log", lambda **kw: calls.append(("log", kw["to_file"]))), \
-                patch.object(entry.bootstrap, "prepare", lambda: calls.append(("prepare",))), \
+                patch.object(entry, "ensure_config", lambda: calls.append(("ensure_config",))), \
                 patch.object(entry.paths, "use_data_dir", lambda d: calls.append(("use", d))), \
                 patch.object(entry.asyncio, "run", fake_run), self.assertRaises(SystemExit):
             entry.main()
         from reelay.core import paths
-        self.assertEqual(calls, [("load_env", str(paths.ENV_FILE)), ("log", True), ("prepare",), ("use", paths.DATA)])
+        self.assertEqual(calls, [("log", True), ("ensure_config",), ("use", paths.DATA)])
 
     def test_web_main_reads_host_and_port_from_env_file(self):
         try:
@@ -1153,13 +1137,14 @@ class TestWebAuthGuard(unittest.TestCase):
         from reelay.web import create_app
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.env = patch.dict(os.environ, {"REELAY_WEB_PASSWORD": "pw"}, clear=True)
+        self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.loader = patch("reelay.web.load_env")
         self.loader.start()
         web_extras._FAILURES.clear()
         (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
                                           encoding="utf-8")
+        secret_store.SecretStore(root / "secrets.json").update({"web_password": "pw"})
         self.app = create_app(data_dir=root)
         self.client = TestClient(self.app)
         self.client.__enter__()
@@ -1190,7 +1175,9 @@ class TestWebAuthGuard(unittest.TestCase):
         self.assertGreater(checked, 30)
 
     def test_login_grants_access_and_forged_or_expired_sessions_fail(self):
-        self.assertEqual(self.client.get("/api/events", cookies={"reelay_session": "forged"}).status_code, 401)
+        self.client.cookies.set("reelay_session", "forged")
+        self.assertEqual(self.client.get("/api/events").status_code, 401)
+        self.client.cookies.clear()
         self.assertEqual(self.client.get("/api/auth/status").json(), {"auth_required": True, "authenticated": False})
         self.assertEqual(self.client.post("/api/auth/login", json={"password": "pw"}).status_code, 200)
         self.assertEqual(self.client.get("/api/auth/status").json()["authenticated"], True)
@@ -1287,7 +1274,7 @@ class TestConsoleApi(unittest.TestCase):
         item = body["items"][0]
         self.assertEqual((item["media_type"], item["resolution"], item["confidence_caps"]), ("tv", "4K", ["tmdb_unmatched"]))
         self.assertTrue(item["poster_path"].startswith("/p"))
-        self.assertEqual((item["save_dir_alias"], item["auto_dir"]), (None, "默认"))
+        self.assertEqual((item["save_dir_alias"], item["auto_dir"]), (None, "剧集/其他剧集"))  # 没有地区的剧集归入兜底分类
         self.assertNotIn("http", item["preview"])
         manual = self.client.get("/api/inbox?state=need_manual").json()["items"]
         self.assertEqual([m["error"] for m in manual], ["同名冲突"])

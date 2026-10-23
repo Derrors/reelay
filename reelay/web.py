@@ -22,8 +22,8 @@ try:
 except ImportError as exc:  # pragma: no cover - 仅在未装 web 依赖时触发
     raise RuntimeError('Web 管理服务未安装，请执行 pip install -e ".[web]"') from exc
 
-from .core import bootstrap, paths
-from .core.config import load_config, load_env
+from .core import paths
+from .core.config import ensure_config, load_config, load_env
 from .core.pipeline import Pipeline
 from .core.registry import discover
 from .core.service import ConflictError, ManagementService, NotFoundError
@@ -43,11 +43,6 @@ class ActionPayload(BaseModel):
 
 class ParsePatchPayload(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
-
-
-class OrganizePreviewPayload(BaseModel):
-    parsed: dict[str, Any]
-    landed: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ConfigPayload(BaseModel):
@@ -75,10 +70,8 @@ def create_app(
     frontend_dir: str | Path | None = None,
 ) -> FastAPI:
     """data_dir 默认是项目的 data/（数据库、配置、密钥、日志都在里面）；测试传临时目录。"""
-    if data_dir is None:
-        load_env(str(paths.ENV_FILE))  # 只为首次启动导入旧的环境变量
     data = Path(data_dir or paths.DATA)
-    bootstrap.prepare(data)
+    ensure_config(data / paths.CONFIG_NAME)
     paths.use_data_dir(data)
     config_file = data / paths.CONFIG_NAME
     cfg = load_config(config_file)
@@ -88,7 +81,7 @@ def create_app(
     pipeline = Pipeline(registry, store, cfg)
     service = ManagementService(store, pipeline, config_path=config_file)
     worker = Worker(pipeline, store, concurrency=cfg["runtime"]["concurrency"])
-    bus = EventBus(store=store, service=service)
+    bus = EventBus(store=store)
     from .mcp_server import http_endpoint
     mcp = http_endpoint(service)
 
@@ -260,13 +253,6 @@ def create_app(
     async def patch_parsed(task_id: str, payload: ParsePatchPayload):
         try:
             return await service.correct_parsed(task_id, payload.values)
-        except Exception as exc:
-            raise _error(exc) from exc
-
-    @app.post("/api/organize/preview")
-    async def organize_preview(payload: OrganizePreviewPayload):
-        try:
-            return {"items": service.organize_preview(parsed=payload.parsed, landed=payload.landed)}
         except Exception as exc:
             raise _error(exc) from exc
 

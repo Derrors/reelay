@@ -76,7 +76,7 @@ def _lines(*pairs: tuple[str, str | None]) -> list[str]:
 
 def approval_target(ctx: PipelineContext) -> str:
     """不手动改目录时将存入的位置（含二级分类，主进程读到网盘路径后是真实路径）。"""
-    return (ctx.meta.get("dir_router", {}).get("preview") or ctx.save_dir_alias
+    return (ctx.meta.get("library", {}).get("preview") or ctx.save_dir_alias
             or ctx.source_rule.get("save_to", "默认"))
 
 

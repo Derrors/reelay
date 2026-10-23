@@ -7,8 +7,8 @@ import { Panel } from '@/components/app/Panel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import type { IOrganizePreviewItem } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import type { IOrganizePreviewItem } from './types';
 
 type Kind = 'tv' | 'movie';
 
@@ -143,14 +143,16 @@ export default function OrganizePage() {
     setError('');
     try {
       const tv = kind === 'tv';
-      const result = await api.organizePreview({
+      const parsed = {
         is_media: true,
         media_type: kind,
         title: title.trim(),
         year: Number(year) || null,
         season: tv ? Number(season) || null : null,
         episodes: tv ? numbers(episodes) : [],
-      }, landed);
+      };
+      // 媒体库整理插件的动作 preview_plan：按当前命名模板算出整理后的位置，不碰网盘
+      const result = await api.extensionAction<{ items: IOrganizePreviewItem[] }>('organizer', 'preview_plan', { parsed, landed });
       setItems(result.items);
       // 窄屏下结果在表单下方，生成后自动滚过去。
       if (window.matchMedia('(max-width: 1023px)').matches) {

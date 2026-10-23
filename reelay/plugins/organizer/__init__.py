@@ -1,8 +1,14 @@
-"""整理入库 Organizer —— after_save Hook（方案 Stage 3 核心）。
+"""媒体库整理：before_save 选存放目录 + after_save 整理入库（方案 Stage 3 核心）。
 
-转存进 115 后，把落地的视频文件按媒体库规范改名、组织目录结构（全在 115 内部，
-不下载到本地）。执行顺序在管线里是：before_save(DirRouter 选目录) →
-StorageProvider(转存) → **after_save(本 Hook：建目录 + 改名 + 移动)** → 读回。
+两个 Hook 同名（organizer），共用一个开关与 plugins.organizer 设置：
+
+- ``LibraryRouter``（转存前）：按目录方式（``layout``）决定存进哪个保存目录、其下哪个文件夹——
+  二级分类（本目录的 ``category.yaml``，MoviePilot 风格，管理台只读）、按媒体类型（``type_dirs``）或不分类。分类结果的
+  第一段与某个保存目录别名同名时转存根目录跟随它，所以必须在转存前决定（去重键含目标 CID）。
+- ``Organizer``（转存完成后）：把落地的视频文件按媒体库规范改名、组织目录结构（全在 115 内部，
+  不下载到本地），读回核验。
+
+执行顺序：before_save(LibraryRouter) → StorageProvider(转存) → after_save(Organizer) → 读回。
 
 稳妥要点（方案「整理有副作用，务必稳妥」）：
 - 集数/季/标题来自 AI 解析，可能出错 → 关键字段不全时**不硬整理**，标 need_manual；
@@ -15,7 +21,10 @@ StorageProvider(转存) → **after_save(本 Hook：建目录 + 改名 + 移动)
     与收件箱推荐版本同一套比较），新文件更好则删除旧文件（进回收站）后入库，否则同 skip。
     删除前先记入扩展状态，中断后重放不会重复删除或误判。
 
-命名模板取自 config.organize.naming（遵循 Jellyfin/Emby 通用 SxxEyy 规范）。
+命名模板取自 plugins.organizer.naming（遵循 Jellyfin/Emby 通用 SxxEyy 规范）。
+
+本目录：``settings.py`` 默认设置与校验，``naming.py`` 受限 Jinja2 命名模板，
+``category.py`` / ``category.yaml`` 目录方式与二级分类规则。
 dry-run 只生成整理计划；真实模式缺客户端则失败。
 """
 
@@ -25,13 +34,16 @@ import logging
 import os
 import re
 
-from ..core.auth115 import get_store
-from ..core.config import DEFAULT_NAMING
-from ..core.contracts import PipelineContext
-from ..core.io import run_blocking
-from ..core.media import episode_of as _episode_of, resolution_rank
-from ..core.registry import register
-from ..core import release, runtime
+from ...core.auth115 import get_store
+from ...core.contracts import ParsedResource, PipelineContext
+from ...core.io import run_blocking
+from ...core.media import episode_of as _episode_of, resolution_rank
+from ...core.registry import register
+from ...core.validation import validate_resource
+from ...core import release, runtime
+from .category import DEFAULT_TYPE_DIRS, categories, classify, describe, type_dir
+from .naming import render_path, validate_template
+from .settings import DEFAULT_NAMING
 
 log = logging.getLogger("reelay.plugin.organizer")
 
@@ -46,13 +58,164 @@ def _ext_of(filename: str, default: str = "mp4") -> str:
     return m.group(1) if m else default
 
 
-@register(kind="hook", stage="after_save", order=20)
-class Organizer:
+def _layout() -> tuple[str, dict]:
+    """当前作用域的（目录方式, 媒体类型文件夹）。"""
+    organizer = runtime.get("plugins.organizer", {}) or {}
+    return organizer.get("layout", "category"), organizer.get("type_dirs") or DEFAULT_TYPE_DIRS
+
+
+def route(p, source_rule: dict, *, current: str | None = None, pinned: str | None = None,
+          preferred: str | None = None) -> dict:
+    """按当前作用域的配置算出目标目录，不修改任务。
+
+    返回 alias（None 表示沿用任务/来源目录）、category_path / relative_category（保存目录下的子目录）
+    与写入轨迹的 note。指定的目录与分类结果不一致时直接存进该目录、不套用分类子目录：
+    两者不一致通常说明分类本身就不对。人工指定（pinned）优先于 AI 按偏好选出的目录（preferred）。
+    """
+    chosen = pinned or preferred
+    if chosen:
+        auto = route(p, source_rule)
+        if chosen == (auto["alias"] or source_rule.get("save_to") or "默认"):
+            return auto
+        who = "手动指定目录" if pinned else "AI 按偏好选择目录"
+        return {"alias": chosen, "category_path": None, "relative_category": "",
+                "note": f"{who}「{chosen}」，不套用分类子目录"}
+    result = {"alias": None, "category_path": None, "relative_category": "", "note": None}
+    layout, type_dirs = _layout()
+    if layout == "none":
+        return result
+    if layout == "category":
+        selected = classify(categories(), p.media_type, p.genre_ids, p.origin_country, p.year) if p else None
+        note = f"二级分类命中「{selected}」"
+    else:
+        selected = type_dir(type_dirs, p.media_type, p.genre_ids) if p else None
+        note = f"按媒体类型归入「{selected}」"
+    if selected:
+        root, _, rest = selected.partition("/")
+        # 第一段是某个保存目录的别名时，转存根目录跟随它；否则保留来源指定目录，
+        # 整理时在其下创建完整路径。
+        if root in (runtime.get("save_dirs", {}) or {}):
+            return {**result, "alias": root, "category_path": selected, "relative_category": rest, "note": note}
+        return {**result, "alias": current, "category_path": selected, "relative_category": selected, "note": note}
+    alias = current or source_rule.get("save_to") or "默认"
+    missing = "二级分类元数据" if layout == "category" else "可识别的媒体类型"
+    return {**result, "alias": alias, "note": f"无{missing}，用根目录「{alias}」"}
+
+
+def build_plan(p, landed: list[dict], category_path: str = "",
+               mapping: dict[str, tuple] | None = None) -> list[dict]:
+    """按命名模板生成整理计划：每个落地视频文件的目标目录与文件名（相对保存目录）。"""
+    naming = runtime.get("plugins.organizer.naming", {}) or {}
+    title = _safe(p.title)
+    is_tv = p.media_type == "tv" or bool(p.episodes)
+    plan = []
+    videos = [x for x in landed if not x.get("is_dir")]
+    allowed_episodes = set(p.episodes or [])
+    mapping = mapping or {}
+    for f in videos:
+        ext = _ext_of(f.get("name", ""))
+        detected_season, episode = ((mapping.get(f.get("name", "")) or _episode_of(f.get("name", "")))
+                                    if is_tv else (None, None))
+        if is_tv:
+            if episode is None:
+                raise ValueError(f"无法从文件名识别集号：{f.get('name', '')}")
+            if allowed_episodes and episode not in allowed_episodes:
+                raise ValueError(f"文件集号 E{episode:02d} 不在已识别集数中：{f.get('name', '')}")
+            season = detected_season if detected_season is not None else (p.season if p.season is not None else 1)
+            if p.season is not None and season != p.season:
+                raise ValueError(f"文件季号与识别结果不一致：{f.get('name', '')}")
+            template = naming.get("tv", DEFAULT_NAMING["tv"])
+        else:
+            season, episode = p.season or 1, None
+            template = naming.get("movie", DEFAULT_NAMING["movie"])
+        rel = render_path(template, {
+            "title": title, "year": p.year, "season": season, "episode": episode,
+            "ep": episode, "resolution": _safe(p.resolution) if p.resolution else "",
+            "ext": ext, "media_type": p.media_type, "genre_ids": p.genre_ids,
+            "origin_country": p.origin_country, "tmdb_id": p.raw_fields.get("tmdbid"),
+            "original_name": f.get("name", ""),
+        }, label=f"{'剧集' if is_tv else '电影'}命名模板")
+        if category_path:
+            rel = category_path.strip("/") + "/" + rel
+        parts = rel.split("/")
+        plan.append({
+            "src_id": f["id"], "src_name": f.get("name", ""),
+            "size": f.get("size"), "sha1": f.get("sha1"),
+            "target_dir": "/".join(parts[:-1]), "target_name": parts[-1],
+        })
+    if len({(x["target_dir"], x["target_name"]) for x in plan}) != len(plan):
+        raise ValueError("整理计划中的多个文件具有相同目标名称")
+    return sorted(plan, key=lambda item: item["target_name"])
+
+
+class _MediaLibrary:
+    """两个挂载点共用名称：一个开关、一份 plugins.organizer 设置，管理台里是一张卡片。"""
     name = "organizer"
     ui_label = "媒体库整理"
-    ui_description = "转存后按已持久化计划建目录、改名、移动，并读回核验。"
-    ui_config_type = "naming_templates"
+    ui_description = ("转存前按目录方式（二级分类 / 按媒体类型 / 不分类）选定存放位置，"
+                      "转存后按命名模板建目录、改名、移动，并读回核验。")
+    ui_config_type = "media_library"
+    # 管理台设置编辑器调用的动作（POST /api/extensions/organizer/actions/<名>）
+    ui_actions = ("preview_naming", "category_rules", "preview_plan")
     storage_provider = "p115"
+
+    def preview_naming(self, payload: dict) -> dict:
+        """用示例影片渲染命名模板，返回整理后的相对路径；模板不安全或无效时抛 ValueError。"""
+        kind = payload.get("kind", "movie")
+        if kind not in ("movie", "tv"):
+            raise ValueError("kind 必须为 movie 或 tv")
+        label = f"{kind}命名模板"
+        validate_template(payload.get("template"), label)
+        values = {"title": "示例标题", "year": 2026, "resolution": "4K", "ext": "mkv",
+                  "season": 1, "episode": 2, "ep": 2, "media_type": kind,
+                  "genre_ids": [16], "origin_country": ["CN"], "tmdb_id": 123,
+                  "original_name": "sample.S01E02.mkv"}
+        return {"path": render_path(payload["template"], values, label=label)}
+
+    def category_rules(self, payload: dict) -> dict:
+        """二级分类规则（category.yaml）的只读展示：按文件顺序，条件值附中文名。"""
+        return {"media": describe(categories())}
+
+    def preview_plan(self, payload: dict) -> dict:
+        """「工具 → 整理预览」：按当前命名模板，算出一组文件名整理后的位置（不碰网盘）。"""
+        landed = payload.get("landed", [])
+        if not isinstance(landed, list) or any(not isinstance(f, dict) for f in landed):
+            raise ValueError("landed 必须是文件对象数组")
+        resource = ParsedResource(**validate_resource(payload.get("parsed")))
+        return {"items": build_plan(resource, landed)}
+
+
+@register(kind="hook", stage="before_save", order=10)
+class LibraryRouter(_MediaLibrary):
+    stage = "before_save"
+    order = 10
+
+    async def run(self, ctx: PipelineContext) -> bool:
+        ns = ctx.ns("library")
+        target = route(ctx.parsed, ctx.source_rule, current=ctx.save_dir_alias, pinned=ns.get("pinned"),
+                       preferred=ns.get("preferred"))
+        if target["alias"]:
+            ctx.save_dir_alias = target["alias"]
+        ns.pop("category_path", None)
+        ns.pop("relative_category", None)
+        if target["category_path"]:
+            ns["category_path"] = target["category_path"]
+            ns["relative_category"] = target["relative_category"]
+        # 等待同一集的其他任务时每轮都会重新路由，结果不变就不再写轨迹
+        if target["note"] and target["note"] != ns.get("note"):
+            ctx.log(target["note"])
+        ns["note"] = target["note"]
+        return True
+
+    def preview(self, ctx: PipelineContext) -> str:
+        """待审批任务不改目录时将存入的位置，如「剧集/国产剧集」；含 AI 按偏好选出的目录。"""
+        target = route(ctx.parsed, ctx.source_rule, preferred=ctx.ns("library").get("preferred"))
+        alias = target["alias"] or ctx.source_rule.get("save_to") or "默认"
+        return f"{alias}/{target['relative_category']}" if target["relative_category"] else alias
+
+
+@register(kind="hook", stage="after_save", order=20)
+class Organizer(_MediaLibrary):
     stage = "after_save"
     order = 20
 
@@ -68,7 +231,7 @@ class Organizer:
     async def prepare(self, ctx: PipelineContext) -> None:
         """Pipeline 在执行前持久化此计划；恢复沿同一组文件 ID 续跑。"""
         ns = ctx.ns("organize")
-        relative_category = ctx.ns("dir_router").get("relative_category", "")
+        relative_category = ctx.ns("library").get("relative_category", "")
         if (ns.get("plan") and ns.get("base_cid") == ctx.save_dir_cid
                 and ns.get("relative_category", "") == relative_category):
             return
@@ -82,7 +245,7 @@ class Organizer:
         manifest = ctx.ns("storage").get("manifest") or {}
         mapping = {f["name"]: (f.get("season"), f["episode"]) for f in manifest.get("files", [])
                    if f.get("name") and type(f.get("episode")) is int}
-        ns["plan"] = self._build_plan(ctx.parsed, landed, relative_category, mapping)
+        ns["plan"] = build_plan(ctx.parsed, landed, relative_category, mapping)
         ns["base_cid"] = ctx.save_dir_cid
         ns["relative_category"] = relative_category
         ns.pop("error", None)
@@ -179,51 +342,6 @@ class Organizer:
                 return "剧集缺集数"
             # 季允许缺省为 1
         return None
-
-    def _build_plan(self, p, landed: list[dict], category_path: str = "",
-                    mapping: dict[str, tuple] | None = None) -> list[dict]:
-        from ..core.naming_template import render_path
-        naming = runtime.get("plugins.organizer.naming", {}) or {}
-        title = _safe(p.title)
-        is_tv = p.media_type == "tv" or bool(p.episodes)
-        plan = []
-        videos = [x for x in landed if not x.get("is_dir")]
-        allowed_episodes = set(p.episodes or [])
-        mapping = mapping or {}
-        for f in videos:
-            ext = _ext_of(f.get("name", ""))
-            detected_season, episode = ((mapping.get(f.get("name", "")) or _episode_of(f.get("name", "")))
-                                        if is_tv else (None, None))
-            if is_tv:
-                if episode is None:
-                    raise ValueError(f"无法从文件名识别集号：{f.get('name', '')}")
-                if allowed_episodes and episode not in allowed_episodes:
-                    raise ValueError(f"文件集号 E{episode:02d} 不在已识别集数中：{f.get('name', '')}")
-                season = detected_season if detected_season is not None else (p.season if p.season is not None else 1)
-                if p.season is not None and season != p.season:
-                    raise ValueError(f"文件季号与识别结果不一致：{f.get('name', '')}")
-                template = naming.get("tv", DEFAULT_NAMING["tv"])
-            else:
-                season, episode = p.season or 1, None
-                template = naming.get("movie", DEFAULT_NAMING["movie"])
-            rel = render_path(template, {
-                "title": title, "year": p.year, "season": season, "episode": episode,
-                "ep": episode, "resolution": _safe(p.resolution) if p.resolution else "",
-                "ext": ext, "media_type": p.media_type, "genre_ids": p.genre_ids,
-                "origin_country": p.origin_country, "tmdb_id": p.raw_fields.get("tmdbid"),
-                "original_name": f.get("name", ""),
-            }, label=f"{'剧集' if is_tv else '电影'}命名模板")
-            if category_path:
-                rel = category_path.strip("/") + "/" + rel
-            parts = rel.split("/")
-            plan.append({
-                "src_id": f["id"], "src_name": f.get("name", ""),
-                "size": f.get("size"), "sha1": f.get("sha1"),
-                "target_dir": "/".join(parts[:-1]), "target_name": parts[-1],
-            })
-        if len({(x["target_dir"], x["target_name"]) for x in plan}) != len(plan):
-            raise ValueError("整理计划中的多个文件具有相同目标名称")
-        return sorted(plan, key=lambda item: item["target_name"])
 
     def _apply_sync(self, ctx: PipelineContext, p, plan: list[dict]) -> None:
         from p115client import P115FileSystem

@@ -46,6 +46,7 @@ class TestExamplePlugins(unittest.IsolatedAsyncioTestCase):
 
         server = HTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)  # 清理按后进先出：先停服务，再关监听 socket
         self.addCleanup(server.shutdown)
         webhook = self.registry.get_provider("notify", "webhook")
         ctx = PipelineContext(RawMessage("@a", "1", "x"))

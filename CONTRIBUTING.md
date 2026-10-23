@@ -28,14 +28,14 @@ CI 会在每个 PR 上运行以上全部检查并构建 Docker 镜像。
 reelay/
 ├── core/            # 内核：契约、管线、状态机与持久层、注册机、置信度、TMDB、115 凭证
 ├── providers/       # 内置 Provider：Telegram 源、LLM / 规则解析、决策、115 存储、通知
-├── plugins/         # 内置扩展：分类路由、TMDB 补全、分享预读、整理、失败解释、日报、缺集追更
+├── plugins/         # 内置插件，每个一个目录：TMDB 补全、分享预读、媒体库整理（选目录 + 整理）、失败解释、日报、缺集追更
 ├── control/         # Telegram 控制 Bot 与对话助手
 ├── agent_tools.py   # Agent 工具：MCP 与对话助手共用的定义与实现
 ├── mcp_server.py    # MCP（stdio 与 Web 的 /mcp）
 ├── web.py           # 管理 API（前端在 web/）
 └── eval.py          # 本地评测：用人工裁决样本对比提示词与模型
 web/                 # 管理台前端（React + Vite）
-examples/plugins/    # 外部插件示例
+examples/plugins/    # 外部插件示例（每个一个目录）
 tests/               # 后端测试（unittest，不访问网络）
 ```
 

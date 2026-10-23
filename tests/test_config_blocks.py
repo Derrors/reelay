@@ -27,14 +27,14 @@ class TestConfigBlocks(unittest.TestCase):
         before = self.config_path.read_bytes()
         for section in ({'approval': {'timeout_hours': -1}}, {'defaults': {'confidence_threshold': 2}},
                         {'save_dirs': {'bad': '-2'}}, {'plugins': {'organizer': {'naming': {'tv': '{missing}/{ext}'}}}},
-                        {'plugins': {'does_not_exist': True}}, {'tmdb': {'timeout': 0}}):
+                        {'plugins': {'does_not_exist': {'enabled': True}}}, {'tmdb': {'timeout': 0}}):
             response = self.client.patch('/api/config/sections', json={'revision': cfg['revision'], 'sections': section})
             self.assertEqual(response.status_code, 422, response.text)
             self.assertEqual(self.config_path.read_bytes(), before)
 
     def test_plugin_disable_changes_runtime_and_survives_reload(self):
         cfg = self.client.get('/api/config').json()
-        res = self.client.patch('/api/config/sections', json={'revision': cfg['revision'], 'sections': {'plugins': {'tmdb_enrich': False}}})
+        res = self.client.patch('/api/config/sections', json={'revision': cfg['revision'], 'sections': {'plugins': {'tmdb_enrich': {'enabled': False}}}})
         self.assertEqual(res.status_code, 200, res.text)
         pipeline = self.app.state.pipeline
         self.assertNotIn('tmdb_enrich', [h.name for h in pipeline.reg.hooks_for('after_parse', pipeline.cfg)])
@@ -68,32 +68,40 @@ class TestConfigBlocks(unittest.TestCase):
 
     def test_plugin_specific_config_types_and_previews(self):
         catalog = self.client.get('/api/extensions').json()['hooks']
-        organizer = next(x for x in catalog if x['name'] == 'organizer')
-        router = next(x for x in catalog if x['name'] == 'dir_router')
-        self.assertEqual(organizer['config_type'], 'naming_templates')
-        self.assertEqual(router['config_type'], 'category_strategy')
+        # 选目录与整理同属「媒体库整理」：目录里只有一项，运行时机合并
+        organizer = [x for x in catalog if x['name'] == 'organizer']
+        self.assertEqual([(x['slot'], x['config_type'], x['actions']) for x in organizer],
+                         [('before_save,after_save', 'media_library', ['preview_naming', 'category_rules', 'preview_plan'])])
+        self.assertNotIn('dir_router', {x['name'] for x in catalog})
         template = "{{ title }}/{{ title }}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
-        preview = self.client.post('/api/extensions/organizer/preview', json={'kind': 'movie', 'template': template})
+        preview = self.client.post('/api/extensions/organizer/actions/preview_naming', json={'kind': 'movie', 'template': template})
         self.assertEqual(preview.status_code, 200, preview.text)
         self.assertEqual(preview.json()['path'], '示例标题/示例标题 - 4K.mkv')
-        cfg = self.client.get('/api/config').json()['config']
-        classified = self.client.post('/api/extensions/dir-router/preview', json={
-            'categories': cfg['plugins']['dir_router']['categories'], 'media_type': 'tv',
-            'genre_ids': [16], 'origin_country': ['JP'],
-        })
-        self.assertEqual(classified.status_code, 200, classified.text)
-        self.assertEqual(classified.json()['path'], '动漫/日本番剧')
+        # 二级分类随插件发布，管理台只读：按文件顺序给出路径与条件的中文说明
+        media = self.client.post('/api/extensions/organizer/actions/category_rules').json()['media']
+        self.assertEqual([m['media'] for m in media], ['movie', 'tv'])
+        anime = media[1]['categories'][0]
+        self.assertEqual((anime['path'], [(c['label'], [v['name'] for v in c['values']]) for c in anime['conditions']]),
+                         ('动漫/国产动漫', [('题材', ['动画']), ('地区', ['中国大陆', '台湾', '香港'])]))
+        self.assertEqual(media[0]['categories'][-1], {'path': '电影/欧美电影', 'conditions': []})
+        self.assertNotIn('categories', self.client.get('/api/config').json()['config']['plugins']['organizer'])
 
     def test_plugin_previews_reject_unsafe_or_invalid_input(self):
-        bad_template = self.client.post('/api/extensions/organizer/preview', json={
+        bad_template = self.client.post('/api/extensions/organizer/actions/preview_naming', json={
             'kind': 'movie', 'template': '{{ title.__class__ }}/{{ ext }}',
         })
         self.assertEqual(bad_template.status_code, 422)
-        bad_categories = {'movie': {'电影/国产电影': {}} , 'tv': {'剧集/欧美剧集': {}, '剧集/国产剧集': {'origin_country': 'CN'}}}
-        response = self.client.post('/api/extensions/dir-router/preview', json={
-            'categories': bad_categories, 'media_type': 'movie', 'genre_ids': [], 'origin_country': ['CN'],
-        })
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.client.post('/api/extensions/organizer/actions/preview_naming', json=[]).status_code, 422)
+
+    def test_plugin_actions_only_expose_declared_methods(self):
+        # 只有 ui_actions 里声明的方法可以调用：插件的内部方法、不存在的插件都是 404
+        for path in ('/api/extensions/organizer/actions/run', '/api/extensions/organizer/actions/prepare',
+                     '/api/extensions/organizer/actions/__init__', '/api/extensions/missing/actions/category_rules'):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.post(path, json={}).status_code, 404)
+        from reelay.core import secret_store
+        secret_store.current().update({'web_password': 'test-only'})
+        self.assertEqual(self.client.post('/api/extensions/organizer/actions/category_rules').status_code, 401)
 
     def test_directory_http_405_is_actionable_not_500(self):
         credentials = Mock(has_oauth=False)
@@ -159,4 +167,4 @@ class TestDirectoryReads(unittest.TestCase):
             '{missing}/{ext}',
         ]:
             with self.assertRaises(ValueError):
-                normalize_config({'organize':{'naming':{'tv':template}}})
+                normalize_config({'plugins': {'organizer': {'naming': {'tv': template}}}})

@@ -14,9 +14,9 @@ import asyncio
 import json
 import time
 
-from ..core import ai, runtime
-from ..core.contracts import PipelineContext
-from ..core.registry import register
+from ...core import ai, runtime
+from ...core.contracts import PipelineContext
+from ...core.registry import register
 
 _PROMPT = (
     "你在为影视资源自动转存工具写每日简报的开头。facts 是代码统计的事实：最近 24 小时与最近 7 天新收的作品、"

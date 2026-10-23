@@ -127,38 +127,21 @@ plugins:
   share_probe: {enabled: true}
   failure_explainer: {enabled: true}   # 失败解释：任务停下来等人处理时说明原因与建议操作
 
-  # 媒体库整理：Jinja2 模板（管理台「插件」页维护）
+  # 媒体库整理（管理台「插件」页维护）：转存前选存放目录，转存后按 Jinja2 模板改名归类。
   # 目录名中的 [tmdbid=xxx] 在 TMDB 匹配成功时写入，Jellyfin/Emby 据此精确刮削。
   organizer:
     enabled: true
+    # 目录方式：category（二级分类，规则随插件发布：reelay/plugins/organizer/category.yaml）
+    # | media_type（按媒体类型，见 type_dirs）| none（不分类）
+    layout: category
+    # 按媒体类型时的文件夹名；anime 留空则动漫不单独分
+    type_dirs: {movie: 电影, tv: 剧集, anime: 动漫}
     naming:
       movie: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/{{ title }}{% if year %} ({{ year }}){% endif %}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
       tv: "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}"
     # 库里已有同名不同文件时：manual（转人工，默认）| skip（保留旧文件，新文件进回收站）
     # | suffix（新文件加「 (2)」并存）| upgrade（洗版：按版本偏好更好则替换，旧文件进回收站）
     conflict: manual
-
-  # 二级分类路由：MoviePilot 风格策略（管理台「插件」页维护）
-  dir_router:
-    enabled: true
-    categories:
-      movie:
-        动漫/动画电影: {genre_ids: "16"}
-        电影/港台电影: {origin_country: "TW,HK"}
-        电影/国产电影: {origin_country: "CN"}
-        电影/日韩电影: {origin_country: "JP,KP,KR"}
-        电影/欧美电影: {}
-      tv:
-        动漫/国产动漫: {genre_ids: "16", origin_country: "CN,TW,HK"}
-        动漫/欧美动漫: {genre_ids: "16", origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
-        动漫/日本番剧: {genre_ids: "16", origin_country: "JP"}
-        其他/纪录影片: {genre_ids: "99"}
-        其他/综艺节目: {genre_ids: "10764,10767"}
-        剧集/港台剧集: {origin_country: "TW,HK"}
-        剧集/国产剧集: {origin_country: "CN"}
-        剧集/日韩剧集: {origin_country: "JP,KP,KR"}
-        剧集/南亚剧集: {origin_country: "TH,IN,SG"}
-        剧集/欧美剧集: {origin_country: "US,FR,GB,DE,ES,IT,NL,PT,RU,UK"}
 
   # 缺集追更：自动跟踪最近有更新的剧（订阅的剧见 system.subscriptions）
   episode_tracker:

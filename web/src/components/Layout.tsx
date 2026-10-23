@@ -144,7 +144,7 @@ function Brand() {
       </div>
       <div className="leading-tight">
         <div className="text-[15px] font-semibold tracking-tight text-foreground">Reelay</div>
-        <div className="text-[11px] text-muted-foreground">Telegram → 115</div>
+        <div className="text-[11px] text-muted-foreground">网盘转存助手</div>
       </div>
     </div>
   );

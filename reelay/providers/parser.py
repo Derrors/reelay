@@ -21,7 +21,7 @@ import time
 from collections import OrderedDict
 
 from ..core import ai, release, runtime
-from ..core.ai import is_transient, response_format  # noqa: F401 - 兼容旧的导入位置
+from ..core.ai import response_format
 from ..core.contracts import ParsedResource, PipelineContext
 from ..core.registry import register
 from ..core.validation import MEDIA_SCHEMA, validate_resource

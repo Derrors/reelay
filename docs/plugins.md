@@ -1,11 +1,32 @@
 # 插件开发指南
 
-Reelay 的主流程（监听 → 识别 → 转存整理）是固定骨架，所有可变能力都挂在三类扩展点上。加功能就是写一个 Python 文件，不用改内核。
+Reelay 的主流程（监听 → 识别 → 转存整理）是固定骨架，所有可变能力都挂在三类扩展点上。加功能就是写一个插件目录，不用改内核。
 
 两个可以直接运行的示例：
 
-- [`examples/plugins/webhook_notify.py`](../examples/plugins/webhook_notify.py)：Webhook 通知渠道（Provider）
-- [`examples/plugins/quality_gate.py`](../examples/plugins/quality_gate.py)：拦截 CAM/TS 等低画质资源（Hook）
+- [`examples/plugins/webhook_notify/`](../examples/plugins/webhook_notify/__init__.py)：Webhook 通知渠道（Provider）
+- [`examples/plugins/quality_gate/`](../examples/plugins/quality_gate/__init__.py)：拦截 CAM/TS 等低画质资源（Hook）
+
+## 目录结构
+
+每个插件一个目录，插件代码写在 `__init__.py`，插件用到的其他文件（规则、模板、默认数据等）都放在同一个目录里，用 `Path(__file__).with_name(...)` 读取。内置插件（`reelay/plugins/`）与外部插件（`data/plugins/`）组织方式相同：
+
+```
+plugins/
+├── organizer/          # 媒体库整理
+│   ├── __init__.py     # 插件代码
+│   ├── settings.py     # 默认设置与校验（内置插件）
+│   ├── naming.py       # 插件内部模块
+│   ├── category.py
+│   └── category.yaml   # 二级分类规则
+└── my_plugin/
+    ├── __init__.py
+    └── rules.yaml
+```
+
+插件的设置也属于插件：外部插件用 `ui_fields`（带默认值）与 `validate_config` 声明（见下文「在管理台展示与校验配置」）；内置插件还可以在目录里放 `settings.py`，提供 `DEFAULTS` 与 `normalize(section)`，配置读取与保存时由内核按目录调用，默认值会写进配置供管理台编辑。
+
+内置插件目录里的 `*.yaml` 随安装包一起发布（`pyproject.toml` 的 `package-data`）；用其他后缀时把它加进去。
 
 ## 选哪类扩展点
 
@@ -17,7 +38,7 @@ Reelay 的主流程（监听 → 识别 → 转存整理）是固定骨架，所
 
 ## 加载方式
 
-- **单文件或包目录**：放进 `data/plugins/`（Docker 部署把 `deploy/plugins` 挂载到 `/app/data/plugins`），重启后自动发现。
+- **插件目录**：把整个目录放进 `data/plugins/`（Docker 部署把 `deploy/plugins` 挂载到 `/app/data/plugins`），重启后自动发现；只有一个文件的简单插件也可以直接放 `*.py`。
 - **独立发行包**：在你的包里声明 entry point，`pip install` 后自动加载：
 
   ```toml
@@ -64,7 +85,7 @@ class MyListener: ...
 class MyHook:
     name = "my_hook"
     stage = "after_parse"   # before_parse / after_parse / before_save / after_save
-    order = 60              # 同一阶段内从小到大执行；内置：dir_router 10，tmdb_enrich 50，share_probe 60，organizer 20
+    order = 60              # 同一阶段内从小到大执行；内置：organizer 选目录 10（before_save）与整理 20（after_save），tmdb_enrich 50，share_probe 60
 
     async def run(self, ctx) -> bool:
         ...
@@ -95,7 +116,7 @@ class MyListener:
 - 事件与任务状态在同一事务内写入 Outbox，异步投递：至少一次、单次 30 秒超时、失败退避重试（最多 8 次）、同一任务内按生成顺序。
 - `ctx` 是事件发生时的快照，修改它不会影响任务。
 - `on_daily` 由内核每天在 `schedule.daily_hour` 发出一次，`ctx.meta["system"]` 里有日期和过去 24 小时汇总，适合日报、巡检类扩展；进程启动时会等停机期间补拉的消息解析完再发（最多推迟 15 分钟）。
-- 一个类只能订阅一个事件；需要订阅多个事件时写多个类并使用相同的 `name`（共用一个开关），参考 `reelay/plugins/episode_tracker.py`。
+- 一个类只能订阅一个事件；需要订阅多个事件时写多个类并使用相同的 `name`（共用一个开关），参考 `reelay/plugins/episode_tracker/`。
 
 ## Provider 契约
 
@@ -147,7 +168,7 @@ class MyListener:
 | 字段 | 内容 | 谁在读 |
 | --- | --- | --- |
 | `title` / `year` | 规范标题与上映 / 首播年份 | 去重键（`片名\|S01\|E02`，不同来源的同一部作品靠它合并）、整理路径、缺集追更 |
-| `genre_ids` | TMDB 类型 ID 整数列表，整体替换 AI 的值 | 二级分类 `plugins.dir_router.categories`（如 16 = 动画）、命名模板 |
+| `genre_ids` | TMDB 类型 ID 整数列表，整体替换 AI 的值 | 二级分类（`plugins/organizer/category.yaml`，如 16 = 动画）、命名模板 |
 | `origin_country` | 两位大写国家/地区代码；数据源没有时保留 AI 的值，不要清空 | 二级分类、命名模板 |
 | `raw_fields["tmdbid"]` | TMDB 条目 ID（整数） | 命名模板变量 `tmdb_id`（默认模板写入 `[tmdbid=…]`）、缺集追更查询已播集数 |
 | `raw_fields["poster_path"]` | TMDB 图片路径，如 `/abc.jpg`，不是完整 URL | 管理台海报（拼接 `https://image.tmdb.org/t/p/<尺寸>`）；没有时显示文字封面 |
@@ -248,6 +269,28 @@ plugins:
 ```
 
 `default` 是未填写时扩展实际使用的值，只用于在表单里提示。数组、对象等复杂配置在 `validate_config` 中自行校验，用户通过配置文件维护。扩展不要读环境变量：需要的地址、开关写成 `ui_fields`；需要的文件放在 `reelay.core.paths.DATA` 下。
+
+### 插件动作
+
+管理台需要向插件要数据或让插件算点什么（如预览命名模板、展示内置规则）时，插件把普通方法列进 `ui_actions`，内核统一提供 `POST /api/extensions/<插件名>/actions/<动作名>`：
+
+```python
+class MyHook:
+    ui_actions = ("preview",)
+
+    def preview(self, payload: dict) -> dict:
+        """payload 是请求体（JSON 对象，可以为空）；返回 JSON 对象。"""
+        if not payload.get("text"):
+            raise ValueError("text 不能为空")   # ValueError / TypeError → 422，消息原样显示给用户
+        return {"result": payload["text"].upper()}
+```
+
+- 只有列进 `ui_actions` 的方法可以调用，插件的其他方法从接口上取不到；插件未安装或没有这个动作时返回 404。
+- 鉴权由内核完成（与其他管理接口相同）；方法里可以用 `runtime.get` 读当前配置。
+- 插件不需要依赖 FastAPI。方法在 Web 进程的事件循环里执行，要快；耗时的写成 `async def`。
+- 插件目录里会列出每个插件的 `actions`。
+
+内置插件可以有专用的界面，放在前端的 `web/src/plugins/<插件名>/`：设置编辑器由后端声明 `ui_config_type`，并登记到 `web/src/plugins/index.ts` 的 `PLUGIN_EDITORS`；只服务于这个插件的页面（如媒体库整理的「整理预览」）也放在这里，由路由引用；组件需要后端数据时调用 `api.extensionAction(插件名, 动作名, payload)`。前端是整体构建后发布的，外部插件没有专用编辑器，用 `ui_fields` 生成表单。
 
 ## 测试
 

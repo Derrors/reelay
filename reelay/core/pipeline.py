@@ -131,7 +131,7 @@ class Pipeline:
                 log.warning("补跑 %s 失败：%s", self.reg.extension_name(hook), exc)
         if state == TaskState.PENDING_APPROVAL:
             confidence.apply(fresh)
-            fresh.ns("dir_router")["preview"] = self.display_target(self.target_preview(fresh))
+            fresh.ns("library")["preview"] = self.display_target(self.target_preview(fresh))
             ctx = fresh
         else:
             poster = fresh.parsed.raw_fields.get("poster_path")
@@ -286,7 +286,7 @@ class Pipeline:
     # 阶段 2：识别（由 Worker 消费 RECEIVED）
     # ------------------------------------------------------------------ #
     async def process_new(self, ctx: PipelineContext) -> None:
-        """兼容入口：接收后立即解析；dry-run 与单元测试使用。"""
+        """接收后立即解析（不经 Worker 队列）；dry-run 与单元测试使用。"""
         accepted = await self.accept(ctx)
         if accepted:
             await self.process_received(accepted)
@@ -350,7 +350,7 @@ class Pipeline:
         if ctx.decision == Decision.ASK:
             ctx.state = TaskState.PENDING_APPROVAL
             # 审批卡片展示实际去向（网盘真实路径）
-            ctx.ns("dir_router")["preview"] = self.display_target(self.target_preview(ctx))
+            ctx.ns("library")["preview"] = self.display_target(self.target_preview(ctx))
             ctx.log("转人工确认（审批态已落库，可跨重启）")
         else:
             ctx.state = TaskState.QUEUED
@@ -398,10 +398,6 @@ class Pipeline:
         if ctx.state != TaskState.QUEUED:
             return
         ns = ctx.ns("storage")
-        if ns.get("phase") == "legacy_uncertain":
-            ctx.state = TaskState.NEED_MANUAL
-            self.store.save_task(ctx, error="旧版转存结果未知，不能重新发送")
-            return
         if ctx.ns("task").get("action") == "organize_only":
             self._resolve_directory(ctx)
             ctx.ns("task").pop("action")

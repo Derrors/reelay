@@ -12,6 +12,7 @@ from reelay.core.contracts import (
     ApprovalMode, Decision, ParsedResource, PipelineContext, RawMessage, TaskState,
 )
 from reelay.core.registry import discover
+from reelay.plugins.organizer import build_plan
 from reelay.core.store import Store, DEDUP_MESSAGE, DEDUP_SHARE, DEDUP_EPISODE
 
 
@@ -56,14 +57,15 @@ class TestStore(unittest.TestCase):
         self.assertTrue(s.set_state(ctx.task_id, TaskState.QUEUED))
         self.assertEqual(s.get_task(ctx.task_id).state, TaskState.QUEUED)
 
-    def test_legacy_saving_without_manifest_requires_manual(self):
+    def test_saving_without_manifest_is_requeued(self):
+        # 转存清单先于写请求落库：没有清单说明还没发出转存，可以安全地重新排队
         s = self.store
         ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="resume", text="x"))
         ctx.state = TaskState.SAVING
         s.save_task(ctx)
         recovered = s.recover_interrupted()
-        self.assertEqual(recovered[0].state, TaskState.NEED_MANUAL)
-        self.assertEqual(s.get_task(ctx.task_id).state, TaskState.NEED_MANUAL)
+        self.assertEqual(recovered[0].state, TaskState.QUEUED)
+        self.assertEqual(s.get_task(ctx.task_id).state, TaskState.QUEUED)
 
     def test_task_snapshot_roundtrip_and_recover(self):
         s = self.store
@@ -150,39 +152,22 @@ class TestParser115Url(unittest.TestCase):
         self.assertIsNone(code)
 
 
-class TestDirRouter(unittest.TestCase):
+class TestLibraryRouter(unittest.TestCase):
     def setUp(self):
         from reelay.core import runtime
-        runtime.set_config({
-            "routing": [
-                {"when": "media_type == movie and resolution == 4K", "dir": "电影"},
-                {"when": "media_type == tv", "dir": "剧集"},
-                {"when": "genre contains 动画", "dir": "动漫"},
-                {"default": "默认"},
-            ]
-        })
-        from reelay.plugins.dir_router import DirRouter
-        self.router = DirRouter()
+        runtime.set_process_config({})
+        from reelay.plugins.organizer import LibraryRouter
+        self.router = LibraryRouter()
 
     def _ctx(self, **kw):
         ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="1", text="x"))
         ctx.parsed = ParsedResource(is_media=True, title="T", **kw)
         return ctx
 
-    def test_movie_4k(self):
-        c = self._ctx(media_type="movie", resolution="4K")
-        run(self.router.run(c))
-        self.assertEqual(c.save_dir_alias, "电影")
-
-    def test_tv(self):
-        c = self._ctx(media_type="tv")
-        run(self.router.run(c))
-        self.assertEqual(c.save_dir_alias, "剧集")
-
     def test_unchanged_route_is_logged_once(self):
         # 等待同一集的其他任务时每轮都会重新路由
         from reelay.core import runtime
-        runtime.set_config({"save_dirs": {"剧集": "1", "电影": "2"}})
+        runtime.set_process_config({"save_dirs": {"剧集": "1", "电影": "2"}})
         c = self._ctx(media_type="tv", origin_country=["CN"])
         for _ in range(3):
             run(self.router.run(c))
@@ -192,24 +177,102 @@ class TestDirRouter(unittest.TestCase):
         run(self.router.run(c))
         self.assertEqual((len(c.trail), c.save_dir_alias), (2, "电影"))
 
-    def test_genre_contains(self):
-        c = self._ctx(media_type="movie", resolution="1080p")
-        c.parsed.raw_fields["genre"] = "动画/奇幻"
-        run(self.router.run(c))
-        self.assertEqual(c.save_dir_alias, "动漫")
+    def _layout(self, layout, **organizer):
+        from reelay.core import runtime
+        from reelay.core.config import normalize_config
+        cfg = normalize_config({"save_dirs": {"剧集": "1", "电影": "2", "默认": "3"},
+                                "plugins": {"organizer": {"layout": layout, **organizer}}})
+        runtime.set_process_config(cfg)
 
-    def test_default_fallback(self):
-        c = self._ctx(media_type="movie", resolution="1080p")
+    def _routed(self, current="默认", **kw):
+        c = self._ctx(**kw)
+        c.save_dir_alias = current
+        run(self.router.run(c))
+        return c.save_dir_alias, c.meta["library"].get("relative_category")
+
+    def test_media_type_layout(self):
+        self._layout("media_type")
+        # 文件夹名与保存目录别名相同：直接存进那个保存目录；不同：在原保存目录下建文件夹
+        self.assertEqual(self._routed(media_type="tv", origin_country=["CN"]), ("剧集", ""))
+        self.assertEqual(self._routed(media_type="movie"), ("电影", ""))
+        self.assertEqual(self._routed(media_type="movie", genre_ids=[16]), ("默认", "动漫"))
+        self.assertEqual(self._routed(media_type="anime"), ("默认", "动漫"))
+        c = self._ctx(media_type="tv")
+        run(self.router.run(c))
+        self.assertEqual(c.trail[-1][9:], "按媒体类型归入「剧集」")
+
+    def test_media_type_layout_without_anime_folder(self):
+        self._layout("media_type", type_dirs={"movie": "电影", "tv": "剧集", "anime": ""})
+        self.assertEqual(self._routed(media_type="anime"), ("剧集", ""))
+        self.assertEqual(self._routed(media_type="movie", genre_ids=[16]), ("电影", ""))
+
+    def test_no_layout_keeps_the_save_directory(self):
+        self._layout("none")
+        c = self._ctx(media_type="tv", origin_country=["CN"])
+        c.save_dir_alias = "默认"
+        c.ns("library")["relative_category"] = "国产剧集"  # 改为不分类前算出的结果
         run(self.router.run(c))
         self.assertEqual(c.save_dir_alias, "默认")
+        self.assertNotIn("relative_category", c.meta["library"])
+        self.assertEqual(self.router.preview(c), "默认")
+
+class TestCategoryStrategy(unittest.TestCase):
+    def test_shipped_category_file(self):
+        from reelay.plugins.organizer.category import classify
+        from reelay.plugins.organizer import categories
+        rules = categories()
+        for args, expected in (
+            (("tv", [16], ["JP"]), "动漫/日本番剧"),
+            (("anime", [16], ["CN"]), "动漫/国产动漫"),  # 动漫按剧集匹配
+            (("tv", [99], ["CN"]), "其他/纪录影片"),  # 题材优先于地区：按文件顺序
+            (("tv", [18], ["KR"]), "剧集/日韩剧集"),
+            (("movie", [16], ["US"]), "动漫/动画电影"),
+            (("movie", [18], ["US"]), "电影/欧美电影"),
+            (("movie", [], []), "电影/欧美电影"),  # 没有条件的分类接住其余电影
+            (("tv", [18], ["BR"]), "剧集/其他剧集"),  # 剧集的兜底
+            (("tv", [], []), "剧集/其他剧集"),  # 缺少地区与题材信息时，带条件的分类都不命中
+            (("", [18], ["CN"]), None),  # 识别不出媒体类型：不归入任何分类
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(classify(rules, *args), expected)
+
+    def test_matching_follows_moviepilot(self):
+        from reelay.plugins.organizer.category import classify
+        # 按顺序取第一个命中的；没有条件的分类遇到即命中，后面的不再看
+        rules = {"tv": {"剧集/全部": {}, "剧集/国产剧集": {"origin_country": "CN"}}}
+        self.assertEqual(classify(rules, "tv", [], ["CN"]), "剧集/全部")
+        # 同一分类内的条件都要满足；年份可写范围
+        rules = {"movie": {"电影/老电影": {"release_year": "1900-1999", "origin_country": "cn"}, "电影/其他": {}}}
+        self.assertEqual(classify(rules, "movie", [], ["CN"], 1994), "电影/老电影")
+        self.assertEqual(classify(rules, "movie", [], ["US"], 1994), "电影/其他")
+        self.assertEqual(classify(rules, "movie", [], ["CN"], None), "电影/其他")
+
+    def test_category_without_match_uses_the_save_directory(self):
+        from reelay.core import runtime
+        from reelay.core.config import normalize_config
+        from reelay.plugins.organizer import LibraryRouter
+        runtime.set_process_config(normalize_config({"save_dirs": {"剧集": "1", "默认": "3"}}))
+        ctx = PipelineContext(raw=RawMessage(source="@b", msg_id="1", text="x"))
+        ctx.parsed = ParsedResource(is_media=True, title="T", media_type="", origin_country=["CN"])
+        ctx.save_dir_alias = "默认"
+        run(LibraryRouter().run(ctx))
+        self.assertEqual((ctx.save_dir_alias, ctx.meta["library"].get("relative_category")), ("默认", None))
+        self.assertEqual(ctx.trail[-1][9:], "无二级分类元数据，用根目录「默认」")
+
+    def test_invalid_category_file_is_rejected(self):
+        from reelay.plugins.organizer.category import validate_strategy
+        for strategy in ({"music": {"音乐/全部": {}}}, {"tv": {"只有一级": {}}},
+                         {"tv": {"剧集/英语": {"original_language": "en"}}}, {"tv": {"剧集/空": {"genre_ids": ","}}}):
+            with self.subTest(strategy=strategy), self.assertRaises(ValueError):
+                validate_strategy(strategy)
 
 
 class TestOrganizerPlan(unittest.TestCase):
     def setUp(self):
         from reelay.core import runtime
-        runtime.set_config({"plugins": {"organizer": {"naming": {
-            "movie": "{title} ({year})/{title} ({year}) - {resolution}.{ext}",
-            "tv": "{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{ep:02d}.{ext}",
+        runtime.set_process_config({"plugins": {"organizer": {"naming": {
+            "movie": "{{ title }} ({{ year }})/{{ title }} ({{ year }}) - {{ resolution }}.{{ ext }}",
+            "tv": "{{ title }} ({{ year }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}",
         }}}})
         from reelay.plugins.organizer import Organizer
         self.org = Organizer()
@@ -218,7 +281,7 @@ class TestOrganizerPlan(unittest.TestCase):
         p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
                            season=1, episodes=[1, 2])
         landed = [{"id": "a", "name": "01.mp4"}, {"id": "b", "name": "02.mkv"}]
-        plan = self.org._build_plan(p, landed)
+        plan = build_plan(p, landed)
         self.assertEqual(plan[0]["target_dir"], "法医秦明 (2026)/Season 01")
         self.assertEqual(plan[0]["target_name"], "法医秦明 - S01E01.mp4")
         self.assertEqual(plan[1]["target_name"], "法医秦明 - S01E02.mkv")
@@ -227,7 +290,7 @@ class TestOrganizerPlan(unittest.TestCase):
         p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
                            season=1, episodes=[1, 2])
         landed = [{"id": "b", "name": "S01E02.mkv"}, {"id": "a", "name": "S01E01.mp4"}]
-        plan = self.org._build_plan(p, landed)
+        plan = build_plan(p, landed)
         mapping = {item["src_name"]: item["target_name"] for item in plan}
         self.assertEqual(mapping["S01E02.mkv"], "法医秦明 - S01E02.mkv")
         self.assertEqual(mapping["S01E01.mp4"], "法医秦明 - S01E01.mp4")
@@ -236,7 +299,7 @@ class TestOrganizerPlan(unittest.TestCase):
         p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
                            season=1, episodes=[1])
         with self.assertRaises(ValueError):
-            self.org._build_plan(p, [{"id": "a", "name": "unknown.mp4"}])
+            build_plan(p, [{"id": "a", "name": "unknown.mp4"}])
 
     def test_tv_run_marks_manual_when_filename_ambiguous(self):
         p = ParsedResource(is_media=True, media_type="tv", title="法医秦明", year=2026,
@@ -252,7 +315,7 @@ class TestOrganizerPlan(unittest.TestCase):
     def test_movie_plan_naming(self):
         p = ParsedResource(is_media=True, media_type="movie", title="流浪地球2",
                            year=2023, resolution="4K")
-        plan = self.org._build_plan(p, [{"id": "a", "name": "movie.mp4"}])
+        plan = build_plan(p, [{"id": "a", "name": "movie.mp4"}])
         self.assertEqual(plan[0]["target_dir"], "流浪地球2 (2023)")
         self.assertIn("流浪地球2 (2023) - 4K.mp4", plan[0]["target_name"])
 

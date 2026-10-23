@@ -69,7 +69,7 @@ docker compose start
 
 ## 外部扩展
 
-把扩展（`*.py` 文件或包目录）放进 `compose.yaml` 同目录的 `deploy/plugins/`，它以只读方式挂载到 `/app/data/plugins`，`docker compose restart` 后生效，不用重建镜像。扩展以 Reelay 进程的权限运行，只放你信任的代码；导入失败不影响内置能力，错误显示在管理台「插件」页。写法见 [插件开发](plugins.md)。
+把扩展（插件目录，或单个 `*.py` 文件）放进 `compose.yaml` 同目录的 `deploy/plugins/`，它以只读方式挂载到 `/app/data/plugins`，`docker compose restart` 后生效，不用重建镜像。扩展以 Reelay 进程的权限运行，只放你信任的代码；导入失败不影响内置能力，错误显示在管理台「插件」页。写法见 [插件开发](plugins.md)。
 
 ## 健康检查与故障恢复
 

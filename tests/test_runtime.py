@@ -20,7 +20,6 @@ from reelay.core.registry import Registry, discover
 from reelay.core.service import ManagementService
 from reelay.core.store import Store
 from reelay.core.worker import Worker
-from reelay.plugins.dir_router import _match_condition
 from reelay.providers.decision import DefaultDecision, LLMDecision
 from reelay.providers.notify import ConsoleNotify
 from reelay.providers.parser import LLMParser, RegexParser
@@ -193,22 +192,17 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         await pipeline._notify_all(ctx, "transfer_uncertain")
         self.assertEqual(pipeline.store.delivery_counts(), {"pending": 1})
 
-    async def test_type_alias_and_genres_match_design_routing(self):
-        parsed = ParsedResource(media_type="tv", genres=["动画", "悬疑"])
-        self.assertTrue(_match_condition("type == 'tv'", parsed))
-        self.assertTrue(_match_condition("genre contains 动画", parsed))
-        self.assertFalse(_match_condition("type == movie", parsed))
-
     async def test_each_pipeline_has_its_own_coroutine_config(self):
         class Hook:
             name, stage, order = "test", "after_parse", 1
             async def run(self, ctx):
                 await asyncio.sleep(0)
-                ctx.ns("test")["value"] = runtime.get("marker")
+                ctx.ns("test")["value"] = runtime.plugin_config("test")["marker"]
                 return True
         reg = Registry()
         reg.add_hook(Hook())
-        a, b = Pipeline(reg, self.store(), {"marker": "a"}), Pipeline(reg, self.store(), {"marker": "b"})
+        a, b = Pipeline(reg, self.store(), {"plugins": {"test": {"marker": "a"}}}), \
+            Pipeline(reg, self.store(), {"plugins": {"test": {"marker": "b"}}})
         ca, cb = context("a"), context("b")
         await asyncio.gather(a._run_hooks("after_parse", ca), b._run_hooks("after_parse", cb))
         self.assertEqual(ca.meta["test"]["value"], "a")
@@ -255,8 +249,8 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         service = ManagementService(pipeline.store, pipeline, config_path=str(path))
         bad = [{"defaults": {"approval_mode": "wat"}}, {"forward": {"enabled": "false"}},
                {"defaults": {"confidence_threshold": 2}}, {"defaults": {"parser": "missing"}},
-               {"plugins": {"missing": False}}, {"defaults": {"filters": {"must_have": "115"}}},
-               {"routing": [{"when": "type != movie", "dir": "默认"}]}, {"sources": ["wrong"]}]
+               {"plugins": {"missing": {"enabled": False}}}, {"defaults": {"filters": {"must_have": "115"}}},
+               {"sources": ["wrong"]}]
         for cfg in bad:
             with self.subTest(cfg=cfg), self.assertRaises(ValueError):
                 await service.save_config(cfg)
@@ -285,8 +279,10 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 service.patch_parsed(ctx.task_id, patch_value)
         self.assertEqual(pipeline.store.get_task(ctx.task_id).parsed.year, 2026)
-        with self.assertRaises(ValueError):
-            service.organize_preview(parsed={"season": "one"}, landed=[])
+        preview = pipeline.reg.action("organizer", "preview_plan")
+        for payload in ({"parsed": {"season": "one"}, "landed": []}, {"parsed": media(), "landed": "a.mkv"}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                preview(payload)
 
     async def test_plugins_can_be_disabled_per_task_without_dropping_registered_instances(self):
         class Hook:
@@ -296,11 +292,11 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
                 return True
         reg = Registry()
         reg.add_hook(Hook())
-        pipeline = Pipeline(reg, self.store(), {"plugins": {"test": False}})
+        pipeline = Pipeline(reg, self.store(), {"plugins": {"test": {"enabled": False}}})
         ctx = context()
         await pipeline._run_hooks("after_parse", ctx)
         self.assertNotIn("test", ctx.meta)
-        pipeline.cfg["plugins"]["test"] = True
+        pipeline.cfg["plugins"]["test"] = {"enabled": True}
         await pipeline._run_hooks("after_parse", ctx)
         self.assertTrue(ctx.meta["test"]["called"])
 
@@ -346,7 +342,7 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         reg.add_provider("storage", a)
         reg.add_provider("storage", b)
         cfg = {"defaults": {"storage": "a", "parser": "regex", "approval_mode": "auto"},
-               "plugins": {"organizer": False}, "providers": {"notify": []}}
+               "plugins": {"organizer": {"enabled": False}}, "providers": {"notify": []}}
         pipeline = Pipeline(reg, self.store(), cfg)
         ctx = context()
         await pipeline.process_new(ctx)

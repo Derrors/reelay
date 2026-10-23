@@ -7,8 +7,7 @@
 
 --dry-run 用内置 DryRunSource 与 115 占位实现，端到端验证内核骨架，不碰网络与凭证。
 
-运行文件都在 data/ 下（见 ``core/paths.py``）；配置与密钥在管理台修改。启动时先做一次迁移
-（旧位置的配置、.env 里的旧环境变量，见 ``core/bootstrap.py``）。
+运行文件都在 data/ 下（见 ``core/paths.py``）；配置与密钥在管理台修改。首次启动时写出默认配置。
 """
 
 from __future__ import annotations
@@ -18,8 +17,8 @@ import asyncio
 import logging
 import os
 
-from .core import bootstrap, paths
-from .core.config import load_config, load_env
+from .core import paths
+from .core.config import ensure_config, load_config
 from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
 from .core.registry import discover
@@ -194,7 +193,7 @@ async def _run_live() -> int:
     log = logging.getLogger("reelay")
     log.info("已注册：%s", reg.summary())
     for name in reg.unclaimed_sections(cfg):
-        log.warning("配置 %s 没有对应的插件，已忽略（外部插件的设置请移到 plugins.<插件名> 下）", name)
+        log.warning("配置 %s 没有对应的插件，已忽略", name)
     store = Store(str(paths.DATABASE))
     pipeline = Pipeline(reg, store, cfg)
     service = ManagementService(store, pipeline, config_path=paths.CONFIG)
@@ -246,15 +245,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="reelay")
     ap.add_argument("--dry-run", action="store_true", help="无依赖端到端冒烟")
     args = ap.parse_args()
-    if not args.dry_run:
-        load_env(str(paths.ENV_FILE))  # 只为首次启动导入旧的环境变量
     _setup_log(to_file=not args.dry_run)
     if not args.dry_run:
-        try:
-            bootstrap.prepare()
-        except bootstrap.BootstrapError as exc:
-            logging.getLogger("reelay").error("%s", exc)
-            raise SystemExit(1) from None
+        ensure_config()
         paths.use_data_dir(paths.DATA)
     async def run_with_signals():
         import signal

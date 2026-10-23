@@ -17,8 +17,7 @@
 organizer）都会读回核验，不会因为回退产生"以为成功、实际没动"。
 
 凭证统一持久化在一个 JSON 文件（固定为 data/115_credentials.json），同时
-容纳 OAuth token 与（经 Web 录入的）cookie；不放进 config.yaml。旧版本写在
-环境变量里的 cookie 与 token 在首次启动时导入该文件（见 ``core/bootstrap.py``）。
+容纳 OAuth token 与（经 Web 录入的）cookie；不放进 config.yaml。
 """
 from __future__ import annotations
 
@@ -115,9 +114,6 @@ class CredentialStore:
 
     def __init__(self, cred_file: str | Path | None = None) -> None:
         self.path = Path(cred_file or default_cred_file())
-        # 兼容旧版本的 data/115_oauth.json：新文件不存在但旧文件在时，
-        # 首次保存自动迁移到新路径（统一容纳 cookie + OAuth）。
-        self._legacy_path = self.path.parent / "115_oauth.json"
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._data: dict[str, Any] = self._load()
@@ -268,8 +264,6 @@ class CredentialStore:
     # ------------------------------------------------------------------ #
     def _load(self) -> dict[str, Any]:
         path = self.path
-        if not path.is_file() and self._legacy_path.is_file():
-            path = self._legacy_path  # 只读迁移源，_save 时写入新路径
         if not path.is_file():
             return {}
         try:
@@ -349,10 +343,6 @@ class CredentialStore:
                 ManagedCookieClient = self._managed_client_class(P115Client)
                 self._cookie_client = ManagedCookieClient(cookies)
             return self._cookie_client
-
-    def reset_cookie_client(self) -> None:
-        with self._lock:
-            self._cookie_client = None
 
     def ping_cookie(self, force: bool = False) -> str:
         """用最轻量的只读 webapi 探活，更新并返回 cookie 鉴权状态。"""

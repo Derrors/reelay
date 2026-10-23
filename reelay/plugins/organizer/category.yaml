@@ -1,0 +1,89 @@
+# 配置电影的分类策略
+movie:
+  # 动漫/动画电影
+  动漫/动画电影:
+    # 匹配 genre_ids 内容类型，16是动漫
+    genre_ids: '16'
+
+  # 电影/港台电影
+  电影/港台电影:
+    # 匹配 origin_country 国家或地区，TW是台湾，HK是香港
+    origin_country: 'TW,HK'
+
+  # 电影/国产电影
+  电影/国产电影:
+    # 匹配 origin_country 国家或地区，CN是中国大陆
+    origin_country: 'CN'
+
+  # 电影/日韩电影
+  电影/日韩电影:
+    # 匹配 origin_country 国家或地区，JP是日本，KP是朝鲜，KR是韩国
+    origin_country: 'JP,KP,KR'
+
+  # 电影/欧美电影
+  电影/欧美电影:
+    # 未配置具体条件，默认匹配未分类的电影
+    # 注意：此分类为兜底分类，未匹配以上条件的电影会归入此类
+
+# 配置电视剧的分类策略
+tv:
+  # 动漫/国产动漫
+  动漫/国产动漫:
+    # 匹配 genre_ids 内容类型，16是动漫
+    genre_ids: '16'
+    # 匹配 origin_country 国家或地区，CN是中国大陆，TW是台湾，HK是香港
+    origin_country: 'CN,TW,HK'
+
+  # 动漫/欧美动漫
+  动漫/欧美动漫:
+    # 匹配 genre_ids 内容类型，16是动漫
+    genre_ids: '16'
+    # 匹配 origin_country 国家或地区，主要欧美国家列表
+    origin_country: 'US,FR,GB,DE,ES,IT,NL,PT,RU,UK'
+
+  # 动漫/日本番剧
+  动漫/日本番剧:
+    # 匹配 genre_ids 内容类型，16是动漫
+    genre_ids: '16'
+    # 匹配 origin_country 国家或地区，JP是日本
+    origin_country: 'JP'
+
+  # 其他/纪录影片
+  其他/纪录影片:
+    # 匹配 genre_ids 内容类型，99是纪录片
+    genre_ids: '99'
+
+  # 其他/综艺节目
+  其他/综艺节目:
+    # 匹配 genre_ids 内容类型，10764和10767是综艺
+    genre_ids: '10764,10767'
+
+  # 剧集/港台剧集
+  剧集/港台剧集:
+    # 匹配 origin_country 国家或地区，TW是台湾，HK是香港
+    origin_country: 'TW,HK'
+
+  # 剧集/国产剧集
+  剧集/国产剧集:
+    # 匹配 origin_country 国家或地区，CN是中国大陆
+    origin_country: 'CN'
+
+  # 剧集/日韩剧集
+  剧集/日韩剧集:
+    # 匹配 origin_country 国家或地区，JP是日本，KP是朝鲜，KR是韩国
+    origin_country: 'JP,KP,KR'
+
+  # 剧集/南亚剧集
+  剧集/南亚剧集:
+    # 匹配 origin_country 国家或地区，TH是泰国，IN是印度，SG是新加坡
+    origin_country: 'TH,IN,SG'
+
+  # 剧集/欧美剧集
+  剧集/欧美剧集:
+    # 匹配 origin_country 国家或地区，主要欧美国家列表
+    origin_country: 'US,FR,GB,DE,ES,IT,NL,PT,RU,UK'
+
+  # 剧集/其他剧集
+  剧集/其他剧集:
+    # 未配置具体条件，默认匹配未分类的剧集
+    # 注意：此分类为兜底分类，未匹配以上条件的剧集会归入此类

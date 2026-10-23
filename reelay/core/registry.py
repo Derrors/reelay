@@ -82,8 +82,6 @@ class Registry:
     def is_enabled(instance: Any, config: dict | None) -> bool:
         """``plugins.<名>.enabled``；未显式配置时按扩展声明的 ``default_enabled``（默认 True）。"""
         section = ((config or {}).get("plugins") or {}).get(Registry.extension_name(instance))
-        if type(section) is bool:  # 未经规范化的旧写法
-            return section
         if isinstance(section, dict) and type(section.get("enabled")) is bool:
             return section["enabled"]
         return getattr(instance, "default_enabled", True)
@@ -95,6 +93,18 @@ class Registry:
 
     def _enabled(self, instances: list, config: dict | None) -> list:
         return [obj for obj in instances if self.is_enabled(obj, config)]
+
+    def instances(self) -> list[Any]:
+        """全部已注册的扩展（能力槽实现、Hook、事件监听）；同名扩展的多个挂载点各算一个。"""
+        return ([obj for entries in self.providers.values() for obj in entries.values()]
+                + [obj for groups in (self.hooks, self.listeners) for items in groups.values() for obj in items])
+
+    def action(self, name: str, action: str) -> Callable[[dict], Any] | None:
+        """扩展在 ``ui_actions`` 里声明的动作（供管理台调用的普通方法）；未声明的方法一律取不到。"""
+        for obj in self.instances():
+            if self.extension_name(obj) == name and action in getattr(obj, "ui_actions", ()):
+                return getattr(obj, action)
+        return None
 
     def validate_config(self, cfg: dict) -> None:
         try:
@@ -118,12 +128,12 @@ class Registry:
             if hasattr(obj, 'validate_config') and self.is_enabled(obj, cfg):
                 obj.validate_config(cfg)
         # 插件被删除后留下的 plugins.<名> 不影响运行，启动日志里提示（见 unclaimed_sections）
-        organizer = next((obj for groups in (self.hooks, self.listeners) for items in groups.values()
-                          for obj in items if self.extension_name(obj) == "organizer"), None)
-        if organizer is not None and self.is_enabled(organizer, cfg):
-            if any(rule.get("storage", cfg["defaults"]["storage"]) != "p115"
-                   for rule in [cfg["defaults"], *cfg["sources"]]):
-                raise ValueError("organizer 仅支持 p115；其他存储需关闭它并注册对应的整理扩展")
+        # 声明了 storage_provider 的扩展（如媒体库整理）只能用于对应的存储
+        storages = {rule.get("storage", cfg["defaults"]["storage"]) for rule in [cfg["defaults"], *cfg["sources"]]}
+        for obj, _ in objects:
+            bound = getattr(obj, "storage_provider", None)
+            if bound and self.is_enabled(obj, cfg) and storages - {bound}:
+                raise ValueError(f"{self.extension_name(obj)} 仅支持 {bound}；其他存储需关闭它并注册对应的扩展")
 
     def plugin_names(self) -> set[str]:
         """所有扩展（含能力槽的实现）的名称，即 plugins 下允许出现的键。"""
@@ -132,11 +142,9 @@ class Registry:
         return names | {self.extension_name(obj) for entries in self.providers.values() for obj in entries.values()}
 
     def unclaimed_sections(self, cfg: dict) -> list[str]:
-        """没有对应插件的 plugins.<名>，以及认不出归属的顶层配置（多半是外部插件的旧配置）。"""
-        from .config import SYSTEM_KEYS
+        """没有对应插件的 plugins.<名>（如删除了外部插件，设置还留着）。"""
         extensions = self.plugin_names()
-        return ([f"plugins.{name}" for name in cfg.get("plugins", {}) if name not in extensions]
-                + [key for key in cfg if key not in SYSTEM_KEYS and key != "plugins"])
+        return [f"plugins.{name}" for name in cfg.get("plugins", {}) if name not in extensions]
 
     def catalog(self, config: dict) -> dict[str, Any]:
         """目录直接来自已加载注册表；新扩展声明 ui_fields 即可获得配置表单。"""
@@ -154,11 +162,13 @@ class Registry:
                 'config_section': prefix,
                 'config_type': getattr(obj, 'ui_config_type', None),
                 'required_storage': getattr(obj, 'storage_provider', None),
+                'actions': list(getattr(obj, 'ui_actions', ())),
             }
         return {
             'providers': {kind: [describe(obj, 'provider', kind) for obj in entries.values()]
                           for kind, entries in self.providers.items()},
-            'hooks': [describe(obj, 'hook', slot) for slot, entries in self.hooks.items() for obj in entries],
+            'hooks': _merge_by_name([describe(obj, 'hook', slot) for slot, entries in self.hooks.items()
+                                     for obj in entries]),
             'events': _merge_by_name([describe(obj, 'event', slot) for slot, entries in self.listeners.items()
                                       for obj in entries]),
             'load_errors': list(self.load_errors),

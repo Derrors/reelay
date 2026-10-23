@@ -1,10 +1,14 @@
-import type { EChartsOption } from 'echarts';
-import ReactECharts from 'echarts-for-react';
+import { BarChart, type BarSeriesOption } from 'echarts/charts';
+import { GridComponent, type GridComponentOption, TooltipComponent, type TooltipComponentOption } from 'echarts/components';
+import * as echarts from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
+import ReactEChartsCore from 'echarts-for-react/esm/core';
 import {
   ChartColumn, ChartPie, CheckCircle2, CircleAlert, HardDrive, Hourglass, RefreshCw, Table2, Trophy,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { extras, type IStatsResp } from '@/api/extras';
 import { EmptyState } from '@/components/app/EmptyState';
 import { Page } from '@/components/app/Page';
@@ -12,6 +16,7 @@ import { Panel } from '@/components/app/Panel';
 import { StatCard } from '@/components/app/StatCard';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { STATE_META } from '@/lib/status';
 import type { TaskState } from '@/lib/types';
@@ -19,6 +24,10 @@ import { cn } from '@/lib/utils';
 import { AiUsagePanel, SourceQualityPanel } from './AiPanels';
 
 /* ---------------- 图表配色：只取主题变量 ---------------- */
+
+// 只注册用到的图表与组件：整包引入 echarts 约 1 MB
+echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer]);
+type EChartsOption = echarts.ComposeOption<BarSeriesOption | GridComponentOption | TooltipComponentOption>;
 
 const TOKENS = [
   '--chart-1', '--chart-2', '--chart-3', '--chart-5',
@@ -89,6 +98,20 @@ const GROUPS: Group[] = [
 const GROUP_OF = new Map<string, GroupKey>(GROUPS.flatMap((g) => g.states.map((s) => [s, g.key] as const)));
 
 const RANGES = [7, 30, 90] as const;
+
+// 统计按维度分页；ranged 表示受顶部时间范围影响
+const TABS = [
+  { value: 'overview', label: '概况', ranged: true },
+  { value: 'titles', label: '片名排行', ranged: false },
+  { value: 'sources', label: '来源质量', ranged: true },
+  { value: 'ai', label: 'AI 调用', ranged: true },
+] as const;
+type TabKey = (typeof TABS)[number]['value'];
+const isTab = (value: string | null): value is TabKey => TABS.some((t) => t.value === value);
+const TRIGGER_CLASS = [
+  'h-8 rounded-md px-3 text-[13px] text-muted-foreground sm:px-4',
+  'data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs',
+].join(' ');
 type Range = typeof RANGES[number];
 
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -213,7 +236,7 @@ function TrendChart({ view, hidden, height }: { view: View; hidden: Set<GroupKey
       }),
     };
   }, [palette, view, hidden]);
-  return <ReactECharts notMerge lazyUpdate option={option} style={{ height }} opts={{ renderer: 'canvas' }} />;
+  return <ReactEChartsCore echarts={echarts} notMerge lazyUpdate option={option} style={{ height }} opts={{ renderer: 'canvas' }} />;
 }
 
 function TrendTable({ view }: { view: View }) {
@@ -350,11 +373,11 @@ function TrendPanel({ view, range }: { view: View; range: Range }) {
 function TopTitles({ titles }: { titles: IStatsResp['top_titles'] }) {
   const max = Math.max(1, ...titles.map((x) => x.n));
   return (
-    <Panel title="出现最多的片名" description="全部任务按片名合并后的次数" icon={Trophy} className="lg:col-span-3" bodyClassName="p-3 sm:p-4">
+    <Panel title="出现最多的片名" description="全部任务按片名合并后的次数" icon={Trophy} bodyClassName="p-3 sm:p-4">
       {titles.length ? (
-        <ol className="space-y-0.5">
+        <ol className="space-y-0.5 lg:columns-2 lg:gap-8">
           {titles.map((x, i) => (
-            <li key={x.title} className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/60">
+            <li key={x.title} className="flex break-inside-avoid items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-muted/60">
               <span className={cn(
                 'w-5 shrink-0 text-center text-xs font-semibold tabular-nums',
                 i < 3 ? 'text-primary' : 'text-muted-foreground',
@@ -388,7 +411,6 @@ function Distribution({ view, stats }: { view: View; stats: IStatsResp }) {
       title="状态分布"
       description={`全部 ${view.total} 条任务的当前状态`}
       icon={ChartPie}
-      className="lg:col-span-2"
     >
       {view.total ? (
         <>
@@ -442,10 +464,7 @@ function StatsSkeleton() {
         {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[118px] rounded-xl" />)}
       </div>
       <Skeleton className="h-[420px] rounded-xl" />
-      <div className="grid gap-5 lg:grid-cols-5">
-        <Skeleton className="h-[360px] rounded-xl lg:col-span-3" />
-        <Skeleton className="h-[360px] rounded-xl lg:col-span-2" />
-      </div>
+      <Skeleton className="h-[260px] rounded-xl" />
     </div>
   );
 }
@@ -455,6 +474,14 @@ export default function StatsPage() {
   const [stats, setStats] = useState<{ range: Range; data: IStatsResp } | null>(null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const [search, setSearch] = useSearchParams();
+  const requested = search.get('tab');
+  const tab: TabKey = isTab(requested) ? requested : 'overview';
+  const setTab = (value: string) => setSearch((prev) => {
+    const next = new URLSearchParams(prev);
+    next.set('tab', value);
+    return next;
+  }, { replace: true });
 
   useEffect(() => {
     let active = true;
@@ -468,7 +495,7 @@ export default function StatsPage() {
   const retry = useCallback(() => { setError(''); setReload((n) => n + 1); }, []);
   const refreshing = stats !== null && stats.range !== range && !error;
 
-  const actions = (
+  const actions = TABS.find((t) => t.value === tab)?.ranged === false ? null : (
     <Segmented<Range>
       label="时间范围"
       value={range}
@@ -502,46 +529,57 @@ export default function StatsPage() {
             <Button variant="outline" size="sm" onClick={retry}>重试</Button>
           </div>
         ) : null}
-        <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-          <StatCard
-            label="入库体积"
-            icon={HardDrive}
-            tone="primary"
-            value={<>{gb >= 100 ? Math.round(gb) : gb.toFixed(1)}<span className="ml-1 text-sm font-medium text-muted-foreground">GB</span></>}
-            hint="按识别到的文件大小估算"
-          />
-          <StatCard label="已入库" icon={CheckCircle2} tone="success" value={counts.done} hint={`占全部任务 ${rate}%`} />
-          <StatCard
-            label="待处理"
-            icon={Hourglass}
-            tone="warning"
-            value={counts.waiting}
-            hint={counts.waiting ? '等你确认或人工处理' : '没有待处理的任务'}
-            to="/inbox"
-            highlight={counts.waiting > 0}
-          />
-          <StatCard
-            label="失败"
-            icon={CircleAlert}
-            tone={counts.failed ? 'danger' : 'neutral'}
-            value={counts.failed}
-            hint={counts.failed ? '可在任务页查看并重试' : '没有失败的任务'}
-            to="/tasks?group=failed"
-          />
-        </div>
-        <TrendPanel view={view} range={stats.range} />
-        <div className="grid gap-5 lg:grid-cols-5 lg:items-start">
-          <TopTitles titles={data.top_titles ?? []} />
-          <Distribution view={view} stats={data} />
-        </div>
-        <SourceQualityPanel days={range} />
-        <AiUsagePanel days={range} />
+        <Tabs value={tab} onValueChange={setTab} className="gap-5">
+          <TabsList className="grid h-auto w-full grid-cols-4 rounded-lg bg-muted p-1 sm:inline-flex sm:w-fit">
+            {TABS.map((t) => <TabsTrigger key={t.value} value={t.value} className={TRIGGER_CLASS}>{t.label}</TabsTrigger>)}
+          </TabsList>
+          <TabsContent value="overview" className="space-y-5">
+            <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+              <StatCard
+                label="入库体积"
+                icon={HardDrive}
+                tone="primary"
+                value={<>{gb >= 100 ? Math.round(gb) : gb.toFixed(1)}<span className="ml-1 text-sm font-medium text-muted-foreground">GB</span></>}
+                hint="按识别到的文件大小估算"
+              />
+              <StatCard label="已入库" icon={CheckCircle2} tone="success" value={counts.done} hint={`占全部任务 ${rate}%`} />
+              <StatCard
+                label="待处理"
+                icon={Hourglass}
+                tone="warning"
+                value={counts.waiting}
+                hint={counts.waiting ? '等你确认或人工处理' : '没有待处理的任务'}
+                to="/inbox"
+                highlight={counts.waiting > 0}
+              />
+              <StatCard
+                label="失败"
+                icon={CircleAlert}
+                tone={counts.failed ? 'danger' : 'neutral'}
+                value={counts.failed}
+                hint={counts.failed ? '可在任务页查看并重试' : '没有失败的任务'}
+                to="/tasks?group=failed"
+              />
+            </div>
+            <TrendPanel view={view} range={stats.range} />
+            <Distribution view={view} stats={data} />
+          </TabsContent>
+          <TabsContent value="titles">
+            <TopTitles titles={data.top_titles ?? []} />
+          </TabsContent>
+          <TabsContent value="sources">
+            <SourceQualityPanel days={range} />
+          </TabsContent>
+          <TabsContent value="ai">
+            <AiUsagePanel days={range} />
+          </TabsContent>
+        </Tabs>
       </div>
     );
   }
 
   return (
-    <Page title="统计" description="任务处理情况与入库体积。每日趋势按所选时间范围统计，其余为累计数据。" actions={actions}>
+    <Page title="统计" description="时间范围作用于每日任务、来源质量与 AI 调用；片名排行与状态分布为累计数据。" actions={actions}>
       {body}
     </Page>
   );

@@ -165,7 +165,7 @@ python -m reelay.main      # 监听与后台任务（另开终端）
 
 ## 🎞️ 入库后的样子
 
-默认的二级分类与命名模板（都可以在管理台修改）：
+默认的二级分类（规则随插件发布，见 `reelay/plugins/organizer/category.yaml`）与命名模板（可在管理台修改）：
 
 ```text
 电影/

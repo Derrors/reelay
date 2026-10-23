@@ -796,20 +796,6 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.counts_by_state(), {'done': 1, 'skipped': 1})
         self.assertEqual(len(self.cloud.receives()), 1)
 
-    async def test_legacy_unknown_transfer_cannot_be_reparsed_or_replayed(self):
-        ctx = self.task()
-        ctx.state = TaskState.SAVING
-        self.store.save_task(ctx)
-        self.reopen()
-        self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.NEED_MANUAL)
-        with self.assertRaises(ConflictError):
-            await self.service.reparse(ctx.task_id)
-        with self.assertRaises(ConflictError):
-            self.service.patch_parsed(ctx.task_id, {'title': '改名'})
-        self.store.set_state(ctx.task_id, TaskState.QUEUED)  # 即使错误入队也不能发送
-        self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)
-        self.assertEqual(self.cloud.calls, [])
-
     async def test_waiting_for_claim_does_not_starve_other_queued_tasks(self):
         self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
         self.cloud.add_share('other', 'Other.S01E01.mkv')

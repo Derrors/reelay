@@ -150,15 +150,20 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 每个插件的设置在 `plugins.<插件名>` 下，`enabled` 是开关（不写时按插件声明的默认状态，内置插件都默认开启）。没有设置项的插件（如 `tmdb_enrich`、`share_probe`、`failure_explainer`）只有开关。外部插件的设置同样放在这里，见 [插件开发指南](plugins.md)。
 
-### 媒体库整理（`plugins.organizer`）与二级分类（`plugins.dir_router`）
+### 媒体库整理（`plugins.organizer`）
+
+转存前按目录方式决定存放位置，转存完成后按命名模板建目录、改名、移动并读回核验；两步共用一个开关。
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
+| `plugins.organizer.layout` | `category` | 目录方式：`category` 二级分类（规则见下）；`media_type` 按媒体类型（按 `type_dirs`）；`none` 不分类，直接放在来源的保存目录下 |
+| `plugins.organizer.type_dirs` | `{movie: 电影, tv: 剧集, anime: 动漫}` | 按媒体类型时的文件夹名（单层）。类型为动漫或题材含动画（16）的作品放进 `anime`；`anime` 留空则不单独分，按电影 / 剧集归入 |
 | `plugins.organizer.naming.movie` / `tv` | 见示例 | 受限 Jinja2 路径模板。变量：`title` `year` `season` `episode` `resolution` `ext` `media_type` `genre_ids` `origin_country` `tmdb_id` `original_name`；过滤器：`default` `lower` `upper` `replace` `trim` `join` `length` `pad2` |
 | `plugins.organizer.conflict` | `manual` | 目标已有同名不同文件时：`manual` 转人工；`skip` 保留旧文件、新文件进回收站；`suffix` 新文件加「 (2)」并存；`upgrade` 洗版——按 `release` 版本偏好比较，新文件更好则替换（旧文件进回收站），否则同 skip |
-| `plugins.dir_router.categories` | MoviePilot 风格默认策略 | `movie`/`tv` → `一级/二级` 路径 → 条件（`genre_ids`、`origin_country`，逗号分隔为"或"，同一分类内多个条件为"且"，空条件为兜底且须放最后） |
 
-一级分类名与某个 `save_dirs` 别名相同时，转存根目录跟随分类；否则在来源指定目录下创建完整的二级路径。审批时（管理台、MCP）手动选择的目录优先：与分类结果不同时直接存入该目录，不再套用二级分类子目录；不选则按分类自动存放，待审批卡片与 Telegram 审批卡片显示网盘中的实际路径（如 `/测试/剧集/国产剧集`；主进程读取到目录路径之前显示「别名/分类」）。
+二级分类的规则随插件发布（[`reelay/plugins/organizer/category.yaml`](../reelay/plugins/organizer/category.yaml)），不在配置文件里，管理台只读展示。匹配方式与 MoviePilot 相同：TMDB 类型为电影的按 `movie`、剧集（含动漫、纪录片、综艺）按 `tv`，从上到下取第一个满足全部条件的分类；条件字段 `genre_ids`（TMDB 题材 ID）、`origin_country`（两位国家/地区代码）、`release_year`（年份，可写 `2000-2010`），逗号分隔为"或"；没有条件的分类遇到即命中（放在最后就是兜底）；作品缺少条件用到的信息时该分类不命中，都不命中时直接放在保存目录下。
+
+分类结果（二级分类的一级，或按媒体类型的文件夹）与某个 `save_dirs` 别名相同时，转存根目录跟随它；否则在来源指定目录下创建完整路径。审批时（管理台、MCP）手动选择的目录优先：与分类结果不同时直接存入该目录，不再套用分类子目录；不选则按分类自动存放，待审批卡片与 Telegram 审批卡片显示网盘中的实际路径（如 `/测试/剧集/国产剧集`；主进程读取到目录路径之前显示「别名/分类」）。
 
 ### 其他插件
 

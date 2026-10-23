@@ -14,7 +14,7 @@ import { onUnauthorized } from '@/api/client';
 const StatsPage = lazy(() => import('@/pages/StatsPage/StatsPage'));
 const ConfigPage = lazy(() => import('@/pages/ConfigPage/ConfigPage'));
 const SourcesPage = lazy(() => import('@/pages/SourcesPage/SourcesPage'));
-const OrganizePage = lazy(() => import('@/pages/OrganizePage/OrganizePage'));
+const OrganizePage = lazy(() => import('@/plugins/organizer/OrganizePage'));
 const StoragePage = lazy(() => import('@/pages/StoragePage/StoragePage'));
 const LogsPage = lazy(() => import('@/pages/LogsPage/LogsPage'));
 const SubscriptionsPage = lazy(() => import('@/pages/SubscriptionsPage/SubscriptionsPage'));

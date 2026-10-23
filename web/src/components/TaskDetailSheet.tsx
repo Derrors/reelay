@@ -97,7 +97,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
     const storage = detail?.context.meta.storage as Record<string, unknown> | undefined;
     const landed = Array.isArray(storage?.landed) && (storage.landed as unknown[]).length > 0;
     const idle = !!state && !['received', 'parsed', 'queued', 'saving', 'stored', 'organizing', 'done'].includes(state);
-    const unknownTransfer = storage?.phase === 'legacy_uncertain' || (!!storage?.manifest && storage.phase !== 'stored');
+    const unknownTransfer = !!storage?.manifest && storage.phase !== 'stored';
     return {
       approve: state === 'pending_approval',
       reject: state === 'pending_approval',
@@ -222,7 +222,10 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
             <Section title="保存到">
               <Select value={targetDir} onValueChange={setTargetDir} options={dirs.map((d) => ({ value: d, label: d }))}
                 placeholder={detail.state === 'pending_approval' ? `自动 · ${detail.auto_path ?? detail.auto_dir ?? '按分类'}`
-                  : `保持当前目录「${detail.context.save_dir_alias ?? '默认'}」`} />
+                  : `保持当前目录「${detail.context.save_dir_alias ?? '默认'}」`}
+                fallback={detail.state === 'pending_approval'
+                  ? { value: detail.auto_dir?.split('/')[0] ?? '', label: `${detail.auto_path ?? detail.auto_dir} · 自动` }
+                  : { value: detail.context.save_dir_alias ?? '', note: '当前' }} />
               {targetDir && targetDir !== (detail.state === 'pending_approval' ? detail.auto_dir?.split('/')[0] : detail.context.save_dir_alias)
                 ? <p className="mt-1.5 text-xs text-muted-foreground">直接存入「{targetDir}」，不再套用分类子目录。</p> : null}
             </Section>

@@ -53,9 +53,6 @@ class Assistant:
         self._plans: dict[str, dict] = {}
         self._history: dict[str, deque] = {}
 
-    def available(self) -> bool:
-        return self.service.ai_client()[0] is not None
-
     def describe(self, action: dict) -> str:
         if action["tool"] == "subscribe":
             return f"订阅《{action['title']}》第 {action['season']} 季，新集自动转存"

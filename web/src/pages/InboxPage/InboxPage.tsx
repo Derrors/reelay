@@ -108,6 +108,7 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
   const [dir, setDir] = useState('');  // 空值 = 按自动分类存放
   const manual = item.state === 'need_manual';
   const autoTarget = item.auto_path ?? item.auto_dir ?? '按分类';
+  const autoAlias = item.auto_dir?.split('/')[0] ?? '';  // 不改目录时自动用的保存目录
   const share = shareBadge(item.share);
   const suggested = item.advice?.action;
   // 跨多季的合集要在「追剧订阅」里选季
@@ -194,7 +195,7 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
                 <Select value={dir} onValueChange={setDir} aria-label="保存目录" className="mr-auto min-w-0 max-w-56 flex-1"
                   title={dir && dir !== item.auto_dir?.split('/')[0] ? `直接存入「${dirPaths[dir] ?? dir}」，不套用分类子目录`
                     : `按分类存入「${autoTarget}」`}
-                  placeholder={`自动 · ${autoTarget}`}
+                  placeholder={`自动 · ${autoTarget}`} fallback={{ value: autoAlias, label: `${autoTarget} · 自动` }}
                   options={dirs.map((d) => ({ value: d, label: dirPaths[d] ? `${d}（${dirPaths[d]}）` : d }))} />
               ) : null}
               {canSubscribe ? (

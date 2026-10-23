@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import sqlite3
 from dataclasses import asdict
 import threading
@@ -44,7 +45,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     error       TEXT,
     retries     INTEGER NOT NULL DEFAULT 0,
     created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    updated_at  REAL NOT NULL,
+    not_before  REAL NOT NULL DEFAULT 0     -- 失败退避的下次执行时间；Worker 只领取到期任务
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 
@@ -133,15 +135,8 @@ CREATE INDEX IF NOT EXISTS idx_feedback_source ON feedback(source, kind, id);
 SYSTEM_TASK = "system"
 
 
-def _add_task_not_before(conn: sqlite3.Connection) -> None:
-    """v2：失败退避的下次执行时间；Worker 只领取到期任务，不在消费者里睡眠。"""
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    if "not_before" not in columns:
-        conn.execute("ALTER TABLE tasks ADD COLUMN not_before REAL NOT NULL DEFAULT 0")
-
-
 # 迁移按顺序追加、只增不改；第 n 项把数据库从版本 n-1 升到 n。v1 是 _SCHEMA 建立的基线。
-MIGRATIONS = (lambda conn: None, _add_task_not_before)
+MIGRATIONS = (lambda conn: None,)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 
@@ -358,20 +353,16 @@ class Store:
 
     def finish_transfer(self, ctx: PipelineContext) -> None:
         """转存回执、去重记录和释放占位原子提交，整理可以独立恢复。"""
-        p = ctx.parsed
-        identity = ctx.ns("storage").get("identity") or {
-            "cid": ctx.save_dir_cid, "share_code": p.share_code,
-            "title": p.title, "season": p.season, "episodes": p.episodes,
-        }
-        cid = identity["cid"]
+        identity = ctx.ns("storage").get("identity") or {}
+        cid = identity.get("cid")
         provider = identity.get("provider", ctx.ns("storage").get("provider", "p115"))
         prefix = _target_prefix(cid, provider)
-        if not identity["share_code"] or cid is None or (ctx.result or {}).get("storage_verified") is not True:
+        if not identity.get("share_code") or cid is None or (ctx.result or {}).get("storage_verified") is not True:
             raise ValueError("只有完整核验的转存回执可以提交去重记录")
         with self._lock, self._conn:
             self._write_task(ctx)
             keys = [(DEDUP_SHARE, f"{prefix}:{identity['share_code']}")]
-            # 跨多季的合集按（季, 集）逐个记录；旧记录没有 pairs，按单季的季与集
+            # 跨多季的合集按（季, 集）逐个记录；单季剧集的清单没有 pairs，按季与集数
             pairs = identity.get("pairs") or [[identity["season"], ep] for ep in identity["episodes"]]
             keys += [
                 (DEDUP_EPISODE, f"{prefix}:{self.episode_key(identity['title'] or '', season, ep)}")
@@ -384,17 +375,7 @@ class Store:
             self._conn.execute("DELETE FROM resource_claims WHERE task_id=?", (ctx.task_id,))
 
     def saved_share(self, share: str, cid: str, provider: str = "p115") -> bool:
-        return self.seen(DEDUP_SHARE, f"{_target_prefix(cid, provider)}:{share}") or (
-            provider == "p115" and self._legacy_seen(DEDUP_SHARE, share, cid))
-
-    @_locked
-    def _legacy_seen(self, kind: str, key: str, cid: str) -> bool:
-        """旧版全局去重键只在关联任务能确认目标目录时复用。"""
-        row = self._conn.execute(
-            "SELECT task_id FROM dedup WHERE kind=? AND key=?", (kind, key)
-        ).fetchone()
-        ctx = self.get_task(row["task_id"]) if row and row["task_id"] else None
-        return bool(ctx and ctx.save_dir_cid == cid)
+        return self.seen(DEDUP_SHARE, f"{_target_prefix(cid, provider)}:{share}")
 
     def acquire_worker(self) -> None:
         """单机服务只允许一个 Worker；进程退出时内核自动释放文件锁。"""
@@ -570,13 +551,6 @@ class Store:
                  ctx.task_id, ctx.state.value, updated_at))
             return cur.rowcount == 1
 
-    def delete_task(self, task_id: str) -> bool:
-        """仅用于删除误入的任务记录；不删除 115 文件。"""
-        with self._lock:
-            cur = self._conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
-            self._conn.commit()
-            return cur.rowcount > 0
-
     @_locked
     def counts_by_state(self) -> dict[str, int]:
         rows = self._conn.execute(
@@ -595,7 +569,7 @@ class Store:
 
     @_locked
     def recover_interrupted(self) -> list[PipelineContext]:
-        """所有可执行中间态都有恢复路径；旧版未知转存不能盲目重放。"""
+        """所有可执行中间态都有恢复路径。没有转存清单的 saving 还没发出转存（清单先于写请求落库），回到队列。"""
         rows = self._conn.execute(
             "SELECT task_id FROM tasks WHERE state IN (?,?,?,?,?,?)",
             tuple(s.value for s in (
@@ -612,12 +586,7 @@ class Store:
                 elif ctx.state == TaskState.ORGANIZING:
                     ctx.state = TaskState.STORED
                 elif ctx.state == TaskState.SAVING:
-                    if ctx.ns("storage").get("manifest") or ctx.ns("storage").get("phase") == "preparing":
-                        ctx.state = TaskState.QUEUED
-                    else:
-                        ctx.state = TaskState.NEED_MANUAL
-                        ctx.ns("storage")["phase"] = "legacy_uncertain"
-                        ctx.log("旧版转存中断且没有核验清单，请人工确认网盘结果")
+                    ctx.state = TaskState.QUEUED
                 self.save_task(ctx)
                 recovered.append(ctx)
         return recovered
@@ -659,16 +628,6 @@ class Store:
             parsed = _episode_pair(row["key"][len(prefix):])
             if parsed:
                 pairs.add(parsed)
-        if provider == "p115":  # 旧版全局键：仅当原任务能确认同一目标目录时生效
-            legacy = f"{title}|"
-            for row in self._conn.execute(
-                    "SELECT key, task_id FROM dedup WHERE kind=? AND substr(key, 1, ?)=?",
-                    (DEDUP_EPISODE, len(legacy), legacy)):
-                parsed = _episode_pair(row["key"][len(legacy):])
-                ctx = self.get_task(row["task_id"]) if parsed and row["task_id"] else None
-                if ctx and ctx.save_dir_cid == cid:
-                    season, ep = parsed
-                    pairs.add((season or 1, ep))
         return [list(pair) for pair in sorted(pairs)]
 
     @_locked
@@ -676,9 +635,8 @@ class Store:
         """按 (标题, 季) 汇总所有目标目录中已入库的集，供追更检查使用。"""
         series: dict[tuple[str, int], set[int]] = {}
         for row in self._conn.execute("SELECT key FROM dedup WHERE kind=?", (DEDUP_EPISODE,)):
-            key = row["key"]
-            head, sep, tail = key.partition(":")
-            body = tail if sep and head.isdecimal() else key
+            # 键是「目标前缀:标题|Sxx|Exx」，目标前缀为 CID（115）或「provider:CID」
+            body = _TARGET_PREFIX.sub("", row["key"], count=1)
             title, _, rest = body.rpartition("|S")
             pair = _episode_pair("S" + rest) if title else None
             if pair:
@@ -999,6 +957,9 @@ def _episode_pair(text: str) -> tuple[int, int] | None:
 # --------------------------------------------------------------------------- #
 # ctx <-> dict 序列化（用于快照落库 / 重启还原）
 # --------------------------------------------------------------------------- #
+_TARGET_PREFIX = re.compile(r"^(?:[A-Za-z0-9_.-]+:)?\d+:")
+
+
 def _target_prefix(cid: str | None, provider: str) -> str:
     return str(cid) if provider == "p115" else f"{provider}:{cid}"
 

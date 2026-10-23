@@ -44,11 +44,13 @@ function connectionTone(status: string): Tone {
 function HealthRow({ label, status, detail }: { label: string; status: string; detail?: string }) {
   const tone = connectionTone(status);
   return (
-    <div className="flex items-center justify-between gap-3 py-2 text-sm">
-      <span className="text-foreground/90">{label}</span>
-      <span className={cn('flex items-center gap-1.5 text-xs', TONE_CLASS[tone].text)} title={detail}>
-        <span className={cn('size-1.5 rounded-full', TONE_CLASS[tone].dot)} />
-        {connectionLabels[status] ?? (status === 'active' ? '有效' : status === 'running' ? '运行中' : status)}
+    <div className="flex items-center justify-between gap-3 py-2.5 text-sm first:pt-0 last:pb-0">
+      <span className="min-w-0 truncate text-foreground/90">{label}</span>
+      {/* 状态长短不一：用徽标右对齐，比裸露的圆点更整齐 */}
+      <span title={detail} className="shrink-0">
+        <ToneBadge tone={tone}>
+          {connectionLabels[status] ?? (status === 'active' ? '有效' : status === 'running' ? '运行中' : status)}
+        </ToneBadge>
       </span>
     </div>
   );

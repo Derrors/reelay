@@ -294,10 +294,6 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
         from p115client import P115FileSystem
         return P115FileSystem(self._cookie_client()).get_path(int(cid))
 
-    @property
-    def live(self) -> bool:
-        return not self._dry_run and self._auth.has_cookie
-
     def _require_client(self) -> None:
         if self._cookie_client() is None:
             raise RuntimeError('115 客户端不可用：分享枚举/转存需要配置 cookie（写操作可走 OAuth）')

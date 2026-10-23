@@ -5,8 +5,6 @@
 
 文件按修改时间热加载：Web 进程改了，主进程下次用到时就是新值。只有入口程序（主进程、Web、
 登录与评测工具）会加载密钥文件；没有加载时一律视为未配置，测试不会读到本机的真实密钥。
-
-文件里还记着从 .env 导入过的旧环境变量（见 ``core/bootstrap.py``），每个值只导入一次。
 """
 from __future__ import annotations
 
@@ -61,7 +59,7 @@ class SecretStore:
     def __init__(self, path: str | Path | None, values: dict[str, str] | None = None) -> None:
         self.path = Path(path) if path is not None else None
         self._lock = threading.RLock()
-        self._data: dict[str, Any] = {"values": dict(values or {}), "imported": {}}
+        self._data: dict[str, Any] = {"values": dict(values or {})}
         self._mtime: float | None = None
         self._reload()
 
@@ -71,15 +69,14 @@ class SecretStore:
         try:
             mtime = self.path.stat().st_mtime
         except FileNotFoundError:
-            self._data, self._mtime = {"values": {}, "imported": {}}, None
+            self._data, self._mtime = {"values": {}}, None
             return
         if mtime == self._mtime:
             return
         data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
         if not isinstance(data, dict):
             raise ValueError(f"{self.path} 格式无效")
-        self._data = {"values": {k: v for k, v in (data.get("values") or {}).items() if isinstance(v, str) and v},
-                      "imported": dict(data.get("imported") or {})}
+        self._data = {"values": {k: v for k, v in (data.get("values") or {}).items() if isinstance(v, str) and v}}
         self._mtime = mtime
 
     def _save(self) -> None:
@@ -138,17 +135,6 @@ class SecretStore:
     def check_password(self, password: str) -> bool:
         stored = self.get("web_password")
         return bool(stored) and verify_password(password, stored)
-
-    def imported(self) -> dict[str, str]:
-        with self._lock:
-            self._reload()
-            return dict(self._data["imported"])
-
-    def mark_imported(self, marks: dict[str, str]) -> None:
-        with self._lock:
-            self._reload()
-            self._data["imported"].update(marks)
-            self._save()
 
 
 _current: SecretStore | None = None

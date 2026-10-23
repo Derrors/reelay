@@ -128,20 +128,15 @@ class TestManagementService(unittest.TestCase):
         self.assertIn("save_dirs", self.service.get_config_text())
 
     def test_organize_preview_respects_filename_episode(self):
-        items = self.service.organize_preview(
-            parsed={
-                "is_media": True,
-                "media_type": "tv",
-                "title": "测试剧",
-                "year": 2026,
-                "season": 1,
-                "episodes": [1, 2],
-            },
-            landed=[
-                {"id": "two", "name": "S01E02.mkv"},
-                {"id": "one", "name": "S01E01.mp4"},
-            ],
-        )
+        # 「工具 → 整理预览」调用媒体库整理插件的动作 preview_plan
+        from reelay.core import runtime
+        preview = self.service.pipeline.reg.action("organizer", "preview_plan")
+        with runtime.scope(self.service.pipeline.cfg):
+            items = preview({
+                "parsed": {"is_media": True, "media_type": "tv", "title": "测试剧", "year": 2026,
+                           "season": 1, "episodes": [1, 2]},
+                "landed": [{"id": "two", "name": "S01E02.mkv"}, {"id": "one", "name": "S01E01.mp4"}],
+            })["items"]
         mapping = {item["src_name"]: item["target_name"] for item in items}
         self.assertTrue(mapping["S01E02.mkv"].endswith("S01E02.mkv"))
         self.assertTrue(mapping["S01E01.mp4"].endswith("S01E01.mp4"))

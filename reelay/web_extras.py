@@ -192,34 +192,35 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
         except (ValueError, TypeError, AttributeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.post('/api/extensions/organizer/preview')
-    async def organizer_template_preview(request: Request):
-        from .core.naming_template import validate_template, render_path
-        payload = await request.json()
-        template = payload.get('template') if isinstance(payload, dict) else None
-        kind = payload.get('kind', 'movie') if isinstance(payload, dict) else 'movie'
+    @app.post('/api/extensions/{name}/actions/{action}')
+    async def extension_action(name: str, action: str, request: Request):
+        """扩展在 ui_actions 里声明的动作（如命名模板预览）：请求与返回都是 JSON 对象。
+
+        鉴权由应用级依赖完成；扩展不接触 Web 框架，ValueError / TypeError 视为输入有误（422）。
+        扩展未安装或没有声明这个动作时返回 404，删除插件目录不会让接口报错。
+        """
+        import inspect
+        from .core import runtime
+        method = registry.action(name, action)
+        if method is None:
+            raise HTTPException(status_code=404, detail=f'扩展 {name} 没有动作 {action}')
+        body = await request.body()
         try:
-            validate_template(template, f'{kind}命名模板')
-            values = {"title": "示例标题", "year": 2026, "resolution": "4K", "ext": "mkv",
-                      "season": 1, "episode": 2, "ep": 2, "media_type": kind,
-                      "genre_ids": [16], "origin_country": ["CN"], "tmdb_id": 123,
-                      "original_name": "sample.S01E02.mkv"}
-            return {'path': render_path(template, values, label=f'{kind}命名模板')}
+            payload = json.loads(body) if body.strip() else {}
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail='请求体必须是 JSON 对象')
+        try:
+            with runtime.scope(service.pipeline.cfg):
+                result = method(payload)
+                if inspect.isawaitable(result):
+                    result = await result
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @app.post('/api/extensions/dir-router/preview')
-    async def dir_router_preview(request: Request):
-        from .core.category_strategy import classify, validate_strategy
-        payload = await request.json()
-        try:
-            strategy = payload.get('categories')
-            validate_strategy(strategy)
-            path = classify(strategy, payload.get('media_type', ''), payload.get('genre_ids', []),
-                            payload.get('origin_country', []))
-            return {'path': path}
-        except (ValueError, TypeError, AttributeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=500, detail=f'扩展 {name} 的动作 {action} 必须返回对象')
+        return result
 
     @app.patch('/api/config/sections')
     async def save_config_sections(request: Request):

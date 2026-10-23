@@ -6,19 +6,31 @@
 - ``deny``：条件列表，命中任一条就不收；
 - ``min_resolution``：最低清晰度（480p / 720p / 1080p / 2160p）；清晰度未知时转人工确认。
 
-条件与二级分类的写法一致：同一条件内各字段为 AND，单字段逗号分隔的多个值为 OR。
+条件与媒体库整理的二级分类写法一致：同一条件内各字段为 AND，单字段逗号分隔的多个值为 OR。
 自然语言偏好由 AI 编译成这些规则，用户确认后写入配置；运行时只按规则判断。
 """
 from __future__ import annotations
 
 from typing import Any
 
-from .category_strategy import _csv
 from .media import resolution_rank
+
+# TMDB 类型 ID → 中文名（一句话生成规则、媒体库整理的分类展示共用）
+GENRES = {
+    16: "动画", 99: "纪录", 10764: "真人秀", 10767: "脱口秀", 18: "剧情", 35: "喜剧", 80: "犯罪", 9648: "悬疑",
+    28: "动作（电影）", 12: "冒险（电影）", 878: "科幻（电影）", 14: "奇幻（电影）", 27: "恐怖（电影）",
+    53: "惊悚（电影）", 10749: "爱情", 36: "历史", 10752: "战争（电影）", 10402: "音乐", 10751: "家庭",
+    10759: "动作冒险（剧集）", 10765: "科幻奇幻（剧集）", 10768: "战争政治（剧集）", 10762: "儿童（剧集）",
+    10766: "肥皂剧", 10763: "新闻", 10770: "电视电影", 37: "西部",
+}
 
 CONDITION_FIELDS = ("media_type", "genre_ids", "origin_country")
 MEDIA_TYPES = {"movie", "tv", "anime"}
 MIN_RESOLUTIONS = {"480p": 1, "720p": 2, "1080p": 3, "2160p": 4}
+
+
+def _csv(value: str) -> set[str]:
+    return {item.strip().upper() for item in value.split(",") if item.strip()}
 
 
 def validate_condition(cond: Any, label: str) -> None:

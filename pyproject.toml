@@ -23,6 +23,8 @@ classifiers = [
 ]
 dependencies = [
     "Jinja2>=3.1,<4",
+    # 配置文件与媒体库整理的二级分类规则（category.yaml）
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -34,12 +36,10 @@ full = [
     "python-concurrenttools==0.1.8",
     "qrcode>=7.4,<9",
     "openai>=1.40",
-    "PyYAML>=6.0",
 ]
 web = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "PyYAML>=6.0",
 ]
 agent = ["mcp>=1.30"]
 all = [
@@ -49,7 +49,6 @@ all = [
     "python-concurrenttools==0.1.8",
     "qrcode>=7.4,<9",
     "openai>=1.40",
-    "PyYAML>=6.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "mcp>=1.30",
@@ -74,6 +73,10 @@ reelay-eval = "reelay.eval:main"
 
 [tool.setuptools.packages.find]
 include = ["reelay*"]
+
+[tool.setuptools.package-data]
+# 插件随包发布的数据文件，如媒体库整理的二级分类规则
+"reelay.plugins" = ["*/*.yaml"]
 
 [tool.ruff]
 line-length = 120

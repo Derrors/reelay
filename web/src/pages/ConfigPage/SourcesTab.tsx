@@ -85,7 +85,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
           <Select
             value={text(source.approval_mode)}
             onValueChange={v => onChange({ approval_mode: v || undefined })}
-            placeholder={`沿用默认 · ${approvalLabels[text(defaults.approval_mode)] ?? '未设置'}`}
+            placeholder="未设置" fallback={{ value: text(defaults.approval_mode) }}
             options={APPROVAL_OPTIONS.map(v => ({ value: v, label: approvalLabels[v] }))}
           />
         </Field>
@@ -93,7 +93,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
           <Select
             value={text(source.save_to)}
             onValueChange={v => onChange({ save_to: v || undefined })}
-            placeholder={`沿用默认 · ${text(defaults.save_to) || '未设置'}`}
+            placeholder="未设置" fallback={{ value: text(defaults.save_to) }}
             options={withCurrent(aliases.map(a => ({ value: a, label: a })), text(source.save_to))}
           />
         </Field>
@@ -125,7 +125,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
                   <Select
                     value={text(source[slot])}
                     onValueChange={v => onChange({ [slot]: v || undefined })}
-                    placeholder={`沿用默认 · ${providerLabel(slot, text(defaults[slot]), catalog) || '未设置'}`}
+                    placeholder="未设置" fallback={{ value: text(defaults[slot]) }}
                     options={providerOptions(slot)}
                   />
                 </Field>

@@ -23,8 +23,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .core import ai, bootstrap, paths, runtime, secret_store, tmdb
-from .core.config import load_config, load_env
+from .core import ai, paths, runtime, secret_store, tmdb
+from .core.config import ensure_config, load_config
 from .core.contracts import PipelineContext, RawMessage
 from .core.store import Store
 
@@ -146,8 +146,7 @@ def _load_samples(args) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    load_env(str(paths.ENV_FILE))
-    bootstrap.prepare()
+    ensure_config()
     secret_store.use(paths.SECRETS)
     runtime.set_process_config(load_config())  # AI 接口地址与模型取系统配置
     parser = argparse.ArgumentParser(prog="reelay.eval", description="用人工裁决样本评测识别提示词与模型（只在本地运行）")

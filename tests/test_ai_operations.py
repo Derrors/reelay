@@ -47,6 +47,8 @@ def done_task(store, msg_id, *, title, media_type="tv", resolution="1080p", epis
     if tmdbid:
         ctx.parsed.raw_fields["tmdbid"] = tmdbid
     ctx.save_dir_cid, ctx.save_dir_alias = "2", "剧集"
+    ctx.ns("storage")["identity"] = {"cid": "2", "share_code": f"s{msg_id}", "title": title,
+                                     "season": ctx.parsed.season, "episodes": list(episodes)}
     ctx.state = TaskState.STORED
     ctx.result = {"storage_verified": True}
     store.save_task(ctx)
@@ -356,7 +358,7 @@ class TestDailyNarrative(Base):
         self.assertEqual(facts["last_7d"]["top"][0]["title"], "剧")
         self.report._client = FakeAI("bad")
         self.assertTrue((await self.send()).startswith("📊 Reelay 日报 2026-10-19\n过去 24 小时"))
-        self.configure({**self.CFG, "daily_report": {"narrative": False}})
+        self.configure({**self.CFG, "plugins": {"daily_report": {"narrative": False}}})
         self.report._client = FakeAI({"text": "x"})
         await self.send()
         self.assertEqual(self.report._client.calls, [])

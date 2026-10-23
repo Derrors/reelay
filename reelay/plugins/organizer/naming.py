@@ -34,20 +34,9 @@ def _environment() -> ImmutableSandboxedEnvironment:
     return env
 
 
-def migrate_legacy_template(source: str) -> str:
-    """只迁移历史内置 format 占位符；未知单花括号占位符直接拒绝。"""
-    if "{{" in source or "{%" in source or "{#" in source:
-        return source
-    source = re.sub(r"\{(title|year|resolution|ext)\}", r"{{ \1 }}", source)
-    source = source.replace("{season:02d}", "{{ season|pad2 }}").replace(
-        "{ep:02d}", "{{ episode|pad2 }}")
-    if re.search(r"(?<!\{)\{[^{}]+\}(?!\})", source):
-        raise ValueError("旧模板包含未知占位符，请改用 {{ variable }} Jinja2 语法")
-    return source
-
-
 def validate_template(source: str, label: str = "模板") -> None:
-    source = migrate_legacy_template(source)
+    if isinstance(source, str) and re.search(r"(?<!\{)\{\s*[A-Za-z_]\w*(?::[^{}]*)?\s*\}(?!\})", source):
+        raise ValueError(f"{label}使用了单花括号占位符，请改用 Jinja2 写法，如 {{{{ title }}}}")
     if not isinstance(source, str) or not source.strip() or len(source) > 4000:
         raise ValueError(f"{label}必须是长度不超过4000的非空Jinja2模板")
     env = _environment()
@@ -73,7 +62,6 @@ def validate_template(source: str, label: str = "模板") -> None:
 
 
 def render_path(source: str, values: dict[str, Any], *, label: str = "模板") -> str:
-    source = migrate_legacy_template(source)
     try:
         rendered = _environment().from_string(source).render(**values).strip()
     except Exception as exc:

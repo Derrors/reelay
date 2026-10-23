@@ -15,9 +15,9 @@ import logging
 import re
 import time
 
-from ..core import ai, runtime
-from ..core.contracts import PipelineContext, TaskState
-from ..core.registry import register
+from ...core import ai, runtime
+from ...core.contracts import PipelineContext, TaskState
+from ...core.registry import register
 
 log = logging.getLogger("reelay.plugin.failure_explainer")
 
@@ -25,7 +25,6 @@ ACTIONS = {
     "relogin": "在「115 连接」重新扫码登录",
     "share_gone": "分享已失效，等来源重新分享",
     "reconcile": "核验转存",
-    "check_drive": "到网盘确认结果后手动处理",
     "reorganize": "重新整理",
     "fix_parse": "修正片名或季集后重新整理",
     "fix_and_retry": "修正识别结果后重试",
@@ -46,7 +45,7 @@ _PROMPT = (
 def facts(ctx: PipelineContext, error: str | None, retries: int) -> dict:
     storage, organize = ctx.meta.get("storage", {}), ctx.meta.get("organize", {})
     assist = ctx.meta.get("assist", {})
-    from ..core.worker import is_auth_failure
+    from ...core.worker import is_auth_failure
     return {
         "title": ctx.parsed.title if ctx.parsed else None,
         "state": ctx.state.value, "error": ai.scrub(error)[:300] if error else None, "retries": retries,
@@ -67,8 +66,6 @@ def action(f: dict) -> str:
     if f["state"] == TaskState.NEED_MANUAL.value:
         if f["storage_phase"] == "receiving" and f["manifest_files"]:
             return "reconcile"
-        if f["storage_phase"] == "legacy_uncertain":
-            return "check_drive"
         if f["landed_files"]:
             problem = f["organize_error"] or ""
             return "fix_parse" if any(word in problem for word in _PARSE_WORDS) else "reorganize"
@@ -84,7 +81,6 @@ def rule_text(f: dict, act: str) -> str:
         "relogin": "115 登录已失效，转存与整理已暂停",
         "share_gone": error[:80],
         "reconcile": "转存请求已发出但结果不明，系统不会自动重发",
-        "check_drive": "旧版本中断的转存没有核验清单，无法自动确认是否已转存",
         "reorganize": f"文件已转存，整理没有完成：{(f['organize_error'] or '')[:60]}",
         "fix_parse": f"文件已转存，但{(f['organize_error'] or '')[:60]}",
         "fix_and_retry": f"转存前校验未通过：{error[:70]}",
@@ -95,7 +91,7 @@ def rule_text(f: dict, act: str) -> str:
 
 
 def is_final(ctx: PipelineContext, retries: int) -> bool:
-    from ..core.worker import MAX_RETRIES
+    from ...core.worker import MAX_RETRIES
     return (ctx.state == TaskState.NEED_MANUAL or bool(ctx.meta.get("task", {}).get("no_auto_retry"))
             or retries > MAX_RETRIES)
 

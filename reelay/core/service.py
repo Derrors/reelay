@@ -16,14 +16,15 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from . import ai, inbox, library, release, runtime, secret_store, subscriptions, tmdb
-from .config import config_revision, merge_config, normalize_config, render as render_config
+from .config import config_revision, merge_config, normalize_config, render as render_config, write_config
 from .validation import MEDIA_SCHEMA, validate_resource
 from .contracts import ParsedResource, PipelineContext, TaskState
 from .media import multi_season
 from .pipeline import Pipeline
 from .store import Store
-from ..plugins.organizer import Organizer
 
 
 class ConflictError(RuntimeError):
@@ -288,7 +289,7 @@ class ManagementService:
         return out
 
     def explanation(self, task_id: str, state: str | None = None) -> dict | None:
-        """失败解释扩展写下的原因与建议操作（见 plugins/failure_explainer.py）；与任务当前状态不符的旧解释不返回。"""
+        """失败解释扩展写下的原因与建议操作（见 plugins/failure_explainer/）；与任务当前状态不符的旧解释不返回。"""
         found = self.store.state_get("failure_explainer", f"task:{task_id}")
         return found if found and (state is None or found.get("state") == state) else None
 
@@ -320,8 +321,8 @@ class ManagementService:
         if save_dir_alias:
             self._validate_alias(save_dir_alias)
             ctx.save_dir_alias = save_dir_alias
-            ctx.ns("dir_router")["pinned"] = save_dir_alias
-        elif ctx.ns("dir_router").pop("pinned", None):
+            ctx.ns("library")["pinned"] = save_dir_alias
+        elif ctx.ns("library").pop("pinned", None):
             ctx.save_dir_alias = None  # 撤销此前手动指定的目录，重新按分类
         ctx.state = TaskState.QUEUED
         ctx.log("管理端批准转存")
@@ -361,8 +362,7 @@ class ManagementService:
     async def reparse(self, task_id: str) -> None:
         ctx = self._require_context(task_id)
         self._require_editable(ctx)
-        if ctx.ns("storage").get("manifest") or ctx.ns("storage").get("landed") \
-                or ctx.ns("storage").get("phase") == "legacy_uncertain":
+        if ctx.ns("storage").get("manifest") or ctx.ns("storage").get("landed"):
             raise ConflictError("已有转存检查点，不能重新解析；请核验转存或重新整理")
         previous = ctx.state
         ctx.ns("task")["generation"] = ctx.ns("task").get("generation", 0) + 1
@@ -373,7 +373,7 @@ class ManagementService:
         ctx.ns("runtime").update(config=copy.deepcopy(self.pipeline.cfg), revision=self.pipeline.revision)
         ctx.meta.pop("parse", None)
         ctx.meta.pop("preference", None)
-        ctx.meta.get("dir_router", {}).pop("preferred", None)
+        ctx.meta.get("library", {}).pop("preferred", None)
         ctx.meta.pop("storage", None)  # 无远端写检查点，显式重新解析可重新选择 Provider。
         ctx.meta["parse_request"] = {"bypass_cache": True}  # 人工要求重新解析，不复用缓存结果
         ctx.state = TaskState.RECEIVED
@@ -389,7 +389,7 @@ class ManagementService:
             self._validate_alias(save_dir_alias)
             ctx.save_dir_alias = save_dir_alias
             ctx.save_dir_cid = self.pipeline.cfg["save_dirs"][save_dir_alias]
-            ctx.meta.pop("dir_router", None)  # 改到其他目录后不再套用分类子目录
+            ctx.meta.pop("library", None)  # 改到其他目录后不再套用分类子目录
             ctx.ns("organize").pop("plan", None)
             ctx.ns("organize").pop("base_cid", None)
         if not ctx.ns("storage").get("landed"):
@@ -416,9 +416,7 @@ class ManagementService:
         ctx = self._require_context(task_id)
         self._require_editable(ctx)
         storage = ctx.ns("storage")
-        if storage.get("phase") == "legacy_uncertain" or (
-            storage.get("manifest") and storage.get("phase") != "stored"
-        ):
+        if storage.get("manifest") and storage.get("phase") != "stored":
             raise ConflictError("转存结果未核验，不能修改解析结果")
         validate_resource(patch)
         if storage.get("landed") and set(patch) & {"share_code", "receive_code"}:
@@ -1018,17 +1016,6 @@ class ManagementService:
             except ai.AIError as exc:
                 raise ConflictError(f"AI 起草规则失败（{exc.category}），请稍后重试") from None
 
-    def organize_preview(
-        self,
-        *,
-        parsed: dict[str, Any],
-        landed: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        resource = ParsedResource(**validate_resource(parsed))
-        from . import runtime
-        with runtime.scope(self.pipeline.cfg):
-            return Organizer()._build_plan(resource, landed)
-
     def get_config(self) -> dict[str, Any]:
         self.pipeline.reload_config()
         return copy.deepcopy(self.pipeline.cfg)
@@ -1041,15 +1028,8 @@ class ManagementService:
 
     async def save_config_text(self, text: str) -> dict[str, Any]:
         try:
-            import yaml
             config = yaml.safe_load(text) or {}
-        except ImportError:
-            import json
-            try:
-                config = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ValueError("配置文本格式无效；未安装 PyYAML 时请使用 JSON") from exc
-        except Exception as exc:
+        except yaml.YAMLError as exc:
             raise ValueError("配置文本格式无效") from exc
         if not isinstance(config, dict):
             raise ValueError("配置根节点必须是对象")
@@ -1062,23 +1042,9 @@ class ManagementService:
         unknown = set(config["plugins"]) - self.pipeline.reg.plugin_names() - set(self.pipeline.cfg["plugins"])
         if unknown:
             raise ValueError(f"plugins 包含未安装的插件：{'、'.join(sorted(unknown))}")
-        rendered = render_config(config)
         async with self._config_lock:
-            target = self.config_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            import os
-            import tempfile
-            fd, name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-            temporary = Path(name)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as output:
-                    output.write(rendered)
-                    output.flush()
-                    os.fsync(output.fileno())
-                temporary.replace(target)
-                self.pipeline.apply_config(config)
-            finally:
-                temporary.unlink(missing_ok=True)
+            write_config(self.config_path, config)
+            self.pipeline.apply_config(config)
         return config
 
     @staticmethod

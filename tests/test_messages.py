@@ -16,7 +16,7 @@ def tv(**fields) -> PipelineContext:
     values = {"is_media": True, "title": "玉簟秋", "year": 2026, "media_type": "tv", "season": 1, "episodes": [17],
               "resolution": "2160p", "size": "2.53 GB", "release": {**release.empty(), "subtitles": ["chs"], "packaging": "single"}}
     ctx.parsed = ParsedResource(**{**values, **fields})
-    ctx.meta["dir_router"] = {"preview": "/测试/剧集/国产剧集"}
+    ctx.meta["library"] = {"preview": "/测试/剧集/国产剧集"}
     return ctx
 
 

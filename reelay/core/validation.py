@@ -41,8 +41,8 @@ def validate_resource(data: Any, *, complete: bool = False) -> dict[str, Any]:
         allowed = set(MEDIA_SCHEMA["properties"])
         optional_new = {"genre_ids", "origin_country"}
         if not optional_new.isdisjoint(data) and not optional_new <= set(data):
-            raise ValueError("AI 解析结果新增分类字段必须同时提供")
-        # release 晚于其他字段加入：不支持 schema 的兼容接口可能不返回它。
+            raise ValueError("AI 解析结果的 genre_ids 与 origin_country 必须同时提供")
+        # 不支持结构化输出的模型（json_object 模式）可能不返回分类字段与 release
         accepted = [allowed, allowed - optional_new]
         accepted += [fields - {"release"} for fields in accepted]
         if set(data) not in accepted:

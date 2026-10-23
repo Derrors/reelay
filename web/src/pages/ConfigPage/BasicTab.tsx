@@ -46,7 +46,6 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
   const defaults = obj(config.defaults);
   const forward = obj(config.forward);
   const sources = rows(config.sources);
-  const routing = rows(config.routing);
   const aliases = Object.keys(dirs);
   const [newAlias, setNewAlias] = useState('');
   const [newDir, setNewDir] = useState<{ id: string; name: string } | null>(null);
@@ -58,7 +57,6 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
   const usage = (alias: string) => ({
     isDefault: text(defaults.save_to) === alias,
     sources: sources.filter(s => s.save_to === alias).length,
-    routing: routing.some(r => r.dir === alias || r.default === alias),
   });
 
   const addDir = () => {
@@ -71,7 +69,7 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
   };
   const removeDir = (alias: string) => {
     const u = usage(alias);
-    const users = [u.isDefault && '默认规则', u.sources && `${u.sources} 个监听来源`, u.routing && '分类规则'].filter(Boolean);
+    const users = [u.isDefault && '默认规则', u.sources && `${u.sources} 个监听来源`].filter(Boolean);
     if (users.length) { toast.error(`「${alias}」正被${users.join('、')}使用，请先改用其他目录再删除`); return; }
     const next = { ...dirs };
     delete next[alias];

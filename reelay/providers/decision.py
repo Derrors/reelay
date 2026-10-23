@@ -192,7 +192,7 @@ class LLMDecision(ai.UsesAI, SubscriptionDecision):
         return decision
 
     async def _prefer(self, ctx: PipelineContext) -> Decision:
-        ctx.meta.get("dir_router", {}).pop("preferred", None)  # 重新解析后不沿用上次的选择
+        ctx.meta.get("library", {}).pop("preferred", None)  # 重新解析后不沿用上次的选择
         baseline = await super().decide(ctx)
         if baseline == Decision.SKIP or ctx.meta.get("parse", {}).get("fallback"):
             return baseline
@@ -240,7 +240,7 @@ class LLMDecision(ai.UsesAI, SubscriptionDecision):
             ctx.ns("preference")["history"] = len(history)
         if data["save_to"]:
             ctx.save_dir_alias = data["save_to"]
-            # 与手动指定目录同等对待：二级分类不再覆盖 AI 按偏好选出的目录（见 dir_router.route）。
-            ctx.ns("dir_router")["preferred"] = data["save_to"]
+            # 与手动指定目录同等对待：二级分类不再覆盖 AI 按偏好选出的目录（见 organizer.route）。
+            ctx.ns("library")["preferred"] = data["save_to"]
         decision = Decision(data["decision"])
         return Decision.ASK if baseline == Decision.ASK and decision == Decision.SAVE else decision

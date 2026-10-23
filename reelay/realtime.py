@@ -29,9 +29,8 @@ RECENT_LIMIT = 200
 class EventBus:
     """进程内 SSE 订阅者集合 + 唯一观察者。"""
 
-    def __init__(self, *, store, service) -> None:
+    def __init__(self, *, store) -> None:
         self._store = store
-        self._service = service
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._task: asyncio.Task | None = None
         self._last_signature: tuple | None = None

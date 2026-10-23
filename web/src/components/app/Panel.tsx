@@ -17,10 +17,12 @@ export function Panel({ title, description, icon: Icon, actions, children, class
   return (
     <section className={cn('rounded-xl border border-card-border bg-card text-card-foreground shadow-xs', className)}>
       {title || actions ? (
-        <div className="flex items-start justify-between gap-3 border-b border-border/70 px-4 py-3.5 sm:px-5 sm:py-4">
-          <div className="flex min-w-0 items-start gap-3">
+        <div className={cn('flex justify-between gap-3 border-b border-border/70 px-4 py-3.5 sm:px-5 sm:py-4',
+          description ? 'items-start' : 'items-center')}>
+          {/* 只有标题时与图标居中对齐；有描述时图标对齐标题行 */}
+          <div className={cn('flex min-w-0 gap-3', description ? 'items-start' : 'items-center')}>
             {Icon ? (
-              <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+              <span className={cn('grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary', description && 'mt-0.5')}>
                 <Icon className="size-4" />
               </span>
             ) : null}

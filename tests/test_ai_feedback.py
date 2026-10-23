@@ -18,8 +18,7 @@ from reelay.core.registry import discover
 from reelay.core.service import ConflictError, ManagementService
 from reelay.core.store import Store
 from reelay.core.validation import validate_resource
-from reelay.plugins.dir_router import DirRouter
-from reelay.plugins.organizer import Organizer
+from reelay.plugins.organizer import LibraryRouter, build_plan
 from reelay.providers.decision import DefaultDecision, LLMDecision
 from reelay.providers.parser import LLMParser
 from reelay.providers.storage import P115Storage, _select_video_items
@@ -109,7 +108,7 @@ class TestPreferredDirectory(Base):
 
     async def route(self, ctx):
         with runtime.scope(self.pl.cfg):
-            await DirRouter().run(ctx)
+            await LibraryRouter().run(ctx)
         return ctx
 
     async def test_category_no_longer_overrides_the_preferred_directory(self):
@@ -119,7 +118,7 @@ class TestPreferredDirectory(Base):
         self.assertEqual(self.pl.target_preview(ctx), "默认")  # 审批卡片与管理台显示 AI 选出的目录
         await self.route(ctx)
         self.assertEqual(ctx.save_dir_alias, "默认")
-        self.assertNotIn("relative_category", ctx.meta["dir_router"])
+        self.assertNotIn("relative_category", ctx.meta["library"])
         self.assertTrue(any("AI 按偏好选择目录「默认」" in line for line in ctx.trail))
 
     async def test_preferred_directory_matching_category_root_keeps_subfolder(self):
@@ -127,13 +126,13 @@ class TestPreferredDirectory(Base):
         with runtime.scope(self.pl.cfg):
             await provider.decide(ctx)
         await self.route(ctx)
-        self.assertEqual((ctx.save_dir_alias, ctx.meta["dir_router"]["relative_category"]), ("动漫", "日本番剧"))
+        self.assertEqual((ctx.save_dir_alias, ctx.meta["library"]["relative_category"]), ("动漫", "日本番剧"))
 
     async def test_manual_choice_beats_preferred_directory(self):
         ctx, provider = self.decided("默认")
         with runtime.scope(self.pl.cfg):
             await provider.decide(ctx)
-        ctx.ns("dir_router")["pinned"] = "电影"
+        ctx.ns("library")["pinned"] = "电影"
         await self.route(ctx)
         self.assertEqual(ctx.save_dir_alias, "电影")
 
@@ -143,7 +142,7 @@ class TestPreferredDirectory(Base):
             await provider.decide(ctx)
             provider._client = FakeAI({"decision": "ask", "save_to": None, "reason": "拿不准"})
             await provider.decide(ctx)
-        self.assertNotIn("preferred", ctx.meta["dir_router"])
+        self.assertNotIn("preferred", ctx.meta["library"])
 
 
 class TestFeedbackSamples(Base):
@@ -350,7 +349,7 @@ class TestAssistBeforeManual(Base):
         p = ParsedResource(is_media=True, media_type="tv", title="剧", season=1, episodes=[1, 2])
         landed = [{"id": "1", "name": "剧 一.mp4"}, {"id": "2", "name": "剧 二.mp4"}]
         with runtime.scope(self.pl.cfg):
-            plan = Organizer()._build_plan(p, landed, mapping={"剧 一.mp4": (1, 1), "剧 二.mp4": (1, 2)})
+            plan = build_plan(p, landed, mapping={"剧 一.mp4": (1, 1), "剧 二.mp4": (1, 2)})
         self.assertEqual([x["target_name"] for x in plan], ["剧 - S01E01.mp4", "剧 - S01E02.mp4"])
 
 
@@ -389,7 +388,6 @@ class TestCompileRules(Base):
             {"media_type": None, "genre_ids": "16", "origin_country": "JP"}],
             "deny": [{"media_type": None, "genre_ids": "10764,10767", "origin_country": None}],
             "min_resolution": "1080p"},
-        "categories": None,
         "release": {"prefer_subtitles": ["chs"], "prefer_audio": ["mandarin"], "hdr": "any", "prefer_sources": []},
         "summary": "只收国产剧和日本动画，不要综艺，至少 1080p",
         "unsupported": [],
@@ -413,7 +411,7 @@ class TestCompileRules(Base):
 
     async def test_invalid_draft_is_sent_back_once_with_the_error(self):
         bad = json.loads(json.dumps(self.DRAFT))
-        bad["categories"] = [{"media": "tv", "path": "只有一级", "genre_ids": None, "origin_country": None}]
+        bad["filters"]["allow"] = [{"media_type": None, "genre_ids": "动画", "origin_country": None}]
         self.parser._client = FakeAI(bad, self.DRAFT)
         result = await self.service.compile_rules("国产剧")
         self.assertIn("未通过配置校验", self.parser._client.calls[1]["messages"][-1]["content"])
@@ -485,8 +483,8 @@ class TestReleaseInfo(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ctx.meta["parse"]["fallback"])
 
     def test_release_is_optional_for_older_models_and_validated_on_patch(self):
-        legacy = media()
-        validate_resource(dict(legacy), complete=True)
+        without_release = media()  # 不带 release 字段
+        validate_resource(dict(without_release), complete=True)
         with self.assertRaises(ValueError):
             validate_resource({"release": {"audio": ["klingon"]}})
         with self.assertRaises(ValueError):
@@ -532,4 +530,3 @@ class TestStoreHousekeeping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

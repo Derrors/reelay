@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch';
 import type { IExtension, IExtensionField } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { Field, Notice, SectionHeading, SwitchRow } from './fields';
+import { FlowOverview } from './FlowOverview';
 import {
   CHOICE_LABELS, SLOT_LABELS, SLOT_ORDER, equal, extensionKeys, fieldDefault, getPath, isEnabled, obj, providerHint,
   providerLabel, setPath, stageNames, storagesInUse, strings, text, type Catalog, type Obj,
@@ -86,8 +87,9 @@ function ExtensionCard({ x, config, saved, setConfig, busy, open, catalog, onOpe
     ? storagesInUse(config).filter(s => s !== x.required_storage) : [];
   const expanded = configurable && open;
   return (
-    <article className={cn(
+    <article id={`ext-${x.name}`} tabIndex={-1} className={cn(
       'flex min-w-0 flex-col rounded-xl border border-card-border bg-card shadow-xs transition-colors',
+      'outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20',
       expanded && 'lg:col-span-2',
       dirty && 'border-warning/40',
     )}>
@@ -192,6 +194,8 @@ export function ExtensionsTab({ catalog, hooks, events, config, saved, setConfig
           </ul>
         </Notice>
       ) : null}
+
+      <FlowOverview catalog={catalog} hooks={hooks} events={events} config={config} />
 
       <Panel
         icon={Workflow}

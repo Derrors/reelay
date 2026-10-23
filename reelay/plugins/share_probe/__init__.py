@@ -16,11 +16,11 @@ import logging
 import os
 import time
 
-from ..core.auth115 import get_store
-from ..core.contracts import PipelineContext, TaskState
-from ..core.media import pairs_label
-from ..core.registry import register
-from .episode_tracker import format_episodes
+from ...core.auth115 import get_store
+from ...core.contracts import PipelineContext, TaskState
+from ...core.media import pairs_label
+from ...core.registry import register
+from ..episode_tracker import format_episodes
 
 log = logging.getLogger("reelay.plugin.share_probe")
 
@@ -96,7 +96,7 @@ class ShareProbe:
     @staticmethod
     def _probe(parsed, describe: bool) -> dict:
         from p115client import P115ShareFileSystem
-        from ..providers.storage import describe_share, share_problem
+        from ...providers.storage import describe_share, share_problem
         client = get_store().cookie_client()
         problem = share_problem(client, parsed.share_code, parsed.receive_code)
         if problem:

@@ -41,7 +41,6 @@ class TestManagementApi(unittest.TestCase):
                 "save_dirs": {"默认": "0"},
                 "defaults": {"approval_mode": "manual", "parser": "regex", "save_to": "默认"},
                 "sources": [],
-                "routing": [],
             }, ensure_ascii=False),
             encoding="utf-8",
         )
@@ -68,7 +67,7 @@ class TestManagementApi(unittest.TestCase):
         self.assertNotIn("REELAY_115_COOKIES", response.text)
 
     def test_organize_preview(self):
-        response = self.client.post("/api/organize/preview", json={
+        response = self.client.post("/api/extensions/organizer/actions/preview_plan", json={
             "parsed": {
                 "is_media": True,
                 "media_type": "tv",
@@ -220,7 +219,7 @@ class TestAuth115Api(unittest.TestCase):
         (root / "config.yaml").write_text(json.dumps({
             "save_dirs": {"默认": "0"},
             "defaults": {"approval_mode": "manual", "parser": "regex", "save_to": "默认"},
-            "sources": [], "routing": [],
+            "sources": [],
         }), encoding="utf-8")
         self.app = create_app(
             data_dir=root,
@@ -360,7 +359,7 @@ class TestRealtimeShutdown(unittest.IsolatedAsyncioTestCase):
         # 停止时不结束推送流，uvicorn 会一直等这条长连接，直到 systemd / Docker 超时强杀
         import asyncio
         from reelay.realtime import EventBus, close_all_streams, event_stream
-        bus = EventBus(store=None, service=None)
+        bus = EventBus(store=None)
         stream = event_stream(bus)
         self.assertEqual(await anext(stream), b": connected\n\n")
         await anext(stream)  # hello

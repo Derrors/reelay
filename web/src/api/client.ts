@@ -4,7 +4,6 @@ import type {
   IDashboard,
   IInboxItem,
   IDelivery,
-  IOrganizePreviewItem,
   IParsedResource,
   ITaskDetail,
   ITaskSummary,
@@ -92,13 +91,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ values }),
     }),
-  organizerTemplatePreview: (kind: 'movie' | 'tv', template: string) =>
-    request<{ path: string }>('extensions/organizer/preview', {
-      method: 'POST', body: JSON.stringify({ kind, template }),
-    }),
-  dirRouterPreview: (categories: Record<string, unknown>, media_type: string, genre_ids: number[], origin_country: string[]) =>
-    request<{ path: string | null }>('extensions/dir-router/preview', {
-      method: 'POST', body: JSON.stringify({ categories, media_type, genre_ids, origin_country }),
+  /** 调用插件在 ui_actions 里声明的动作（如 organizer 的 preview_naming）；返回结构由插件决定。 */
+  extensionAction: <T>(name: string, action: string, payload: Record<string, unknown> = {}) =>
+    request<T>(`extensions/${encodeURIComponent(name)}/actions/${encodeURIComponent(action)}`, {
+      method: 'POST', body: JSON.stringify(payload),
     }),
   validateConfig: (config: Record<string, unknown>) => request<{ ok: boolean }>('config/validate', {
     method: 'POST', body: JSON.stringify({ config }),
@@ -122,10 +118,5 @@ export const api = {
     request<{ config: Record<string, unknown>; text: string }>('config/text', {
       method: 'PUT',
       body: JSON.stringify({ text }),
-    }),
-  organizePreview: (parsed: IParsedResource, landed: Array<{ id: string; name: string }>) =>
-    request<{ items: IOrganizePreviewItem[] }>('organize/preview', {
-      method: 'POST',
-      body: JSON.stringify({ parsed, landed }),
     }),
 };

@@ -16,9 +16,9 @@ import asyncio
 import logging
 import os
 
-from ..core import tmdb
-from ..core.contracts import PipelineContext
-from ..core.registry import register
+from ...core import tmdb
+from ...core.contracts import PipelineContext
+from ...core.registry import register
 
 log = logging.getLogger("reelay.plugin.tmdb")
 
@@ -70,7 +70,7 @@ class TmdbEnrich:
             ns["note"] = "模拟模式，沿用原标题" if self._dry_run else "未配 TMDB key，沿用 AI 标题"
             return True
 
-        from ..core import runtime
+        from ...core import runtime
         language = runtime.get("tmdb.language", "zh-CN")
         timeout = runtime.get("tmdb.timeout", 10)
         hit, candidates = None, []

@@ -1,8 +1,8 @@
 """运行时共享上下文。
 
 Hook / EventListener 的 ``run(ctx)`` 签名里只有单条任务的 ctx，拿不到全局配置。
-Pipeline 用 ContextVar 注入当前任务的配置和内核服务，协程和 to_thread 互相隔离。
-set_config 仅保留给独立插件调用的兼容入口，不用于应用之间共享配置。
+Pipeline 用 ContextVar 注入当前任务的配置和内核服务，协程和 to_thread 互相隔离；
+作用域之外读到的是进程配置（``set_process_config``）。
 
 扩展通过 ``services()`` 使用内核能力，而不是直接持有 Store：
 
@@ -88,11 +88,6 @@ def observe(component: str, status: str, error: str = "") -> None:
         current.store.heartbeat(component, status=status, error=error, event_driven=True)
 
 
-def set_config(cfg: dict[str, Any]) -> None:
-    global _CONFIG
-    _CONFIG = cfg or {}
-
-
 def set_process_config(cfg: dict[str, Any]) -> None:
     global _PROCESS
     _PROCESS = cfg or {}
@@ -102,7 +97,7 @@ def get_config() -> dict[str, Any]:
     scoped = _SCOPED.get()
     if scoped is not None:
         return scoped
-    return _CONFIG or _PROCESS
+    return _PROCESS
 
 
 def plugin_config(name: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:

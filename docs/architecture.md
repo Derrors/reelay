@@ -21,7 +21,7 @@ flowchart LR
     end
     subgraph store[转存与整理]
         direction TB
-        bs["before_save<br/>分类路由"] --> prep[准备清单] --> save[转存 Storage] --> verify[读回核验] --> as["after_save<br/>整理"]
+        bs["before_save<br/>选存放目录"] --> prep[准备清单] --> save[转存 Storage] --> verify[读回核验] --> as["after_save<br/>整理"]
     end
     recv --> ident
     ident -- save --> store

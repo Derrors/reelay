@@ -28,5 +28,6 @@ src/
 ├── api/          # REST 客户端（apiUrl 统一拼接前缀）
 ├── components/   # 布局、登录、业务组件；app/ 为页面通用组件，ui/ 为 shadcn 组件
 ├── lib/          # 类型、状态文案、SSE 实时通道
-└── pages/        # 各页面，按路由拆分；统计页按需加载
+├── pages/        # 各页面，按路由拆分；统计页按需加载
+└── plugins/      # 内置插件的专用界面（设置编辑器、插件页面），每个插件一个目录（与后端 reelay/plugins/<名>/ 对应），index.ts 按 config_type 登记编辑器
 ```

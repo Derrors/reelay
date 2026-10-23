@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import asyncio
 
-from .core import bootstrap, paths, secret_store
-from .core.config import load_env
+from .core import paths, secret_store
+from .core.config import ensure_config
 
 
 async def login() -> None:
     from telethon import TelegramClient
-    load_env(str(paths.ENV_FILE))
-    bootstrap.prepare()
+    ensure_config()
     store = secret_store.use(paths.SECRETS)
     api_id, api_hash = store.get("telegram_api_id"), store.get("telegram_api_hash")
     if not api_id or not api_hash:

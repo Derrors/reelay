@@ -21,9 +21,9 @@ import asyncio
 import logging
 import time
 
-from ..core import runtime, subscriptions, tmdb
-from ..core.contracts import PipelineContext
-from ..core.registry import register
+from ...core import runtime, subscriptions, tmdb
+from ...core.contracts import PipelineContext
+from ...core.registry import register
 
 log = logging.getLogger("reelay.plugin.episode_tracker")
 

@@ -23,8 +23,8 @@ def tv_ctx(title="剧", tmdbid=100, season=1, episodes=(3,), matched=True, msg_i
 
 
 class TestSubscriptionDecision(Base):
-    CFG = {**Base.CFG, "episode_tracker": {"subscriptions": [
-        {"title": "剧", "season": 1, "tmdbid": 100}, {"title": "别的剧", "season": 2, "auto": False}]}}
+    CFG = {**Base.CFG, "subscriptions": [
+        {"title": "剧", "season": 1, "tmdbid": 100}, {"title": "别的剧", "season": 2, "auto": False}]}
 
     async def decide(self, ctx, provider=None):
         with self.pl._scope(self.pl.cfg):
@@ -57,6 +57,8 @@ class TestSubscriptionDecision(Base):
         stored.state = TaskState.STORED
         stored.save_dir_cid = "2"
         stored.result = {"storage_verified": True}
+        stored.ns("storage")["identity"] = {"cid": "2", "share_code": stored.parsed.share_code,
+                                            "title": stored.parsed.title, "season": 1, "episodes": [3]}
         self.store.save_task(stored)
         self.store.finish_transfer(stored)
         self.assertEqual(await self.decide(tv_ctx(msg_id="2", episodes=(3,))), Decision.ASK)
@@ -287,7 +289,7 @@ class TestSourceDraft(Base):
 
 class TestMultiSeasonAndShareProbe(Base):
     """与「跨多季的合集按季转存」「消息没写集数时读取分享」配合：订阅放行、建议、推荐版本与「追这部剧」。"""
-    CFG = {**Base.CFG, "episode_tracker": {"subscriptions": [{"title": "剧", "season": 2, "tmdbid": 100}]}}
+    CFG = {**Base.CFG, "subscriptions": [{"title": "剧", "season": 2, "tmdbid": 100}]}
 
     def probed(self, pairs, msg_id="1", status="ok", **fields):
         """消息没写季集、由 share_probe 读出（季, 集）的剧集。"""

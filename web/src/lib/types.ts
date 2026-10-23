@@ -1,4 +1,3 @@
-// EXPORTS: TaskState, ITaskSummary, ITaskDetail, IDashboard, IConnection, IConfigResponse, IOrganizePreviewItem
 export type TaskState =
   | 'received'
   | 'parsed'
@@ -242,6 +241,8 @@ export interface IExtension {
   name: string; kind: 'provider' | 'hook' | 'event'; slot: string; label: string;
   description: string; enabled: boolean; order: number | null;
   fields: IExtensionField[]; config_section: string | null; config_type?: string | null; required_storage: string | null;
+  /** 插件声明的动作（POST /api/extensions/<name>/actions/<action>） */
+  actions?: string[];
 }
 export interface IExtensionCatalog {
   providers: Record<string, IExtension[]>; hooks: IExtension[]; events: IExtension[];
@@ -258,11 +259,4 @@ export interface IConfigResponse {
   text: string;
   connections: Record<string, IConnection>;
   config_error: string | null;
-}
-
-export interface IOrganizePreviewItem {
-  src_id: string;
-  src_name: string;
-  target_dir: string;
-  target_name: string;
 }

@@ -1,4 +1,4 @@
-"""配置分组（system / plugins）、旧配置与环境变量的迁移、密钥存储与设置接口。全部在临时目录中。"""
+"""配置分组（system / plugins）、首次启动的默认配置、密钥存储与设置接口。全部在临时目录中。"""
 from __future__ import annotations
 
 import json
@@ -12,9 +12,8 @@ from unittest.mock import patch
 
 import yaml
 
-from reelay.core import bootstrap, secret_store
-from reelay.core.auth115 import CredentialStore
-from reelay.core.config import is_legacy, load_config, normalize_config, render, to_file
+from reelay.core import secret_store
+from reelay.core.config import ensure_config, load_config, normalize_config, render, to_file
 from reelay.core.registry import Registry, discover
 
 try:
@@ -22,44 +21,31 @@ try:
 except ImportError:  # pragma: no cover
     TestClient = None
 
-LEGACY = {
-    "save_dirs": {"剧集": "2", "默认": "1"},
-    "defaults": {"save_to": "默认"},
-    "organize": {"conflict": "skip"},
-    "dir_router": {"categories": {"movie": {"电影/全部": {}}, "tv": {"剧集/全部": {}}}},
-    "tmdb": {"language": "en-US"},
-    "daily_report": {"narrative": False},
-    "episode_tracker": {"lookback_days": 14, "subscriptions": [{"title": "剧", "season": 1}]},
-    "plugins": {"strm": False, "daily_report": True},  # strm 是已移除的内置插件
-    "strm": {"output_dir": "/media/strm"},
-    "audit": {"level": "info"},  # 外部插件的旧配置：认不出归属，原样保留
+SAMPLE = {
+    "system": {"save_dirs": {"剧集": "2", "默认": "1"}, "defaults": {"save_to": "默认"},
+               "tmdb": {"language": "en-US"}, "subscriptions": [{"title": "剧", "season": 1}]},
+    "plugins": {"organizer": {"conflict": "skip"}, "daily_report": {"enabled": True, "narrative": False}},
 }
 
 
 class TestFileStructure(unittest.TestCase):
-    def test_legacy_file_is_converted_to_system_and_plugins(self):
-        self.assertTrue(is_legacy(LEGACY))
-        cfg = normalize_config(LEGACY)
-        self.assertEqual(cfg["subscriptions"], [{"title": "剧", "season": 1}])
-        self.assertEqual(cfg["tmdb"]["language"], "en-US")
-        plugins = cfg["plugins"]
-        self.assertEqual(plugins["organizer"]["conflict"], "skip")
-        self.assertIn("tv", plugins["organizer"]["naming"])  # 内置插件补齐默认设置
-        self.assertEqual(plugins["dir_router"]["categories"]["tv"], {"剧集/全部": {}})
-        self.assertEqual(plugins["daily_report"], {"enabled": True, "narrative": False})
-        self.assertEqual(plugins["episode_tracker"], {"lookback_days": 14})
-        self.assertNotIn("strm", plugins)  # 已移除的插件，旧设置丢弃
-        for key in ("organize", "dir_router", "daily_report", "episode_tracker", "strm"):
-            self.assertNotIn(key, cfg)
-        self.assertEqual(cfg["audit"], {"level": "info"})
+    def test_layout_settings_are_validated(self):
+        for organizer, message in (({"layout": "flat"}, "layout"),
+                                   ({"type_dirs": {"movie": "电影/外语", "tv": "剧集", "anime": ""}}, "单层文件夹名"),
+                                   ({"type_dirs": {"movie": "", "tv": "剧集", "anime": ""}}, "非空")):
+            with self.subTest(organizer=organizer), self.assertRaisesRegex(ValueError, message):
+                normalize_config({"plugins": {"organizer": organizer}})
 
     def test_file_round_trip_keeps_the_same_config(self):
-        cfg = normalize_config(LEGACY)
+        cfg = normalize_config(SAMPLE)
+        self.assertEqual((cfg["tmdb"]["language"], cfg["plugins"]["organizer"]["conflict"]), ("en-US", "skip"))
+        self.assertIn("tv", cfg["plugins"]["organizer"]["naming"])  # 内置插件补齐默认设置
         data = to_file(cfg)
-        self.assertEqual(set(data), {"system", "plugins", "audit"})
+        self.assertEqual(set(data), {"system", "plugins"})
+        with self.assertRaisesRegex(ValueError, "无法识别的配置项：audit"):
+            normalize_config({**SAMPLE, "audit": {"level": "info"}})
         self.assertIn("subscriptions", data["system"])
         self.assertNotIn("plugins", data["system"])
-        self.assertFalse(is_legacy(data))
         text = render(cfg)
         self.assertTrue(text.startswith("# Reelay 配置"))
         self.assertEqual(normalize_config(yaml.safe_load(text)), cfg)
@@ -90,6 +76,32 @@ class TestFileStructure(unittest.TestCase):
                          ("plugins.daily_report", "plugins.daily_report.narrative"))
         with self.assertRaises(ValueError):  # 插件字段按声明的类型校验
             registry.validate_config(normalize_config({"plugins": {"daily_report": {"narrative": "no"}}}))
+
+
+class TestPluginSettings(unittest.TestCase):
+    def test_builtin_plugin_settings_live_in_the_plugin_directory(self):
+        # 内置插件的默认设置与校验在 reelay/plugins/<名>/settings.py，core 按目录找到它们
+        from reelay.core.config import builtin_settings
+        from reelay.plugins.organizer import settings
+        self.assertIs(builtin_settings()["organizer"], settings)
+        organizer = normalize_config({})["plugins"]["organizer"]
+        self.assertEqual(organizer, settings.DEFAULTS)
+        with self.assertRaisesRegex(ValueError, "conflict"):
+            normalize_config({"plugins": {"organizer": {"conflict": "keep"}}})
+        with self.assertRaisesRegex(ValueError, "naming.movie"):
+            normalize_config({"plugins": {"organizer": {"naming": {"movie": "{{ title.__class__ }}.{{ ext }}"}}}})
+
+    def test_extensions_bound_to_a_storage_reject_other_storages(self):
+        class LocalStorage:
+            name = "local"
+
+        registry = discover()
+        registry.add_provider("storage", LocalStorage())
+        cfg = normalize_config({"save_dirs": {"默认": "1"}, "sources": [{"bot": "@local", "storage": "local"}]})
+        with self.assertRaisesRegex(ValueError, "organizer 仅支持 p115"):
+            registry.validate_config(cfg)
+        cfg["plugins"]["organizer"]["enabled"] = False
+        registry.validate_config(cfg)
 
 
 class TestSecretStore(unittest.TestCase):
@@ -126,106 +138,26 @@ class TestSecretStore(unittest.TestCase):
             self.assertEqual(secret_store.get("llm_api_key"), "k")
 
 
-class TestBootstrap(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
-        self.data = self.root / "data"
-        self.data.mkdir()
-        # 旧位置只在临时目录里找：真实项目根目录下的 config.yaml 绝不能被测试移走
-        guard = patch.object(bootstrap.paths, "PROJECT_ROOT", self.root / "no-project-root")
-        guard.start()
-        self.addCleanup(guard.stop)
-
-    def tearDown(self):
-        self.temp.cleanup()
-
-    def secrets(self):
-        return secret_store.SecretStore(self.data / "secrets.json")
-
-    def test_legacy_config_is_backed_up_and_rewritten(self):
-        (self.data / "config.yaml").write_text(json.dumps(LEGACY, ensure_ascii=False), encoding="utf-8")
-        bootstrap.prepare(self.data, env={})
-        self.assertEqual(len(list(self.data.glob("config.yaml.bak-*"))), 1)
-        data = yaml.safe_load((self.data / "config.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(set(data), {"system", "plugins", "audit"})
-        self.assertEqual(load_config(self.data / "config.yaml"), normalize_config(LEGACY))
-        bootstrap.prepare(self.data, env={})  # 已是新结构：不再备份、不再改写
-        self.assertEqual(len(list(self.data.glob("config.yaml.bak-*"))), 1)
-
-    def test_config_in_a_legacy_location_is_moved_into_data(self):
-        legacy = self.root / "custom.yaml"
-        legacy.write_text(json.dumps({"save_dirs": {"默认": "7"}, "defaults": {"save_to": "默认"}}), encoding="utf-8")
-        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_CONFIG_PATH": str(legacy)}, project_root=self.root)
-        self.assertFalse(legacy.exists())
-        self.assertTrue((self.root / "custom.yaml.migrated").exists())
-        self.assertEqual(load_config(self.data / "config.yaml")["save_dirs"], {"默认": "7"})
-        # 项目根目录下的旧 config.yaml
-        (self.data / "config.yaml").unlink()
-        (self.root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "8"}, "defaults": {"save_to": "默认"}}),
-                                               encoding="utf-8")
-        bootstrap.prepare(self.data, legacy_locations=True, env={}, project_root=self.root)
-        self.assertEqual(load_config(self.data / "config.yaml")["save_dirs"], {"默认": "8"})
-        self.assertTrue((self.root / "config.yaml.migrated").exists())
-
-    def test_environment_is_imported_once_and_web_changes_win(self):
-        env = {"REELAY_LLM_API_KEY": "sk-old", "REELAY_LLM_MODEL": "m1", "REELAY_OWNER_ID": "42",
-               "REELAY_TG_BACKFILL_MAX_DAYS": "3", "REELAY_115_SHARE_QPS": "0.5", "REELAY_WEB_PASSWORD": "pw",
-               "REELAY_115_COOKIES": "UID=1;CID=2"}
-        bootstrap.prepare(self.data, env=env)
-        cfg = load_config(self.data / "config.yaml")
-        self.assertEqual((cfg["llm"]["model"], cfg["telegram"]["owner_id"], cfg["telegram"]["backfill_max_days"],
-                          cfg["p115"]["share_qps"]), ("m1", "42", 3, 0.5))
-        secrets = self.secrets()
-        self.assertEqual(secrets.get("llm_api_key"), "sk-old")
-        self.assertTrue(secrets.check_password("pw"))
-        self.assertNotIn("sk-old", (self.data / "config.yaml").read_text(encoding="utf-8"))
-        self.assertIn("UID=1", CredentialStore(self.data / "115_credentials.json").cookies)
-        # 管理台清除了密钥、改了模型：.env 没变就不会再覆盖回去
-        secrets.update({"llm_api_key": None})
-        path = self.data / "config.yaml"
-        path.write_text(path.read_text(encoding="utf-8").replace("model: m1", "model: m2"), encoding="utf-8")
-        bootstrap.prepare(self.data, env=env)
-        self.assertIsNone(self.secrets().get("llm_api_key"))
-        self.assertEqual(load_config(path)["llm"]["model"], "m2")
-        # .env 里换了新值：再导入一次
-        bootstrap.prepare(self.data, env={**env, "REELAY_LLM_API_KEY": "sk-new"})
-        self.assertEqual(self.secrets().get("llm_api_key"), "sk-new")
-
-    def test_existing_credentials_and_invalid_values_are_not_overwritten(self):
-        CredentialStore(self.data / "115_credentials.json").set_cookies("UID=fresh")
-        bootstrap.prepare(self.data, env={"REELAY_115_COOKIES": "UID=old", "REELAY_WORKER_CONCURRENCY": "lots"})
-        self.assertEqual(CredentialStore(self.data / "115_credentials.json").cookies, "UID=fresh")
-        self.assertEqual(load_config(self.data / "config.yaml")["runtime"]["concurrency"], 3)
-        self.assertNotIn("REELAY_WORKER_CONCURRENCY", self.secrets().imported())
-
-    def test_broken_config_is_left_alone(self):
-        (self.data / "config.yaml").write_text("[broken", encoding="utf-8")
-        bootstrap.prepare(self.data, env={"REELAY_LLM_MODEL": "m", "REELAY_LLM_API_KEY": "k"})
-        self.assertEqual((self.data / "config.yaml").read_text(encoding="utf-8"), "[broken")
-        self.assertEqual(self.secrets().get("llm_api_key"), "k")
-        self.assertNotIn("REELAY_LLM_MODEL", self.secrets().imported())
-
-    def test_database_elsewhere_must_be_moved_by_hand(self):
-        old = self.root / "old.db"
-        old.write_bytes(b"")
-        with self.assertRaisesRegex(bootstrap.BootstrapError, "mv"):
-            bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_DB_PATH": str(old)}, project_root=self.root)
-        session = self.root / "custom.session"
-        session.write_text("s")
-        bootstrap.prepare(self.data, legacy_locations=True, env={"REELAY_TG_SESSION": str(session)},
-                          project_root=self.root)
-        self.assertEqual((self.data / "userbot.session").read_text(), "s")
+class TestEnsureConfig(unittest.TestCase):
+    def test_default_config_is_written_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "data" / "config.yaml"
+            ensure_config(path)
+            self.assertEqual(load_config(path), normalize_config({}))
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            path.write_text(render(normalize_config(SAMPLE)), encoding="utf-8")
+            ensure_config(path)  # 已存在：不覆盖
+            self.assertEqual(load_config(path)["tmdb"]["language"], "en-US")
 
 
-@unittest.skipIf(TestClient is None, "未安装 web 可选依赖")
 class TestSettingsApi(unittest.TestCase):
     def setUp(self):
         from reelay.web import create_app
-        self.env = patch.dict(os.environ, {"REELAY_TMDB_API_KEY": "tmdb-key"}, clear=True)
+        self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
+        secret_store.SecretStore(root / "secrets.json").update({"tmdb_api_key": "tmdb-key"})
         (root / "config.yaml").write_text(json.dumps({"save_dirs": {"默认": "0"}, "defaults": {"save_to": "默认"}}),
                                           encoding="utf-8")
         self.app = create_app(data_dir=root)
@@ -239,10 +171,10 @@ class TestSettingsApi(unittest.TestCase):
 
     def test_secrets_are_set_but_never_returned(self):
         body = self.client.get("/api/config").json()
-        self.assertTrue(body["secrets"]["tmdb_api_key"]["set"])  # 从环境变量导入
+        self.assertTrue(body["secrets"]["tmdb_api_key"]["set"])
         self.assertFalse(body["secrets"]["llm_api_key"]["set"])
         self.assertNotIn("tmdb-key", json.dumps(body))
-        self.assertTrue(body["text"].startswith("# Reelay 配置"))
+        self.assertEqual(body["text"], (Path(self.temp.name) / "config.yaml").read_text(encoding="utf-8"))  # 配置原文
         res = self.client.put("/api/settings/secrets", json={"changes": {"llm_api_key": "sk-xyz"}})
         self.assertEqual(res.status_code, 200, res.text)
         self.assertTrue(res.json()["llm_api_key"]["set"])
