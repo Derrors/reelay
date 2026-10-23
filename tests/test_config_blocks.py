@@ -71,12 +71,15 @@ class TestConfigBlocks(unittest.TestCase):
         # 选目录与整理同属「媒体库整理」：目录里只有一项，运行时机合并
         organizer = [x for x in catalog if x['name'] == 'organizer']
         self.assertEqual([(x['slot'], x['config_type'], x['actions']) for x in organizer],
-                         [('before_save,after_save', 'media_library', ['preview_naming', 'category_rules', 'preview_plan'])])
+                         [('before_save,after_save', 'media_library', ['preview_naming', 'category_rules', 'preview_plan', 'parse_names'])])
         self.assertNotIn('dir_router', {x['name'] for x in catalog})
-        template = "{{ title }}/{{ title }}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}"
+        # 变量同 MoviePilot，可直接粘贴其重命名格式
+        template = ("{{title}}{% if year %} ({{year}}){% endif %}/{{title}}{% if year %} ({{year}}){% endif %}"
+                    "{% if part %}-{{part}}{% endif %}{% if videoFormat %} - {{videoFormat}}{% endif %}"
+                    "{% if videoCodec %} - {{videoCodec}}{% endif %}{% if audioCodec %} - {{audioCodec}}{% endif %}{{fileExt}}")
         preview = self.client.post('/api/extensions/organizer/actions/preview_naming', json={'kind': 'movie', 'template': template})
         self.assertEqual(preview.status_code, 200, preview.text)
-        self.assertEqual(preview.json()['path'], '示例标题/示例标题 - 4K.mkv')
+        self.assertEqual(preview.json()['path'], '示例标题 (2026)/示例标题 (2026) - 2160p - H265 10bit - AAC.mkv')
         # 二级分类随插件发布，管理台只读：按文件顺序给出路径与条件的中文说明
         media = self.client.post('/api/extensions/organizer/actions/category_rules').json()['media']
         self.assertEqual([m['media'] for m in media], ['movie', 'tv'])
@@ -88,7 +91,7 @@ class TestConfigBlocks(unittest.TestCase):
 
     def test_plugin_previews_reject_unsafe_or_invalid_input(self):
         bad_template = self.client.post('/api/extensions/organizer/actions/preview_naming', json={
-            'kind': 'movie', 'template': '{{ title.__class__ }}/{{ ext }}',
+            'kind': 'movie', 'template': '{{ title.__class__ }}/{{ fileExt }}',
         })
         self.assertEqual(bad_template.status_code, 422)
         self.assertEqual(self.client.post('/api/extensions/organizer/actions/preview_naming', json=[]).status_code, 422)
@@ -162,9 +165,9 @@ class TestDirectoryReads(unittest.TestCase):
 
     def test_invalid_templates_rejected(self):
         for template in [
-            '../{{ title }}.{{ ext }}', '{{ title.__class__ }}/{{ ext }}',
-            '{{ title }}/{{ season|pad2 }}.{{ missing }}', '/{{ title }}.{{ ext }}',
-            '{missing}/{ext}',
+            '../{{ title }}{{ fileExt }}', '{{ title.__class__ }}/{{ fileExt }}',
+            '{{ title }}/{{ season|pad2 }}.{{ missing }}', '/{{ title }}{{ fileExt }}',
+            '{missing}/{ext}', '{{ title }}.{{ ext }}',  # 旧变量名不再支持
         ]:
             with self.assertRaises(ValueError):
                 normalize_config({'plugins': {'organizer': {'naming': {'tv': template}}}})

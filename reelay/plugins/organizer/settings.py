@@ -14,12 +14,16 @@ from typing import Any
 from .category import DEFAULT_TYPE_DIRS, LAYOUTS, validate_type_dirs
 from .naming import validate_template
 
-# 目录名带 [tmdbid=xxx]（Jellyfin/Emby 均可识别）：匹配到 TMDB 时刮削不再依赖标题猜测。
+# 变量同 MoviePilot。目录名带 [tmdbid=xxx]（Jellyfin/Emby 均可识别）：匹配到 TMDB 时刮削不再依赖标题猜测；
+# 文件名带清晰度与编码，如「死刑将至 - S01E25 - 第 25 集 - 2160p H265 10bit AAC.mp4」。
+_FOLDER = "{{title}}{% if year %} ({{year}}){% endif %}{% if tmdbid %} [tmdbid={{tmdbid}}]{% endif %}"
+_MEDIA_INFO = ("{% if videoFormat %} - {{videoFormat}}{% endif %}{% if videoCodec %} {{videoCodec}}{% endif %}"
+               "{% if audioCodec %} {{audioCodec}}{% endif %}")
 DEFAULT_NAMING = {
-    "movie": "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/"
-             "{{ title }}{% if year %} ({{ year }}){% endif %}{% if resolution %} - {{ resolution }}{% endif %}.{{ ext }}",
-    "tv": "{{ title }}{% if year %} ({{ year }}){% endif %}{% if tmdb_id %} [tmdbid={{ tmdb_id }}]{% endif %}/"
-          "Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}",
+    "movie": _FOLDER + "/{{title}}{% if year %} ({{year}}){% endif %}{% if part %}-{{part}}{% endif %}"
+             + _MEDIA_INFO + "{{fileExt}}",
+    "tv": _FOLDER + "/Season {{season|pad2}}/{{title}} - {{season_episode}}{% if part %}-{{part}}{% endif %}"
+          " - 第 {{episode}} 集" + _MEDIA_INFO + "{{fileExt}}",
 }
 CONFLICT_STRATEGIES = {"manual", "skip", "suffix", "upgrade"}
 

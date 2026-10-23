@@ -396,6 +396,24 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
             lines = [ln for ln in lines if q.lower() in ln.lower()]
         return {"lines": lines[-limit:], "path": str(path), "exists": True}
 
+    @app.post("/api/logs/clear")
+    async def clear_logs():
+        """清空运行日志：当前文件截断为空，删除轮转留下的 reelay.log.1 … .N。
+
+        主进程以追加方式写日志，截断后从文件开头接着写，不需要重启。
+        """
+        path = _log_path()
+        freed = 0
+        if path.is_file():
+            freed += path.stat().st_size
+            with path.open("r+b") as fh:
+                fh.truncate(0)
+        for old in path.parent.glob(f"{path.name}.*"):
+            if old.suffix[1:].isdecimal() and old.is_file():
+                freed += old.stat().st_size
+                old.unlink()
+        return {"ok": True, "freed": freed}
+
     # ------------------------------------------------------------------ #
     # 4) 115 网盘浏览（只读）
     # ------------------------------------------------------------------ #

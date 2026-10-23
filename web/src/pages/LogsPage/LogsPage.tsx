@@ -1,4 +1,5 @@
-import { ArrowDown, CircleAlert, Pause, Play, RefreshCw, ScrollText, Search, X } from 'lucide-react';
+import { ArrowDown, CircleAlert, Pause, Play, RefreshCw, ScrollText, Search, Trash2, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { extras } from '@/api/extras';
 import { EmptyState } from '@/components/app/EmptyState';
@@ -106,6 +107,21 @@ export default function LogsPage() {
     const timer = window.setInterval(() => { if (!document.hidden) void load(); }, REFRESH_MS);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, [auto, load]);
+
+  const [clearing, setClearing] = useState(false);
+  const clear = async () => {
+    if (!window.confirm('清空全部运行日志（含轮转留下的旧日志文件）？清空后无法恢复。')) return;
+    setClearing(true);
+    try {
+      const r = await extras.clearLogs();
+      toast.success(`日志已清空，释放 ${(r.freed / 1024 / 1024).toFixed(1)} MB`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '清空日志失败');
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const parsed = useMemo(() => parse(lines ?? []), [lines]);
   // 按日志条目计数，异常堆栈的续行不重复计入。
@@ -228,6 +244,10 @@ export default function LogsPage() {
           </Button>
           <Button variant="outline" className="bg-card" disabled={loading} onClick={() => void load()}>
             <RefreshCw className={cn(loading && 'animate-spin')} />刷新
+          </Button>
+          <Button variant="outline" className="bg-card hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+            disabled={clearing || missing} onClick={() => void clear()}>
+            <Trash2 />清空日志
           </Button>
         </>
       )}

@@ -89,7 +89,7 @@ class TestPluginSettings(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflict"):
             normalize_config({"plugins": {"organizer": {"conflict": "keep"}}})
         with self.assertRaisesRegex(ValueError, "naming.movie"):
-            normalize_config({"plugins": {"organizer": {"naming": {"movie": "{{ title.__class__ }}.{{ ext }}"}}}})
+            normalize_config({"plugins": {"organizer": {"naming": {"movie": "{{ title.__class__ }}{{ fileExt }}"}}}})
 
     def test_extensions_bound_to_a_storage_reject_other_storages(self):
         class LocalStorage:

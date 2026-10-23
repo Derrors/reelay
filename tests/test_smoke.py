@@ -271,8 +271,8 @@ class TestOrganizerPlan(unittest.TestCase):
     def setUp(self):
         from reelay.core import runtime
         runtime.set_process_config({"plugins": {"organizer": {"naming": {
-            "movie": "{{ title }} ({{ year }})/{{ title }} ({{ year }}) - {{ resolution }}.{{ ext }}",
-            "tv": "{{ title }} ({{ year }})/Season {{ season|pad2 }}/{{ title }} - S{{ season|pad2 }}E{{ episode|pad2 }}.{{ ext }}",
+            "movie": "{{ title }} ({{ year }})/{{ title }} ({{ year }}) - {{ videoFormat }}{{ fileExt }}",
+            "tv": "{{ title }} ({{ year }})/Season {{ season|pad2 }}/{{ title }} - {{ season_episode }}{{ fileExt }}",
         }}}})
         from reelay.plugins.organizer import Organizer
         self.org = Organizer()
@@ -317,7 +317,7 @@ class TestOrganizerPlan(unittest.TestCase):
                            year=2023, resolution="4K")
         plan = build_plan(p, [{"id": "a", "name": "movie.mp4"}])
         self.assertEqual(plan[0]["target_dir"], "流浪地球2 (2023)")
-        self.assertIn("流浪地球2 (2023) - 4K.mp4", plan[0]["target_name"])
+        self.assertIn("流浪地球2 (2023) - 2160p.mp4", plan[0]["target_name"])
 
     def test_validate_missing_fields(self):
         self.assertIsNotNone(self.org._validate(ParsedResource(is_media=True)))  # 缺标题
@@ -325,6 +325,93 @@ class TestOrganizerPlan(unittest.TestCase):
             ParsedResource(is_media=True, media_type="tv", title="X")))  # 剧集缺集数
         self.assertIsNone(self.org._validate(
             ParsedResource(is_media=True, media_type="movie", title="X")))  # 电影 OK
+
+
+class TestDefaultNaming(unittest.TestCase):
+    NAME = "[死刑将至].Death.is.Coming.2026.S01E25.2160p.WEB-DL.60Fps.HDRVivid.H265.10bit.AAC-GROUP.mp4"
+
+    def setUp(self):
+        from reelay.core import runtime
+        runtime.set_process_config({})
+
+    def test_file_info_matches_moviepilot_variables(self):
+        from reelay.plugins.organizer.naming import file_info
+        self.assertEqual(file_info(self.NAME), {
+            "videoFormat": "2160p", "videoCodec": "H265 10bit", "audioCodec": "AAC", "resourceType": "WEB-DL",
+            "effect": "HDR Vivid", "edition": "WEB-DL HDR Vivid", "releaseGroup": "GROUP", "part": ""})
+        self.assertEqual(file_info("Movie.2023.Part.2.1080p.WEB-DL.mkv")["part"], "PART2")
+        self.assertEqual(file_info("Movie.2023.1080p.WEB-DL.mkv")["releaseGroup"], "")  # WEB-DL 不是发布组
+        self.assertEqual(file_info("S01E01.mkv", "4K")["videoFormat"], "2160p")
+        self.assertEqual(file_info("S01E01.mkv")["videoCodec"], "")
+
+    def test_all_moviepilot_variables_render(self):
+        from reelay.core import runtime
+        from reelay.plugins.organizer.naming import ALLOWED_VARIABLES
+        keys = sorted(ALLOWED_VARIABLES)
+        template = ";".join(f"{{{{{key}}}}}" for key in keys) + "/x{{fileExt}}"
+        runtime.set_process_config({"plugins": {"organizer": {"naming": {"tv": template}}}})
+        p = ParsedResource(is_media=True, media_type="tv", title="死刑将至", year=2026, season=1, episodes=[25],
+                           raw_fields={"tmdbid": 42})
+        rendered = build_plan(p, [{"id": "a", "name": self.NAME}])[0]["target_dir"].split(";")
+        values = dict(zip(keys, rendered, strict=True))
+        self.assertEqual({k: values[k] for k in ("name", "en_name", "tmdbid", "season", "episode", "season_episode", "fileExt")},
+                         {"name": "死刑将至", "en_name": "Death is Coming", "tmdbid": "42", "season": "1", "episode": "25",
+                          "season_episode": "S01E25", "fileExt": ".mp4"})
+        self.assertEqual(values["en_title"], "")
+
+    def test_default_template_matches_release_names(self):
+        p = ParsedResource(is_media=True, media_type="tv", title="死刑将至", season=1, episodes=[25])
+        plan = build_plan(p, [{"id": "a", "name": self.NAME}])
+        self.assertEqual(plan[0]["target_dir"], "死刑将至/Season 01")  # 缺年份时不留空括号
+        p.year, p.raw_fields = 2026, {"tmdbid": 42}
+        self.assertEqual(build_plan(p, [{"id": "a", "name": self.NAME}])[0]["target_dir"],
+                         "死刑将至 (2026) [tmdbid=42]/Season 01")
+        p.year, p.raw_fields = None, {}
+        self.assertEqual(plan[0]["target_name"], "死刑将至 - S01E25 - 第 25 集 - 2160p H265 10bit AAC.mp4")
+        p = ParsedResource(is_media=True, media_type="movie", title="流浪地球2", year=2023)
+        plan = build_plan(p, [{"id": "a", "name": "The.Wandering.Earth.II.2023.1080p.BluRay.x264.DTS.mkv"}])
+        self.assertEqual(plan[0]["target_dir"], "流浪地球2 (2023)")
+        self.assertEqual(plan[0]["target_name"], "流浪地球2 (2023) - 1080p H264 DTS.mkv")
+
+    def test_guess_from_file_names(self):
+        from reelay.plugins.organizer import guess_from_names
+        self.assertEqual(guess_from_names([self.NAME]),
+                         {"title": "死刑将至", "year": 2026, "media_type": "tv", "season": 1, "episodes": [25]})
+        self.assertEqual(guess_from_names(["[字幕组] 某番 S01E03.mkv"])["title"], "某番")
+        self.assertEqual(guess_from_names(["【某字幕组】进击的巨人 第02集.mp4"])["title"], "进击的巨人")
+        self.assertEqual(guess_from_names(["The.Wandering.Earth.II.2023.1080p.mkv"])["media_type"], "movie")
+
+    def test_parse_names_uses_tmdb_like_the_real_pipeline(self):
+        from unittest.mock import patch
+        from reelay.core import tmdb
+        from reelay.plugins.organizer import Organizer
+        movie = {"id": 842675, "title": "The Wandering Earth II", "release_date": "2023-01-22"}
+
+        def best_match(kind, query, year, *, language, timeout):
+            if query == "死刑将至":
+                return {"id": 326382, "name": "死刑将至", "first_air_date": "2026-01-01", "_kind": kind}, []
+            if query == "The Wandering Earth II" and kind == "movie" and language == "en-US":
+                return {**movie, "_kind": kind}, []  # 按中文搜到的是译名，只有英文结果能比上
+            return None, []
+
+        def search(kind, query, year, *, language, timeout):
+            return [{**movie, "title": "流浪地球2"}] if kind == "movie" else []
+
+        parse = Organizer().parse_names
+        with patch.object(tmdb, "api_key", return_value="k"), patch.object(tmdb, "best_match", best_match), \
+                patch.object(tmdb, "search", search):
+            tv = run(parse({"names": [self.NAME]}))
+            self.assertEqual((tv["title"], tv["tmdbid"], tv["tmdb"], tv["episodes"]), ("死刑将至", 326382, "matched", [25]))
+            film = run(parse({"names": ["The.Wandering.Earth.II.2023.1080p.BluRay.x264.mkv"]}))
+            self.assertEqual((film["title"], film["year"], film["tmdbid"], film["media_type"]),
+                             ("流浪地球2", 2023, 842675, "movie"))
+            self.assertEqual(run(parse({"names": ["Unknown.Show.S01E01.mkv"]}))["tmdb"], "unmatched")
+        with patch.object(tmdb, "api_key", return_value=None):
+            self.assertEqual(run(parse({"names": [self.NAME]}))["tmdb"], "unconfigured")
+        with patch.object(tmdb, "api_key", return_value="k"), \
+                patch.object(tmdb, "best_match", side_effect=TimeoutError):
+            failed = run(parse({"names": [self.NAME]}))
+            self.assertEqual((failed["title"], failed["tmdb"]), ("死刑将至", "failed"))  # 查询失败仍给出文件名猜测
 
 
 class TestStorageEpisodeSelection(unittest.TestCase):

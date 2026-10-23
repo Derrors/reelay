@@ -112,6 +112,8 @@ export const extras = {
     if (q) p.set('q', q);
     return req<ILogResp>(`logs?${p}`);
   },
+  /** 清空运行日志（含轮转留下的旧文件），返回释放的字节数 */
+  clearLogs: () => req<{ ok: boolean; freed: number }>('logs/clear', { method: 'POST' }),
   dirs: (cid: string, offset = 0) => req<{ items: IDirItem[]; path: IDirItem[]; next_offset: number | null; via: string }>(`storage/dirs?cid=${encodeURIComponent(cid)}&offset=${offset}`),
   sources: () => req<ISourcesResp>('sources'),
   testParse: (text: string, urls: string[], source?: string) =>

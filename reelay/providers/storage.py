@@ -21,14 +21,7 @@ from ..core.contracts import (AlreadyStored, NeedsManual, PipelineContext, Share
                               TransferUncertain)
 from ..core.io import run_blocking
 from ..core.registry import register
-from ..core.media import episode_of, is_extra, resolution_rank, summarize_pairs
-
-VIDEO_EXT = {'.mp4', '.mkv', '.ts', '.avi', '.mov', '.flv', '.wmv', '.webm',
-             '.m2ts', '.mpg', '.mpeg', '.rmvb', '.iso'}
-
-
-def _is_video(name: str) -> bool:
-    return any((name or '').lower().endswith(ext) for ext in VIDEO_EXT)
+from ..core.media import episode_of, is_extra, is_video, resolution_rank, summarize_pairs
 
 
 # 电影分享中小于最大文件该比例的视频视为花絮/样片。
@@ -205,7 +198,7 @@ def describe_share(share_fs, parsed, *, max_dirs: int = DESCRIBE_MAX_DIRS) -> di
                 if depth >= 3:
                     return {'status': 'issue', 'videos': len(videos), 'note': '分享目录过深，不能完整核验视频清单'}
                 queue.append((item['id'], depth + 1))
-            elif _is_video(item.get('name', '')):
+            elif is_video(item.get('name', '')):
                 videos.append(_file_record(item))
     result: dict[str, Any] = {'status': 'ok', 'videos': len(videos),
                               'size': sum(x['size'] for x in videos if type(x.get('size')) is int)}
@@ -458,7 +451,7 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
                     if depth >= max_depth:
                         raise NeedsManual('分享目录过深，不能完整核验视频清单')
                     walk(item['id'], depth + 1)
-                elif _is_video(item.get('name', '')):
+                elif is_video(item.get('name', '')):
                     out.append(_file_record(item))
         walk(root, 0)
         return out

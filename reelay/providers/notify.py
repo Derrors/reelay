@@ -26,16 +26,16 @@ class ConsoleNotify:
     name = "console"
 
     def __init__(self) -> None:
-        self._sender = None   # 真实模式下注入一个 async send(text, buttons=None, chat=None, html=False)
+        self._sender = None   # 真实模式下注入一个 async send(text, buttons=None, chat=None, html=False, photo=None)
         self._forward_cfg: dict[str, Any] = {}
 
     def configure(self, sender=None, forward_cfg: dict | None = None) -> None:
         self._sender = sender
         self._forward_cfg = forward_cfg or {}
 
-    async def _send(self, text: str, buttons=None) -> None:
+    async def _send(self, text: str, buttons=None, photo: str | None = None) -> None:
         if self._sender:
-            await self._sender(text=text, buttons=buttons, html=True)
+            await self._sender(text=text, buttons=buttons, html=True, photo=photo)
         else:
             log.info("[通知] %s%s", messages.plain(text).replace("\n", " / "), f" | 按钮={buttons}" if buttons else "")
 
@@ -54,12 +54,12 @@ class ConsoleNotify:
         elif event == "pending_approval":
             # 关键：按钮 callback_data 只带 task_id
             buttons = [("✅ 转存", f"ok:{ctx.task_id}"), ("🚫 忽略", f"no:{ctx.task_id}")]
-            await self._send(messages.approval_card(ctx), buttons)
+            await self._send(messages.approval_card(ctx), buttons, photo=messages.poster_url(ctx))
 
         elif event == "saved":
             if ctx.source_rule.get("approval_mode") == "default_pass":
                 return
-            await self._send(messages.saved_message(ctx, _drive_path(ctx)))
+            await self._send(messages.saved_message(ctx, _drive_path(ctx)), photo=messages.poster_url(ctx))
 
         elif event in ("transfer_uncertain", "organize_failed", "failed"):
             reason = {

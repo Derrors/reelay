@@ -138,8 +138,8 @@ class TestManagementService(unittest.TestCase):
                 "landed": [{"id": "two", "name": "S01E02.mkv"}, {"id": "one", "name": "S01E01.mp4"}],
             })["items"]
         mapping = {item["src_name"]: item["target_name"] for item in items}
-        self.assertTrue(mapping["S01E02.mkv"].endswith("S01E02.mkv"))
-        self.assertTrue(mapping["S01E01.mp4"].endswith("S01E01.mp4"))
+        self.assertEqual(mapping["S01E02.mkv"], "测试剧 - S01E02 - 第 2 集.mkv")
+        self.assertEqual(mapping["S01E01.mp4"], "测试剧 - S01E01 - 第 1 集.mp4")
 
 
 if __name__ == "__main__":

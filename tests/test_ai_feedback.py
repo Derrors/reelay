@@ -350,7 +350,7 @@ class TestAssistBeforeManual(Base):
         landed = [{"id": "1", "name": "剧 一.mp4"}, {"id": "2", "name": "剧 二.mp4"}]
         with runtime.scope(self.pl.cfg):
             plan = build_plan(p, landed, mapping={"剧 一.mp4": (1, 1), "剧 二.mp4": (1, 2)})
-        self.assertEqual([x["target_name"] for x in plan], ["剧 - S01E01.mp4", "剧 - S01E02.mp4"])
+        self.assertEqual([x["target_name"] for x in plan], ["剧 - S01E01 - 第 1 集.mp4", "剧 - S01E02 - 第 2 集.mp4"])
 
 
 class TestStructuredFilters(Base):

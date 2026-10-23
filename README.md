@@ -87,10 +87,16 @@ Web 管理台、Telegram 控制 Bot、给 Claude 等 Agent 用的 MCP；Provider
 <td valign="top">
 
 ```text
-📺 漫长的季节 (2023)
+🖼 （TMDB 海报）
+📺 漫长的季节 (2023)  ⭐ 8.6
+The Long Season
+🏷 剧情 · 悬疑 · 犯罪 · 中国大陆
+
 🗂 第 1 季 · E01-E10
 🎞 2160p · 简体中字 · 国语 · 杜比视界
 📦 38.6 GB
+
+▍ 1997 年，出租车司机王响……（简介，可展开）
 
 📡 来源 @example_channel
 📂 存到 /剧集/国产剧集
@@ -102,9 +108,15 @@ Web 管理台、Telegram 控制 Bot、给 Claude 等 Agent 用的 MCP；Provider
 <td valign="top">
 
 ```text
-✅ 已入库 · 漫长的季节 (2023)
+🖼 （TMDB 海报）
+✅ 已入库
+
+📺 漫长的季节 (2023)  ⭐ 8.6
+🏷 剧情 · 悬疑 · 犯罪 · 中国大陆
+
 🗂 第 1 季 · E01-E10
 🎞 2160p · 简体中字 · 国语 · 杜比视界
+📦 38.6 GB
 📂 /剧集/国产剧集/漫长的季节 (2023) [tmdbid=…]/Season 01
 📄 10 个文件：漫长的季节 - S01E01.mkv、
    漫长的季节 - S01E02.mkv 等

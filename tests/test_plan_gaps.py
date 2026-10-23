@@ -636,7 +636,8 @@ class TestManualDirectoryChoice(Base):
 
 class TestRefreshMetadataAfterTmdbConfigured(Base):
     HIT = {"id": 294446, "name": "美人余", "first_air_date": "2026-10-09", "origin_country": ["CN"],
-           "genre_ids": [18], "poster_path": "/poster.jpg", "_kind": "tv", "_score": 1.1}
+           "genre_ids": [18], "poster_path": "/poster.jpg", "_kind": "tv", "_score": 1.1,
+           "original_name": "Mei Ren Yu", "overview": " 古装爱情剧。 ", "vote_average": 7.84, "vote_count": 3}
 
     def setUp(self):
         super().setUp()
@@ -669,6 +670,9 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
         self.assertEqual((ctx.state, ctx.parsed.raw_fields["poster_path"], ctx.parsed.raw_fields["tmdbid"]),
                          (TaskState.PENDING_APPROVAL, "/poster.jpg", 294446))
         self.assertEqual((ctx.parsed.genre_ids, ctx.parsed.origin_country), ([18], ["CN"]))
+        # 通知用的原名与简介；评分人数不到 10 人时不记评分
+        fields = ctx.parsed.raw_fields
+        self.assertEqual((fields["original_title"], fields["overview"], "rating" in fields), ("Mei Ren Yu", "古装爱情剧。", False))
         self.assertTrue(ctx.meta["confidence"]["checks"]["tmdb"])
         self.assertEqual(ctx.meta["library"]["preview"], "剧集/国产剧集")
         self.assertTrue(any("补跑元数据补全" in line for line in ctx.trail))

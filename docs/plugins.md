@@ -168,9 +168,9 @@ class MyListener:
 | 字段 | 内容 | 谁在读 |
 | --- | --- | --- |
 | `title` / `year` | 规范标题与上映 / 首播年份 | 去重键（`片名\|S01\|E02`，不同来源的同一部作品靠它合并）、整理路径、缺集追更 |
-| `genre_ids` | TMDB 类型 ID 整数列表，整体替换 AI 的值 | 二级分类（`plugins/organizer/category.yaml`，如 16 = 动画）、命名模板 |
-| `origin_country` | 两位大写国家/地区代码；数据源没有时保留 AI 的值，不要清空 | 二级分类、命名模板 |
-| `raw_fields["tmdbid"]` | TMDB 条目 ID（整数） | 命名模板变量 `tmdb_id`（默认模板写入 `[tmdbid=…]`）、缺集追更查询已播集数 |
+| `genre_ids` | TMDB 类型 ID 整数列表，整体替换 AI 的值 | 二级分类（`plugins/organizer/category.yaml`，如 16 = 动画） |
+| `origin_country` | 两位大写国家/地区代码；数据源没有时保留 AI 的值，不要清空 | 二级分类 |
+| `raw_fields["tmdbid"]` | TMDB 条目 ID（整数） | 命名模板变量 `tmdbid`（默认模板写入 `[tmdbid=…]`）、缺集追更查询已播集数 |
 | `raw_fields["poster_path"]` | TMDB 图片路径，如 `/abc.jpg`，不是完整 URL | 管理台海报（拼接 `https://image.tmdb.org/t/p/<尺寸>`）；没有时显示文字封面 |
 
 写入 `ctx.meta["tmdb"]`：确定性置信度在全部 `after_parse` Hook 之后计算，按这里的结果判断（`reelay/core/confidence.py`）。

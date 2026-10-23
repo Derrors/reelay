@@ -66,6 +66,20 @@ class TestManagementApi(unittest.TestCase):
         self.assertIn("save_dirs", response.json()["config"])
         self.assertNotIn("REELAY_115_COOKIES", response.text)
 
+    def test_logs_can_be_cleared(self):
+        root = Path(self.tempdir.name)
+        (root / "reelay.log").write_text("2026-10-23 10:00:00 INFO reelay | 一行\n", encoding="utf-8")
+        (root / "reelay.log.1").write_text("旧日志\n", encoding="utf-8")
+        (root / "reelay.log.2").write_text("更旧\n", encoding="utf-8")
+        (root / "reelay.log.bak").write_text("不是轮转文件\n", encoding="utf-8")
+        self.assertEqual(len(self.client.get("/api/logs").json()["lines"]), 1)
+        response = self.client.post("/api/logs/clear")
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(response.json()["freed"], 0)
+        self.assertEqual(self.client.get("/api/logs").json(), {"lines": [], "path": str(root / "reelay.log"), "exists": True})
+        self.assertFalse((root / "reelay.log.1").exists() or (root / "reelay.log.2").exists())
+        self.assertTrue((root / "reelay.log.bak").exists())
+
     def test_organize_preview(self):
         response = self.client.post("/api/extensions/organizer/actions/preview_plan", json={
             "parsed": {
@@ -79,7 +93,7 @@ class TestManagementApi(unittest.TestCase):
             "landed": [{"id": "one", "name": "S01E01.mkv"}],
         })
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["items"][0]["target_name"], "测试剧 - S01E01.mkv")
+        self.assertEqual(response.json()["items"][0]["target_name"], "测试剧 - S01E01 - 第 1 集.mkv")
 
     def test_spa_routes_and_assets_still_work(self):
         self.assertEqual(self.client.get('/app.js').text, 'safe asset')

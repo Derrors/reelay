@@ -1,5 +1,6 @@
 import { CircleAlert, FilePlay, FolderOpen, FolderRoot, FolderTree, LoaderCircle, Play, WandSparkles } from 'lucide-react';
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { toast } from 'sonner';
 import { api } from '@/api/client';
 import { EmptyState } from '@/components/app/EmptyState';
 import { Page } from '@/components/app/Page';
@@ -12,10 +13,29 @@ import type { IOrganizePreviewItem } from './types';
 
 type Kind = 'tv' | 'movie';
 
+interface Recognized {
+  title: string; year: number | null; media_type: Kind | null; season: number | null; episodes: number[];
+  tmdbid: number | null; tmdb: 'matched' | 'unmatched' | 'unconfigured' | 'failed';
+}
+
+const SOURCE_NOTE: Record<Recognized['tmdb'], string> = {
+  matched: '已按 TMDB 识别',
+  unmatched: 'TMDB 没有可信匹配，按文件名猜测，可手动修改',
+  unconfigured: '未配置 TMDB，按文件名猜测，可手动修改',
+  failed: 'TMDB 查询失败，按文件名猜测，可手动修改',
+};
+
 const KINDS: Array<{ value: Kind; label: string }> = [
   { value: 'tv', label: '剧集' },
   { value: 'movie', label: '电影' },
 ];
+
+// 像网盘里的原始文件名：带视频后缀，或带 S01E02、1080p 这类标记
+function looksLikeFileName(value: string): boolean {
+  const text = value.trim();
+  return /\.(mkv|mp4|ts|m2ts|avi|mov|wmv|flv|webm|rmvb|iso|mpe?g)$/i.test(text)
+    || /(^|[^a-z0-9])(S\d{1,2}E\d{1,4}|2160p|1080p|720p)([^a-z0-9]|$)/i.test(text);
+}
 
 function numbers(value: string): number[] {
   return value.split(/[，,\s]+/).map(Number).filter((item) => Number.isInteger(item) && item > 0);
@@ -125,17 +145,66 @@ export default function OrganizePage() {
   const [kind, setKind] = useState<Kind>('tv');
   const [title, setTitle] = useState('');
   const [year, setYear] = useState('');
-  const [season, setSeason] = useState('1');
-  const [episodes, setEpisodes] = useState('1, 2');
-  const [files, setFiles] = useState('S01E01.mkv\nS01E02.mkv');
+  const [season, setSeason] = useState('');
+  const [episodes, setEpisodes] = useState('');
+  const [files, setFiles] = useState('');
   const [items, setItems] = useState<IOrganizePreviewItem[] | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // 识别结果连同它对应的文件名一起存：文件名变了，旧结果自然失效
+  const [recognition, setRecognition] = useState<{ names: string; result: Recognized | null } | null>(null);
+  const [pending, setPending] = useState('');
+  const [autoRun, setAutoRun] = useState(0);
   const resultRef = useRef<HTMLDivElement>(null);
 
   const landed = files.split('\n').map((name) => name.trim()).filter(Boolean)
     .map((name, index) => ({ id: `preview-${index + 1}`, name }));
-  const ready = Boolean(title.trim()) && landed.length > 0;
+
+  // 贴文件名后自动识别（与真实整理一样以 TMDB 为准），预填表单并直接生成预览；手动改过的项不再覆盖
+  const touched = useRef(new Set<string>());
+  const edit = (field: string, set: (value: string) => void) => (value: string) => { touched.current.add(field); set(value); };
+  const names = landed.map((f) => f.name).join('\n');
+  useEffect(() => {
+    if (!names) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      setPending(names);
+      api.extensionAction<Recognized>('organizer', 'parse_names', { names: names.split('\n') }).then((g) => {
+        if (!active) return;
+        const fill = (field: string, set: (value: string) => void, value: string) => {
+          if (!touched.current.has(field) && value) set(value);
+        };
+        if (!touched.current.has('kind') && g.media_type) setKind(g.media_type);
+        fill('title', setTitle, g.title);
+        fill('year', setYear, g.year ? String(g.year) : '');
+        fill('season', setSeason, g.season ? String(g.season) : '');
+        fill('episodes', setEpisodes, g.episodes.join(', '));
+        setRecognition({ names, result: g });
+        setAutoRun((n) => n + 1);
+      }).catch(() => {
+        if (active) setRecognition({ names, result: null });  // 识别不出就让用户自己填
+      });
+    }, 400);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [names]);
+  const recognized = recognition?.names === names ? recognition.result : null;
+  const recognizing = Boolean(names) && pending === names && recognition?.names !== names;
+  // 片名改成别的作品后，识别到的 tmdbid 不再适用
+  const tmdbid = recognized?.tmdbid && title.trim() === recognized.title ? recognized.tmdbid : null;
+  const missing = landed.length === 0 ? '先在上方贴入至少一个文件名' : !title.trim() ? '再填写片名' : '';
+  const ready = !missing;
+
+  const changeTitle = (value: string) => {
+    if (!files.trim() && looksLikeFileName(value)) {
+      // 原始文件名贴进了片名框：挪到文件名框，片名交给自动识别
+      setFiles(value.trim());
+      setTitle('');
+      touched.current.delete('title');
+      toast.info('这是文件名，已移到「转存后的文件名」，片名会自动识别');
+      return;
+    }
+    edit('title', setTitle)(value);
+  };
 
   const preview = async () => {
     if (!ready || busy) return;
@@ -150,6 +219,7 @@ export default function OrganizePage() {
         year: Number(year) || null,
         season: tv ? Number(season) || null : null,
         episodes: tv ? numbers(episodes) : [],
+        raw_fields: tmdbid ? { tmdbid } : {},
       };
       // 媒体库整理插件的动作 preview_plan：按当前命名模板算出整理后的位置，不碰网盘
       const result = await api.extensionAction<{ items: IOrganizePreviewItem[] }>('organizer', 'preview_plan', { parsed, landed });
@@ -166,14 +236,38 @@ export default function OrganizePage() {
     }
   };
 
+  useEffect(() => {
+    if (!autoRun) return;
+    // 识别完成、表单填好后自动跑一次；之后改了表单由用户点「生成预览」
+    const timer = window.setTimeout(() => void preview(), 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun]);
+
   return (
     <Page
       title="命名预览"
-      description="填写资源信息和转存后的文件名，看看按当前命名规则会整理成什么样。只是预览，不会改动网盘。"
+      description="贴入转存后的文件名，看看按当前命名规则会整理成什么样。只是预览，不会改动网盘。"
     >
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
         <Panel title="资源信息" icon={WandSparkles} description="填得越准确，预览越接近真实整理效果">
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void preview(); }}>
+            <Field
+              label="转存后的文件名"
+              htmlFor="organize-files"
+              hint="每行一个，就是网盘里转存下来的原始文件名；贴进来后自动识别片名与季集并生成预览。"
+              extra={<span className="text-xs tabular-nums text-muted-foreground">{landed.length} 个文件</span>}
+            >
+              <Textarea
+                id="organize-files"
+                value={files}
+                onChange={(e) => setFiles(e.target.value)}
+                placeholder={'在这里粘贴文件名，每行一个，例如：\n[死刑将至].Death.is.Coming.2026.S01E25.2160p…mp4'}
+                spellCheck={false}
+                wrap="off"
+                className="min-h-36 resize-y bg-card font-mono text-xs leading-6"
+              />
+            </Field>
             <Field label="资源类型">
               <div role="radiogroup" aria-label="资源类型" className="grid grid-cols-2 rounded-lg bg-muted p-0.5">
                 {KINDS.map((option) => (
@@ -182,7 +276,7 @@ export default function OrganizePage() {
                     type="button"
                     role="radio"
                     aria-checked={kind === option.value}
-                    onClick={() => setKind(option.value)}
+                    onClick={() => { touched.current.add('kind'); setKind(option.value); }}
                     className={cn(
                       'min-h-8 rounded-md text-sm font-medium transition-colors',
                       kind === option.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
@@ -193,44 +287,38 @@ export default function OrganizePage() {
                 ))}
               </div>
             </Field>
-            <Field label="片名" htmlFor="organize-title">
-              <Input id="organize-title" className="bg-card" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：示例剧名" />
+            <Field
+              label="片名"
+              htmlFor="organize-title"
+              extra={recognizing
+                ? <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />识别中…</span>
+                : null}
+              hint={recognized && !recognizing
+                ? <>{SOURCE_NOTE[recognized.tmdb]}{tmdbid ? <span className="font-mono"> · tmdbid {tmdbid}</span> : null}</>
+                : null}
+            >
+              <Input id="organize-title" className="bg-card" autoComplete="off" value={title} onChange={(e) => changeTitle(e.target.value)} placeholder="整理后的片名，如：死刑将至" />
             </Field>
             <div className={cn('grid gap-3', kind === 'tv' && 'grid-cols-2')}>
               <Field label="年份" htmlFor="organize-year">
-                <Input id="organize-year" className="bg-card" inputMode="numeric" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, ''))} placeholder="2026" />
+                <Input id="organize-year" className="bg-card" inputMode="numeric" value={year} onChange={(e) => edit('year', setYear)(e.target.value.replace(/\D/g, ''))} autoComplete="off" placeholder="选填" />
               </Field>
               {kind === 'tv' ? (
                 <Field label="第几季" htmlFor="organize-season">
-                  <Input id="organize-season" className="bg-card" inputMode="numeric" value={season} onChange={(e) => setSeason(e.target.value.replace(/\D/g, ''))} />
+                  <Input id="organize-season" className="bg-card" inputMode="numeric" value={season} onChange={(e) => edit('season', setSeason)(e.target.value.replace(/\D/g, ''))} autoComplete="off" placeholder="不填为 1" />
                 </Field>
               ) : null}
             </div>
             {kind === 'tv' ? (
               <Field label="包含哪几集" htmlFor="organize-episodes" hint="用逗号或空格分隔，例如 1, 2, 3。">
-                <Input id="organize-episodes" className="bg-card" value={episodes} onChange={(e) => setEpisodes(e.target.value)} placeholder="1, 2, 3" />
+                <Input id="organize-episodes" className="bg-card" value={episodes} autoComplete="off" onChange={(e) => edit('episodes', setEpisodes)(e.target.value)} placeholder="不填则按文件名识别" />
               </Field>
             ) : null}
-            <Field
-              label="转存后的文件名"
-              htmlFor="organize-files"
-              hint="每行一个，就是网盘里转存下来的原始文件名。"
-              extra={<span className="text-xs tabular-nums text-muted-foreground">{landed.length} 个文件</span>}
-            >
-              <Textarea
-                id="organize-files"
-                value={files}
-                onChange={(e) => setFiles(e.target.value)}
-                spellCheck={false}
-                wrap="off"
-                className="min-h-36 resize-y bg-card font-mono text-xs leading-6"
-              />
-            </Field>
             <Button type="submit" className="h-10 w-full" disabled={busy || !ready}>
               {busy ? <LoaderCircle className="animate-spin" /> : <Play />}
               {busy ? '正在生成…' : '生成预览'}
             </Button>
-            {!ready ? <p className="-mt-1 text-center text-xs text-muted-foreground">填写片名并至少写一个文件名后即可预览</p> : null}
+            {missing ? <p className="-mt-1 text-center text-xs text-muted-foreground">{missing}，即可生成预览</p> : null}
           </form>
         </Panel>
 

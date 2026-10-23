@@ -30,6 +30,7 @@ dry-run 只生成整理计划；真实模式缺客户端则失败。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -37,12 +38,12 @@ import re
 from ...core.auth115 import get_store
 from ...core.contracts import ParsedResource, PipelineContext
 from ...core.io import run_blocking
-from ...core.media import episode_of as _episode_of, resolution_rank
+from ...core.media import episode_of as _episode_of, is_video, resolution_rank
 from ...core.registry import register
 from ...core.validation import validate_resource
-from ...core import release, runtime
+from ...core import release, runtime, tmdb
 from .category import DEFAULT_TYPE_DIRS, categories, classify, describe, type_dir
-from .naming import render_path, validate_template
+from .naming import EMPTY_VARIABLES, file_info, render_path, sample_values, validate_template
 from .settings import DEFAULT_NAMING
 
 log = logging.getLogger("reelay.plugin.organizer")
@@ -106,7 +107,6 @@ def build_plan(p, landed: list[dict], category_path: str = "",
                mapping: dict[str, tuple] | None = None) -> list[dict]:
     """按命名模板生成整理计划：每个落地视频文件的目标目录与文件名（相对保存目录）。"""
     naming = runtime.get("plugins.organizer.naming", {}) or {}
-    title = _safe(p.title)
     is_tv = p.media_type == "tv" or bool(p.episodes)
     plan = []
     videos = [x for x in landed if not x.get("is_dir")]
@@ -126,15 +126,9 @@ def build_plan(p, landed: list[dict], category_path: str = "",
                 raise ValueError(f"文件季号与识别结果不一致：{f.get('name', '')}")
             template = naming.get("tv", DEFAULT_NAMING["tv"])
         else:
-            season, episode = p.season or 1, None
-            template = naming.get("movie", DEFAULT_NAMING["movie"])
-        rel = render_path(template, {
-            "title": title, "year": p.year, "season": season, "episode": episode,
-            "ep": episode, "resolution": _safe(p.resolution) if p.resolution else "",
-            "ext": ext, "media_type": p.media_type, "genre_ids": p.genre_ids,
-            "origin_country": p.origin_country, "tmdb_id": p.raw_fields.get("tmdbid"),
-            "original_name": f.get("name", ""),
-        }, label=f"{'剧集' if is_tv else '电影'}命名模板")
+            season, template = None, naming.get("movie", DEFAULT_NAMING["movie"])
+        rel = render_path(template, _naming_values(p, f.get("name", ""), ext, season, episode),
+                          label=f"{'剧集' if is_tv else '电影'}命名模板")
         if category_path:
             rel = category_path.strip("/") + "/" + rel
         parts = rel.split("/")
@@ -148,6 +142,77 @@ def build_plan(p, landed: list[dict], category_path: str = "",
     return sorted(plan, key=lambda item: item["target_name"])
 
 
+def _naming_values(p, name: str, ext: str, season: int | None, episode: int | None) -> dict:
+    """命名模板的变量，名称与含义同 MoviePilot；电影的季集为空字符串。"""
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", name)
+    en_name = _title_before_markers(re.sub(r"^\s*[\[【][^\]】]+[\]】]", "", stem))
+    tv = episode is not None
+    return {
+        **{key: "" for key in EMPTY_VARIABLES},
+        # 清晰度、编码、片源等以每个文件自己的文件名为准；文件名里没有清晰度时用识别结果
+        **{key: _safe(value) for key, value in file_info(name, p.resolution).items()},
+        "title": _safe(p.title), "original_title": _safe(p.raw_fields.get("original_title") or p.title),
+        "name": _safe(_guess_title(stem) or p.title), "en_name": "" if _CJK.search(en_name) else _safe(en_name),
+        "year": str(p.year or ""), "tmdbid": str(p.raw_fields.get("tmdbid") or ""),
+        "season": season if tv else "", "episode": episode if tv else "",
+        "season_episode": f"S{season:02d}E{episode:02d}" if tv else "",
+        "fileExt": f".{ext}", "original_name": name,
+    }
+
+
+_YEAR = re.compile(r"(?<![0-9])(19[0-9]{2}|20[0-9]{2})(?![0-9])")
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _guess_title(stem: str) -> str:
+    bracket = re.match(r"^\s*[\[【]([^\]】]+)[\]】]", stem)
+    rest = _title_before_markers(stem[bracket.end():] if bracket else stem)
+    # 开头方括号：后面还有中文片名时它是字幕组标签，否则（后面是英文名）它就是中文片名
+    if bracket and _CJK.search(bracket.group(1)) and not _CJK.search(rest):
+        return bracket.group(1).strip()
+    return rest
+
+
+def _title_before_markers(stem: str) -> str:
+    cut = re.search(r"(?i)(?<![A-Za-z0-9])(?:S\d{1,2}[ ._-]*E\d{1,4}|S\d{1,2}|E\d{1,4}|19\d{2}|20\d{2}|"
+                    r"2160p|1080p|720p|4k)(?![A-Za-z0-9])|第\s*\d+\s*[集话話季]", stem)
+    title = stem[:cut.start()] if cut else stem
+    return re.sub(r"[._]+", " ", title).strip(" -[]【】")
+
+
+def guess_from_names(names: list[str]) -> dict:
+    """从文件名猜片名、年份、季与集：开头方括号里的中文名优先，否则取年份 / 季集之前的部分。"""
+    if not names:
+        return {"title": "", "year": None, "media_type": None, "season": None, "episodes": []}
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", names[0])
+    year = _YEAR.search(re.sub(r"(?i)\d{3,4}[pi]", "", stem))
+    pairs = [_episode_of(name) for name in names]
+    episodes = sorted({ep for _, ep in pairs if ep is not None})
+    seasons = {season for season, ep in pairs if ep is not None and season is not None}
+    return {"title": _guess_title(stem), "year": int(year.group(1)) if year else None,
+            "media_type": "tv" if episodes else "movie",
+            "season": seasons.pop() if len(seasons) == 1 else (1 if episodes and not seasons else None),
+            "episodes": episodes}
+
+
+def _same_slot(existing: dict, target_name: str, title: str, is_tv: bool) -> bool:
+    """库里的这个文件是不是同一部作品的同一个位置（同一集 / 同一部电影的另一个版本）。
+
+    文件名带清晰度、编码等信息后，同一集的两个版本名字不同，不能只看是否同名；也要认出以前按别的模板
+    命名的文件。同名一定算；否则须是以片名开头的视频，剧集还要季集相同。
+    """
+    name = existing.get("name") or ""
+    if name == target_name:
+        return True
+    if existing.get("is_directory") or existing.get("is_dir") or not is_video(name) \
+            or not name.casefold().startswith(title.casefold()):
+        return False
+    if not is_tv:
+        return True
+    episode = _episode_of(name)
+    return episode[1] is not None and episode == _episode_of(target_name)
+
+
 class _MediaLibrary:
     """两个挂载点共用名称：一个开关、一份 plugins.organizer 设置，管理台里是一张卡片。"""
     name = "organizer"
@@ -156,7 +221,7 @@ class _MediaLibrary:
                       "转存后按命名模板建目录、改名、移动，并读回核验。")
     ui_config_type = "media_library"
     # 管理台设置编辑器调用的动作（POST /api/extensions/organizer/actions/<名>）
-    ui_actions = ("preview_naming", "category_rules", "preview_plan")
+    ui_actions = ("preview_naming", "category_rules", "preview_plan", "parse_names")
     storage_provider = "p115"
 
     def preview_naming(self, payload: dict) -> dict:
@@ -166,11 +231,7 @@ class _MediaLibrary:
             raise ValueError("kind 必须为 movie 或 tv")
         label = f"{kind}命名模板"
         validate_template(payload.get("template"), label)
-        values = {"title": "示例标题", "year": 2026, "resolution": "4K", "ext": "mkv",
-                  "season": 1, "episode": 2, "ep": 2, "media_type": kind,
-                  "genre_ids": [16], "origin_country": ["CN"], "tmdb_id": 123,
-                  "original_name": "sample.S01E02.mkv"}
-        return {"path": render_path(payload["template"], values, label=label)}
+        return {"path": render_path(payload["template"], sample_values(kind), label=label)}
 
     def category_rules(self, payload: dict) -> dict:
         """二级分类规则（category.yaml）的只读展示：按文件顺序，条件值附中文名。"""
@@ -183,6 +244,51 @@ class _MediaLibrary:
             raise ValueError("landed 必须是文件对象数组")
         resource = ParsedResource(**validate_resource(payload.get("parsed")))
         return {"items": build_plan(resource, landed)}
+
+    async def parse_names(self, payload: dict) -> dict:
+        """「工具 → 命名预览」：从贴进来的文件名识别片名、年份、季与集，用来预填表单。
+
+        和真实整理一样以 TMDB 为准：配了 TMDB key 时用文件名里的片名（中文名、英文名依次）去搜，
+        可信匹配时换成规范片名、年份与 tmdbid；tmdb 字段说明结果来源。
+        """
+        names = payload.get("names", [])
+        if not isinstance(names, list) or any(type(n) is not str for n in names):
+            raise ValueError("names 必须是文件名数组")
+        names = [n.strip() for n in names if n.strip()]
+        guess = {**guess_from_names(names), "tmdbid": None, "tmdb": "unconfigured"}
+        if not names or not guess["title"] or not tmdb.api_key() \
+                or os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+            return guess
+        stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", names[0])
+        en_name = _title_before_markers(re.sub(r"^\s*[\[【][^\]】]+[\]】]", "", stem))
+        queries = list(dict.fromkeys(q for q in (guess["title"], en_name) if q))
+        kinds = ["tv"] if guess["episodes"] else ["movie", "tv"]
+        language, timeout = runtime.get("tmdb.language", "zh-CN"), runtime.get("tmdb.timeout", 10)
+
+        def lookup(kind: str, query: str) -> dict | None:
+            hit, _ = tmdb.best_match(kind, query, guess["year"], language=language, timeout=timeout)
+            if hit or _CJK.search(query) or language.lower().startswith("en"):
+                return hit
+            # 英文文件名：按所设语言搜到的是译名，比不上英文名；用英文结果确定条目，再取所设语言的片名
+            hit, _ = tmdb.best_match(kind, query, guess["year"], language="en-US", timeout=timeout)
+            if not hit:
+                return None
+            local = [c for c in tmdb.search(kind, query, guess["year"], language=language, timeout=timeout)
+                     if c.get("id") == hit.get("id")]
+            return {**hit, **(local[0] if local else {})}
+
+        try:
+            for query in queries:
+                for kind in kinds:
+                    hit = await asyncio.to_thread(lookup, kind, query)
+                    if hit:
+                        return {**guess, "title": hit.get("title") or hit.get("name") or guess["title"],
+                                "year": tmdb.candidate_year(hit) or guess["year"], "media_type": kind,
+                                "tmdbid": hit.get("id"), "tmdb": "matched"}
+        except Exception as exc:
+            log.warning("命名预览查询 TMDB 失败：%s", exc)
+            return {**guess, "tmdb": "failed"}
+        return {**guess, "tmdb": "unmatched"}
 
 
 @register(kind="hook", stage="before_save", order=10)
@@ -313,6 +419,8 @@ class Organizer(_MediaLibrary):
             stem, dot, ext = name.rpartition(".")
             stem, ext = (stem, f".{ext}") if dot else (name, "")
             taken = {x.get("name"): int(x["id"]) for x in fs.iterdir(target_cid)}
+            if taken.get(name) in (None, source_id):
+                return "suffix", name  # 文件名本来就不同（如清晰度不同），两份各用自己的名字
             for index in range(2, 100):
                 candidate = f"{stem} ({index}){ext}"
                 if taken.get(candidate) in (None, source_id):
@@ -386,6 +494,8 @@ class Organizer(_MediaLibrary):
         state = runtime.services().state(self.name)
         conflicts = ctx.ns("organize").setdefault("conflicts", [])
         new_rank = resolution_rank(p.resolution)
+        title, is_tv = _safe(p.title), p.media_type == "tv" or bool(p.episodes)
+        ours = {int(item["src_id"]) for item in plan}  # 同一批的其他文件（如分段电影）不算冲突
 
         for item in plan:
             source_id = int(item["src_id"])
@@ -399,7 +509,8 @@ class Organizer(_MediaLibrary):
                 raise ValueError("落地文件内容已变化，停止整理")
             target_name = item["target_name"]
             others = [x for x in fs.iterdir(target_cid)
-                      if x.get("name") == target_name and int(x["id"]) != source_id]
+                      if x.get("name") == target_name and int(x["id"]) != source_id
+                      or int(x["id"]) not in ours and _same_slot(x, target_name, title, is_tv)]
             candidate = {"rank": resolution_rank(item.get("src_name")) or new_rank,
                          "release": release.fill(p.release, release.from_text(item.get("src_name"))),
                          "size": current.get("size") or 0}

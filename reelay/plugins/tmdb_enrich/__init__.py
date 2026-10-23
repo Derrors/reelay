@@ -113,7 +113,15 @@ class TmdbEnrich:
                     + ("，转存时以分享里的文件为准" if hit["_kind"] == "tv" else ""))
         p.raw_fields["tmdbid"] = hit.get("id")
         if hit.get("poster_path"):
-            p.raw_fields["poster_path"] = hit["poster_path"]  # 管理台卡片展示海报
+            p.raw_fields["poster_path"] = hit["poster_path"]  # 管理台卡片与通知展示海报
+        # 通知里展示：原名、简介与评分（评分人数太少时不显示）
+        original = hit.get("original_title") or hit.get("original_name")
+        if original and original != canonical:
+            p.raw_fields["original_title"] = original
+        if (hit.get("overview") or "").strip():
+            p.raw_fields["overview"] = hit["overview"].strip()[:500]
+        if type(hit.get("vote_average")) in (int, float) and (hit.get("vote_count") or 0) >= 10:
+            p.raw_fields["rating"] = round(float(hit["vote_average"]), 1)
         p.raw_fields.setdefault("genre", "")
         p.genre_ids = [int(value) for value in hit.get("genre_ids") or []
                        if type(value) is int and value > 0]

@@ -25,6 +25,9 @@ from .assistant import Assistant
 
 log = logging.getLogger("reelay.control.bot")
 
+# 图片说明的长度上限是 1024；留出余量给审批后在末尾追加的结果行
+CAPTION_LIMIT = 960
+
 HELP = (
     "可以直接用一句话问我或让我操作，例如：\n"
     "• 待审批里有什么？\n• 我有哪些 4K 日本动画？\n• 《X》缺哪几集？\n"
@@ -170,14 +173,21 @@ class ControlBot:
             return None
         return [[self._Button.inline(label, data.encode()) for label, data in buttons]]
 
-    async def send(self, text: str, buttons=None, chat=None, html: bool = False) -> None:
+    async def send(self, text: str, buttons=None, chat=None, html: bool = False, photo: str | None = None) -> None:
         """供 NotifyProvider 调用：把消息发给 owner（或指定 chat）。html=True 时按 HTML 解析（模板见 core/messages.py）；
-        按钮排在同一行。"""
+        按钮排在同一行。photo 是图片地址（如 TMDB 海报）：以图片发送、正文作为说明；说明超出 Telegram 的
+        长度限制或图片发送失败时退回纯文字。"""
         if not self._client:
             log.info("[控制bot未启用] %s", (messages.plain(text) if html else text).replace("\n", " / "))
             return
-        await self._client.send_message(chat or int(self._owner), text, buttons=self._buttons(buttons),
-                                        parse_mode="html" if html else ())
+        target, mode = chat or int(self._owner), "html" if html else ()
+        if photo and len(messages.plain(text) if html else text) <= CAPTION_LIMIT:
+            try:
+                await self._client.send_file(target, photo, caption=text, buttons=self._buttons(buttons), parse_mode=mode)
+                return
+            except Exception as exc:  # noqa: BLE001 - 海报只是锦上添花，发不出就发文字
+                log.warning("海报发送失败，改发文字：%s", exc)
+        await self._client.send_message(target, text, buttons=self._buttons(buttons), parse_mode=mode)
 
     async def run_forever(self) -> None:
         """保持控制 bot 长驻（在 gather 里与监听/worker 并发）。"""

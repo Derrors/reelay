@@ -10,9 +10,13 @@ import { at, text, type PluginEditorProps } from '../types';
 
 type Kind = 'movie' | 'tv';
 const KIND_LABEL: Record<Kind, string> = { movie: '电影', tv: '剧集' };
+// 变量与 MoviePilot 的重命名格式一致，可直接粘贴其模板
 const NAMING_VARS: Array<[string, string]> = [
-  ['title', '片名'], ['year', '年份'], ['resolution', '清晰度'], ['ext', '后缀'], ['season', '季'], ['episode', '集'],
-  ['media_type', '类型'], ['genre_ids', '题材'], ['origin_country', '地区'], ['tmdb_id', 'TMDB 编号'],
+  ['title', '片名'], ['original_title', '原名'], ['name', '文件名里的片名'], ['en_name', '文件名里的英文名'],
+  ['year', '年份'], ['tmdbid', 'TMDB 编号'], ['season', '季号'], ['episode', '集号'], ['season_episode', 'S01E02'],
+  ['part', '分段'], ['videoFormat', '清晰度'], ['videoCodec', '视频编码'], ['audioCodec', '音频编码'],
+  ['resourceType', '片源'], ['effect', '特效'], ['edition', '版本'], ['releaseGroup', '发布组'],
+  ['fileExt', '后缀（含点）'], ['original_name', '原文件名'],
 ];
 
 export function NamingEditor({ section, setSection }: PluginEditorProps) {
@@ -38,7 +42,7 @@ export function NamingEditor({ section, setSection }: PluginEditorProps) {
     <div className="space-y-4">
       <EditorHeading
         title="文件命名模板"
-        description={<>用占位符拼出整理后的目录与文件名，如 <code className="rounded bg-muted px-1 font-mono text-[11px]">{'{{ title }} ({{ year }})'}</code>；保存前会自动检查模板，不会改动网盘里已有的文件。</>}
+        description={<>用占位符拼出整理后的目录与文件名，如 <code className="rounded bg-muted px-1 font-mono text-[11px]">{'{{title}} ({{year}})'}</code>；变量与 MoviePilot 的重命名格式一致，可直接沿用。保存前会自动检查模板，不会改动网盘里已有的文件。</>}
         action={(
           <a href="https://jinja.palletsprojects.com/en/3.0.x/templates/" target="_blank" rel="noreferrer"
             className="inline-flex items-center gap-1 text-xs text-primary hover:underline">

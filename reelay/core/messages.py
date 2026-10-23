@@ -2,6 +2,8 @@
 
 通知渠道（``providers/notify.py``）与控制 Bot 的按钮回调共用这里的模板：点「转存」「忽略」后卡片原样保留，
 只在末尾追加处理结果，不会把整张卡片换成一行字。正文里来自消息与识别结果的内容一律转义。
+
+有 TMDB 海报时，待审批与入库通知以海报图片发送，正文作为图片说明（Telegram 限 1024 字，简介按此截短）。
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ from typing import Any
 
 from . import release
 from .contracts import PipelineContext
+from .rules import COUNTRIES, GENRES
 from .media import pairs_label, planned_pairs
 
 # 识别不可靠的原因 → 提示（见 core/confidence.py）
@@ -30,10 +33,45 @@ def plain(text: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", text))
 
 
+POSTER_URL = "https://image.tmdb.org/t/p/w500{}"
+OVERVIEW_LIMIT = 160
+
+
+def poster_url(ctx: PipelineContext) -> str | None:
+    """TMDB 海报地址；没有匹配到 TMDB 时为 None。"""
+    path = ctx.parsed.raw_fields.get("poster_path") if ctx.parsed else None
+    return POSTER_URL.format(path) if isinstance(path, str) and path.startswith("/") else None
+
+
 def _title(ctx: PipelineContext) -> str:
     p = ctx.parsed
     title = (p.title if p else None) or "（未识别片名）"
     return f"<b>{esc(title)}</b>" + (f" ({p.year})" if p and p.year else "")
+
+
+def _headline(ctx: PipelineContext) -> list[str]:
+    """片名与评分、原名、题材与地区。"""
+    p = ctx.parsed
+    fields = p.raw_fields if p else {}
+    rating = fields.get("rating")
+    lines = [f"{_icon(ctx)} {_title(ctx)}" + (f"  ⭐ {rating}" if type(rating) in (int, float) else "")]
+    original = fields.get("original_title")
+    if original and p and original.casefold() != (p.title or "").casefold():
+        lines.append(f"<i>{esc(original)}</i>")
+    genres = [re.sub(r"（.*?）", "", GENRES[g]) for g in (p.genre_ids if p else []) if g in GENRES][:3]
+    countries = [COUNTRIES.get(c, c) for c in dict.fromkeys(p.origin_country if p else [])][:2]
+    if genres or countries:
+        lines.append("🏷 " + " · ".join(esc(x) for x in [*genres, *countries]))
+    return lines
+
+
+def _overview(ctx: PipelineContext) -> list[str]:
+    text = " ".join(str((ctx.parsed.raw_fields if ctx.parsed else {}).get("overview") or "").split())
+    if not text:
+        return []
+    if len(text) > OVERVIEW_LIMIT:
+        text = text[:OVERVIEW_LIMIT].rstrip("，。、,. ") + "…"
+    return ["", f"<blockquote expandable>{esc(text)}</blockquote>"]
 
 
 def _icon(ctx: PipelineContext) -> str:
@@ -84,8 +122,9 @@ def approval_card(ctx: PipelineContext, target: str | None = None) -> str:
     """待审批卡片。target 是将存入的位置（如「/测试/剧集/国产剧集」），省略时按任务推算。"""
     target = target or approval_target(ctx)
     meta = ctx.meta
-    lines = [f"{_icon(ctx)} {_title(ctx)}"]
-    lines += _lines(("🗂", _episodes(ctx)), ("🎞", _quality(ctx)), ("📦", _size(ctx)))
+    lines = _headline(ctx)
+    lines += ["", *_lines(("🗂", _episodes(ctx)), ("🎞", _quality(ctx)), ("📦", _size(ctx)))]
+    lines += _overview(ctx)
     lines += ["", *_lines(("📡", f"来源 {esc(ctx.raw.source)}"), ("📂", f"存到 <code>{esc(target)}</code>"))]
     warnings = [_CAPS[cap] for cap in (meta.get("confidence") or {}).get("caps", []) if cap in _CAPS]
     share = meta.get("share") or {}
@@ -129,8 +168,9 @@ def _saved_location(ctx: PipelineContext, root: str) -> tuple[str, list[str]]:
 def saved_message(ctx: PipelineContext, root: str) -> str:
     """入库通知。root 是保存目录在网盘里的路径（未知时为目录别名）。"""
     folder, names = _saved_location(ctx, root)
-    lines = [f"✅ 已入库 · {_title(ctx)}"]
-    lines += _lines(("🗂", _episodes(ctx)), ("🎞", _quality(ctx)), ("📂", f"<code>{esc(folder)}</code>"))
+    lines = ["✅ <b>已入库</b>", "", *_headline(ctx), ""]
+    lines += _lines(("🗂", _episodes(ctx)), ("🎞", _quality(ctx)), ("📦", _size(ctx)),
+                    ("📂", f"<code>{esc(folder)}</code>"))
     if len(names) == 1:
         lines.append(f"📄 {esc(names[0])}")
     elif names:

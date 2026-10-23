@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ...core.rules import GENRES, _csv
+from ...core.rules import COUNTRIES, GENRES, _csv
 
 CATEGORY_FILE = Path(__file__).with_name("category.yaml")
 
@@ -28,11 +28,6 @@ ALLOWED_MEDIA = {"movie", "tv"}
 ALLOWED_FIELDS = {"genre_ids", "origin_country", "release_year"}
 FIELD_LABELS = {"genre_ids": "题材", "origin_country": "地区", "release_year": "年份"}
 
-COUNTRIES = {
-    "CN": "中国大陆", "HK": "香港", "TW": "台湾", "JP": "日本", "KR": "韩国", "KP": "朝鲜", "TH": "泰国",
-    "IN": "印度", "SG": "新加坡", "US": "美国", "GB": "英国", "UK": "英国", "FR": "法国", "DE": "德国",
-    "ES": "西班牙", "IT": "意大利", "NL": "荷兰", "PT": "葡萄牙", "RU": "俄罗斯",
-}
 
 
 def _expand(value: str) -> set[str]:

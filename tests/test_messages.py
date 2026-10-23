@@ -56,12 +56,30 @@ class TestTemplates(unittest.TestCase):
         ctx.meta["organize"] = {"plan": [
             {"target_dir": "国产剧集/玉簟秋 (2026)/Season 01", "target_name": f"玉簟秋 - S01E0{i}.mkv"} for i in (1, 2, 3)]}
         text = messages.saved_message(ctx, "/测试/剧集")
-        self.assertIn("✅ 已入库 · <b>玉簟秋</b> (2026)", text)
+        self.assertTrue(text.startswith("✅ <b>已入库</b>\n\n📺 <b>玉簟秋</b> (2026)"))
         self.assertIn("<code>/测试/剧集/国产剧集/玉簟秋 (2026)/Season 01</code>", text)
         self.assertIn("📄 3 个文件：玉簟秋 - S01E01.mkv、玉簟秋 - S01E02.mkv 等", text)
         # 跨多季：目录取共同的上级
         ctx.meta["organize"]["plan"][2]["target_dir"] = "国产剧集/玉簟秋 (2026)/Season 02"
         self.assertIn("<code>/测试/剧集/国产剧集/玉簟秋 (2026)</code>", messages.saved_message(ctx, "/测试/剧集"))
+
+
+    def test_tmdb_details_and_poster(self):
+        plain = tv()
+        self.assertIsNone(messages.poster_url(plain))
+        self.assertNotIn("⭐", messages.approval_card(plain))  # 没有 TMDB 信息时不出现空行或空标签
+        ctx = tv(genre_ids=[18, 99999, 9648, 80, 36], origin_country=["CN", "HK", "CN", "TW"],
+                 raw_fields={"poster_path": "/p.jpg", "rating": 7.8, "original_title": "Yu Dian Qiu",
+                             "overview": "简介<很长>" * 100})
+        self.assertEqual(messages.poster_url(ctx), "https://image.tmdb.org/t/p/w500/p.jpg")
+        text = messages.approval_card(ctx)
+        self.assertTrue(text.startswith("📺 <b>玉簟秋</b> (2026)  ⭐ 7.8\n<i>Yu Dian Qiu</i>\n"
+                                        "🏷 剧情 · 悬疑 · 犯罪 · 中国大陆 · 香港\n"))
+        overview = text.split("<blockquote expandable>")[1].split("</blockquote>")[0]
+        self.assertTrue(overview.endswith("…") and "&lt;很长&gt;" in overview)
+        self.assertLessEqual(len(messages.plain(overview)), messages.OVERVIEW_LIMIT + 1)
+        self.assertIn("🏷 剧情", messages.saved_message(ctx, "/测试/剧集"))
+        self.assertNotIn("blockquote", messages.saved_message(ctx, "/测试/剧集"))  # 入库通知不带简介
 
 
 class TestDelivery(unittest.IsolatedAsyncioTestCase):
@@ -73,12 +91,37 @@ class TestDelivery(unittest.IsolatedAsyncioTestCase):
 
         console = ConsoleNotify()
         console.configure(sender=sender)
-        await console.notify(tv(), "pending_approval")
+        await console.notify(tv(raw_fields={"poster_path": "/p.jpg"}), "pending_approval")
         await console.notify(tv(), "transfer_uncertain")
         self.assertTrue(all(item["html"] for item in sent))
+        self.assertEqual(sent[0]["photo"], "https://image.tmdb.org/t/p/w500/p.jpg")
         self.assertEqual(sent[0]["buttons"], [("✅ 转存", "ok:t1"), ("🚫 忽略", "no:t1")])
         self.assertIn("核验转存", sent[1]["text"])
         self.assertIn("<code>t1</code>", sent[1]["text"])
+
+    async def test_bot_sends_posters_and_falls_back_to_text(self):
+        calls = []
+
+        class Client:
+            fail = False
+
+            async def send_file(self, chat, file, **kwargs):
+                if self.fail:
+                    raise ValueError("bad image")
+                calls.append(("photo", file, kwargs["caption"]))
+
+            async def send_message(self, chat, text, **kwargs):
+                calls.append(("text", None, text))
+
+        bot = ControlBot.__new__(ControlBot)
+        bot._client, bot._owner, bot._Button = Client(), "1", None
+        await bot.send("卡片", html=True, photo="https://x/p.jpg")
+        await bot.send("长" * 2000, html=True, photo="https://x/p.jpg")  # 超过图片说明的长度上限
+        bot._client.fail = True
+        await bot.send("卡片", html=True, photo="https://x/p.jpg")
+        await bot.send("没有海报", html=True)
+        self.assertEqual([kind for kind, _, _ in calls], ["photo", "text", "text", "text"])
+        self.assertEqual(calls[0][1:], ("https://x/p.jpg", "卡片"))
 
     async def test_bot_decision_keeps_the_card_and_reports_stale_tasks(self):
         task = tv()

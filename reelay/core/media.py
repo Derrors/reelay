@@ -2,6 +2,13 @@
 from __future__ import annotations
 import re
 
+VIDEO_EXT = {'.mp4', '.mkv', '.ts', '.avi', '.mov', '.flv', '.wmv', '.webm',
+             '.m2ts', '.mpg', '.mpeg', '.rmvb', '.iso'}
+
+
+def is_video(name: str) -> bool:
+    return any((name or '').lower().endswith(ext) for ext in VIDEO_EXT)
+
 
 def episode_of(filename: str) -> tuple[int | None, int | None]:
     name = filename or ''

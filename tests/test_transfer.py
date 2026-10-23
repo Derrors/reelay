@@ -296,7 +296,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done.state, TaskState.DONE)
         self.assertTrue(done.ns('organize')['applied'])
         fid = int(done.ns('storage')['landed'][0]['id'])
-        self.assertEqual(self.cloud.items[fid]['name'], '剧集 - S01E01.mkv')
+        self.assertEqual(self.cloud.items[fid]['name'], '剧集 - S01E01 - 第 1 集.mkv')
         self.assertEqual(self.cloud.children(done.ns('storage')['manifest']['staging_cid']), [])
 
     async def test_concurrent_shares_own_separate_staging_directories(self):
@@ -351,8 +351,8 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done.state, TaskState.DONE)
         self.assertEqual((done.parsed.season, done.parsed.episodes), (None, [1, 2]))
         self.assertEqual(sorted(self.path_of(int(x['id'])) for x in done.ns('storage')['landed']), [
-            '剧集 (2026)/Season 01/剧集 - S01E01.mkv', '剧集 (2026)/Season 01/剧集 - S01E02.mkv',
-            '剧集 (2026)/Season 02/剧集 - S02E01.mkv', '剧集 (2026)/Season 02/剧集 - S02E02.mkv'])
+            '剧集 (2026)/Season 01/剧集 - S01E01 - 第 1 集.mkv', '剧集 (2026)/Season 01/剧集 - S01E02 - 第 2 集.mkv',
+            '剧集 (2026)/Season 02/剧集 - S02E01 - 第 1 集.mkv', '剧集 (2026)/Season 02/剧集 - S02E02 - 第 2 集.mkv'])
         self.assertEqual(self.store.stored_episode_pairs('剧集', '1'), [[1, 1], [1, 2], [2, 1], [2, 2]])
         self.assertTrue(any('按季分别转存与整理' in line for line in done.trail))
 
@@ -366,7 +366,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([x[3] for x in self.cloud.receives()][-1], ['501'])
         self.assertEqual((done.parsed.season, done.parsed.episodes), (3, [1]))
         self.assertEqual(self.path_of(int(done.ns('storage')['landed'][0]['id'])),
-                         '剧集 (2026)/Season 03/剧集 - S03E01.mkv')
+                         '剧集 (2026)/Season 03/剧集 - S03E01 - 第 1 集.mkv')
         self.assertEqual(done.ns('storage')['content_keys'], ['p115:1:episode:剧集|S03|E01'])
 
     async def test_message_scope_only_receives_new_declared_episodes(self):
@@ -496,12 +496,32 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
     async def test_conflict_suffix_keeps_both_files(self):
         self.use_conflict('suffix')
         self.cloud.add_share('share', 'Show.S01E01.2160p.mkv')
-        existing, season = self.existing_library_file()
+        existing, season = self.existing_library_file(name='剧集 - S01E01 - 第 1 集 - 2160p.mkv')
         done = await self.execute(self.task())
         self.assertEqual(done.state, TaskState.DONE)
         names = sorted(x['name'] for x in self.cloud.children(season))
-        self.assertEqual(names, ['剧集 - S01E01 (2).mkv', '剧集 - S01E01.mkv'])
+        self.assertEqual(names, ['剧集 - S01E01 - 第 1 集 - 2160p (2).mkv', '剧集 - S01E01 - 第 1 集 - 2160p.mkv'])
         self.assertEqual(done.ns('organize')['conflicts'][0]['action'], 'suffix')
+
+    async def test_conflict_suffix_keeps_own_name_when_versions_differ(self):
+        # 文件名带清晰度后，同一集的另一个版本名字不同，仍算冲突，但不必加序号
+        self.use_conflict('suffix')
+        self.cloud.add_share('share', 'Show.S01E01.2160p.mkv')
+        existing, season = self.existing_library_file(name='剧集 - S01E01 - 第 1 集 - 1080p.mkv')
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        names = sorted(x['name'] for x in self.cloud.children(season))
+        self.assertEqual(names, ['剧集 - S01E01 - 第 1 集 - 1080p.mkv', '剧集 - S01E01 - 第 1 集 - 2160p.mkv'])
+        self.assertEqual(done.ns('organize')['conflicts'][0]['action'], 'suffix')
+
+    async def test_other_episodes_and_other_titles_are_not_conflicts(self):
+        self.cloud.add_share('share', 'Show.S01E01.mkv')
+        _, season = self.existing_library_file(name='剧集 - S01E02 - 第 2 集.mkv')
+        self.cloud.add({'name': '别的剧 - S01E01.mkv', 'is_dir': False, 'size': 9}, season)
+        self.cloud.add({'name': '剧集 - S01E01.nfo', 'is_dir': False, 'size': 1}, season)
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual(done.ns('organize')['conflicts'], [])
 
     async def test_conflict_skip_discards_new_copy_and_finishes(self):
         self.use_conflict('skip')
