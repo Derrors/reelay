@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-23
+
 ### 新增
 
 - 运行日志页可以清空日志（含轮转留下的旧文件）。
@@ -181,6 +183,7 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
+[0.6.0]: https://github.com/Derrors/reelay/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Derrors/reelay/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Derrors/reelay/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Derrors/reelay/releases/tag/v0.3.0
