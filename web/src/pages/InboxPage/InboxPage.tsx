@@ -220,6 +220,10 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
               {item.storage_phase === 'receiving' ? (
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct('reconcile')}><ShieldCheck />核验转存</Button>
               ) : null}
+              {!item.has_landed && item.storage_phase !== 'receiving' ? (
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAct('reject')}
+                  className="px-2 text-muted-foreground hover:text-destructive sm:px-3"><X />忽略</Button>
+              ) : null}
               {item.has_landed && item.organize_conflict ? (
                 <ConflictButtons conflict={item.organize_conflict} busy={busy}
                   onChoose={(choice) => onAct('reorganize', undefined, choice)} />

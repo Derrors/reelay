@@ -1,8 +1,9 @@
-import { ChevronRight, ListChecks, MessageSquareText, RefreshCw, Search } from 'lucide-react';
+import { ChevronRight, EyeOff, Link2Off, ListChecks, MessageSquareText, RefreshCw, Search } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api } from '@/api/client';
+import { extras } from '@/api/extras';
 import { EmptyState } from '@/components/app/EmptyState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
@@ -19,6 +20,9 @@ import type { ITaskSummary, TaskState } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 const PAGE_SIZE = 50;
+
+/** 分享已失效（取消、过期）的失败任务：来源不会再修好这条链接，只能忽略。 */
+const isShareGone = (item: ITaskSummary) => item.state === 'failed' && (item.error ?? '').startsWith('分享不可用');
 
 interface ListResult {
   key: string;
@@ -140,6 +144,21 @@ export default function TasksPage() {
     .reduce((sum, s) => sum + (counts[s] ?? 0), 0);
   const loading = result?.key !== key;
   const items = loading ? [] : result.items;
+  const shareGone = items.filter(isShareGone);
+  const [ignoring, setIgnoring] = useState(false);
+  const ignoreShareGone = async () => {
+    setIgnoring(true);
+    try {
+      const r = await extras.batch(shareGone.map((i) => i.task_id), 'reject');
+      if (r.failed.length) toast.error(`${r.failed.length} 条没能忽略：${r.failed[0].error}`);
+      if (r.done) toast.success(`已忽略 ${r.done} 条分享失效的任务`);
+      setReloadToken((t) => t + 1);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '忽略失败');
+    } finally {
+      setIgnoring(false);
+    }
+  };
 
   return (
     <Page
@@ -177,6 +196,18 @@ export default function TasksPage() {
           <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索片名、来源或错误信息" className="h-9 bg-card pl-9 shadow-xs" />
         </div>
       </div>
+
+      {group.key === 'failed' && shareGone.length ? (
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-4 py-2.5 text-[13px] shadow-xs">
+          <Link2Off className="size-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1">
+            <b className="font-semibold tabular-nums">{shareGone.length}</b> 条任务的分享已取消或过期，无法再转存
+          </span>
+          <Button size="sm" variant="outline" disabled={ignoring} onClick={() => void ignoreShareGone()}>
+            <EyeOff />全部忽略
+          </Button>
+        </div>
+      ) : null}
 
       <div className="overflow-hidden rounded-xl border border-card-border bg-card shadow-xs">
         <div className="hidden items-center gap-3 border-b bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground md:flex">

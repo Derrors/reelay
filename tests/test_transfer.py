@@ -456,6 +456,42 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(failed.ns('task')['no_auto_retry'])
         self.assertEqual((len(self.cloud.receives()), self.cloud.children(1), self.claims()), (1, [], 0))
 
+    async def test_failed_or_manual_tasks_can_be_ignored_only_without_files_left_on_the_drive(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        self.cloud.share_gone['share'] = '链接已过期'
+        gone = await self.execute(self.task())
+        self.assertEqual(gone.state, TaskState.FAILED)
+        await self.service.reject(gone.task_id)
+        ignored = self.store.get_task(gone.task_id)
+        self.assertEqual(ignored.state, TaskState.SKIPPED)
+        self.assertIn('管理端忽略了这条任务', ignored.trail[-1])
+        self.assertIsNone(self.store.get_task_record(gone.task_id)['error'])
+        self.assertEqual(self.store._conn.execute('SELECT COUNT(*) FROM feedback').fetchone()[0], 0)  # 不当作不想要
+        # 发出转存后被 115 明确拒绝：暂存目录已清理，也可以忽略
+        self.cloud.share_gone.clear()
+        self.cloud.add_share('b', 'S01E01.mkv')
+        self.cloud.receive_mode['b'] = 'expired'
+        rejected = await self.execute(self.task('b'))
+        self.assertEqual(rejected.state, TaskState.FAILED)
+        await self.service.reject(rejected.task_id)
+        self.assertEqual(self.store.get_task(rejected.task_id).state, TaskState.SKIPPED)
+        self.assertEqual(self.claims(), 0)
+
+    async def test_ignoring_is_refused_while_transfer_is_unclear(self):
+        self.cloud.add_share('c', 'S01E01.mkv')
+        self.cloud.receive_mode['c'] = 'lost'  # 请求超时、结果不明
+        uncertain = await self.execute(self.task('c'))
+        self.assertEqual((uncertain.state, uncertain.ns('storage')['phase']), (TaskState.NEED_MANUAL, 'receiving'))
+        with self.assertRaises(ConflictError):
+            await self.service.reject(uncertain.task_id)
+        self.assertEqual(self.store.get_task(uncertain.task_id).state, TaskState.NEED_MANUAL)
+
+    async def test_ignoring_is_refused_when_files_already_landed(self):
+        ctx, *_ = await self.conflict_task()  # 文件已转存、等待处理整理冲突
+        with self.assertRaises(ConflictError):
+            await self.service.reject(ctx.task_id)
+        self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.NEED_MANUAL)
+
     async def test_waiting_task_rechecks_episodes_stored_meanwhile(self):
         self.cloud.add_share('a', 'S01E01.mkv', 'S01E02.mkv')
         self.cloud.add_share('b', 'S01E02.mkv', 'S01E03.mkv')

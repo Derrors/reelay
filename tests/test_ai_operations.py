@@ -280,7 +280,7 @@ class TestFailureExplainer(Base):
         self.store.save_task(ctx, error="分享不可用，无法转存：链接已过期")
         explanation = await self.run_on(ctx)
         self.assertEqual((explanation["action"], explanation["text"]), ("share_gone", "分享不可用，无法转存：链接已过期"))
-        self.assertIn("建议：分享已失效", self.notices()[0])
+        self.assertIn("建议：忽略这条任务", self.notices()[0])
 
     async def test_shares_that_need_picking_files_are_not_sent_to_fix_the_parse(self):
         ctx = tv_ctx()

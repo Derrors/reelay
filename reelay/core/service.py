@@ -331,13 +331,34 @@ class ManagementService:
         self._record(ctx, "approve", {"save_dir_alias": save_dir_alias or None, "target": target}, advice)
 
     async def reject(self, task_id: str) -> None:
+        """忽略：待审批的资源不转存；失败或待人工的任务不再处理（见 dismiss）。"""
         ctx = self.store.get_task(task_id)
+        if ctx and ctx.state in (TaskState.FAILED, TaskState.NEED_MANUAL):
+            self.dismiss(ctx)
+            return
         advice = self.advice_action(ctx) if ctx and ctx.state == TaskState.PENDING_APPROVAL else None
         if not await self.pipeline.reject(task_id):
             raise ConflictError("任务不是待审批状态")
         # 分享已失效时忽略不说明你不想要这部资源，不记为样本，以免影响偏好参考、通过率与来源质量建议
         if (ctx.meta.get("share") or {}).get("status") != "unavailable":
             self._record(ctx, "reject", {}, advice)
+
+    def dismiss(self, ctx: PipelineContext) -> None:
+        """失败或待人工的任务不再处理，转为已忽略（如分享已失效）。
+
+        只限网盘里没有留下这次转存的任务：结果不明（receiving）的要先核验，文件已转存的要整理或删除
+        转存文件。115 明确拒绝时阶段已退回 ready、暂存目录已清理，可以忽略。
+        不记为反馈样本：这不代表你不想要这部资源。
+        """
+        storage = ctx.ns("storage")
+        if storage.get("phase") == "receiving":
+            raise ConflictError("转存结果还没核验，不能直接忽略；请先核验转存")
+        if storage.get("landed"):
+            raise ConflictError("文件已经转存，不能直接忽略；请重新整理或删除转存文件")
+        previous = ctx.state
+        ctx.state = TaskState.SKIPPED
+        ctx.log("管理端忽略了这条任务，不再处理")
+        self._update(ctx, expected=previous)
 
     def _record(self, ctx: PipelineContext, kind: str, label: dict, advice: str | None = None) -> None:
         self.store.add_feedback(task_id=ctx.task_id, source=ctx.raw.source, kind=kind, text=ai.scrub(ctx.raw.text),

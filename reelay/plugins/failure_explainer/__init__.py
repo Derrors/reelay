@@ -23,7 +23,7 @@ log = logging.getLogger("reelay.plugin.failure_explainer")
 
 ACTIONS = {
     "relogin": "在「115 连接」重新扫码登录",
-    "share_gone": "分享已失效，等来源重新分享",
+    "share_gone": "忽略这条任务",
     "reconcile": "核验转存",
     "reorganize": "重新整理",
     "resolve_conflict": "删除转存文件或覆盖保存",

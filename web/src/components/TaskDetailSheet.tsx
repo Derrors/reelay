@@ -102,7 +102,9 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
     const unknownTransfer = !!storage?.manifest && storage.phase !== 'stored';
     return {
       approve: state === 'pending_approval',
-      reject: state === 'pending_approval',
+      // 失败或待人工的任务：网盘里没留下这次转存（结果已确定、没有已转存文件）时可以忽略
+      reject: state === 'pending_approval'
+        || ((state === 'failed' || state === 'need_manual') && storage?.phase !== 'receiving' && !landed),
       retry: state === 'failed',
       reparse: idle && !unknownTransfer && !storage?.manifest && !landed,
       reorganize: state === 'need_manual' && landed,
@@ -156,7 +158,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
   const organizeError = (meta.organize as { error?: string } | undefined)?.error;
   const conflict = can.reorganize ? (meta.organize as { pending_conflict?: IOrganizeConflict } | undefined)?.pending_conflict : undefined;
 
-  const hasActions = can.editable || can.reparse || can.retry || can.reconcile || can.reorganize || can.approve;
+  const hasActions = can.editable || can.reparse || can.retry || can.reconcile || can.reorganize || can.approve || can.reject;
   const footer = detail && hasActions ? (
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex flex-wrap gap-2">
