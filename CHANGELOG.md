@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-23
+
 ### 新增
 
 - 媒体库整理新增「目录方式」，可选二级分类、按媒体类型（电影 / 剧集 / 动漫各一个文件夹，名称可改，动漫可不单独分）或不分类。两种分类方式都以流程图展示判断顺序与归入的文件夹，按媒体类型的文件夹名直接在图上修改。
@@ -182,6 +184,7 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
+[0.5.0]: https://github.com/Derrors/reelay/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Derrors/reelay/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Derrors/reelay/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Derrors/reelay/releases/tag/v0.2.1
