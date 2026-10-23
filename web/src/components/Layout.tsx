@@ -5,6 +5,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { Suspense, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { ConfirmHost } from '@/components/app/ConfirmHost';
 import { Toaster } from '@/components/ui/sonner';
 import { Sheet } from '@/components/app/Sheet';
 import { ThemeToggle } from '@/components/app/ThemeToggle';
@@ -262,6 +263,7 @@ export const Layout = () => {
       </nav>
 
       <Toaster position="top-right" richColors closeButton />
+      <ConfirmHost />
     </div>
   );
 };

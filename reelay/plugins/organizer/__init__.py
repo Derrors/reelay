@@ -371,7 +371,8 @@ class Organizer(_MediaLibrary):
             await run_blocking(self._apply_sync, ctx, ctx.parsed, plan)
             self._cleanup_staging(ctx)
             ctx.ns("organize")["applied"] = True
-            ctx.ns("organize").pop("error", None)
+            for key in ("error", "pending_conflict", "resolve"):
+                ctx.ns("organize").pop(key, None)
             ctx.log("整理文件 ID、目录和名称全部读回核验通过")
         except Exception as exc:
             ctx.ns("organize")["error"] = str(exc)
@@ -408,11 +409,18 @@ class Organizer(_MediaLibrary):
             # 清理失败不影响已完成的整理结果
             log.warning("清理暂存目录失败（已忽略）：%s", exc)
 
-    def _resolve_conflict(self, strategy, fs, target_cid, item, source_id, existing, candidate, state):
-        """按策略处理同名不同 ID 的文件，返回 (动作, 本次文件的最终名称)。
+    def _remove(self, fs, file_id: int, parent: int, what: str) -> None:
+        """删除（进 115 回收站）后读回目录，确认文件已不在原处。删除可重复执行，结果不明时重来即可。"""
+        self._auth.delete([file_id])
+        if any(int(x["id"]) == file_id for x in fs.iterdir(int(parent))):
+            raise RuntimeError(f"删除{what}后读回仍在原目录，停止整理")
+
+    def _resolve_conflict(self, strategy, fs, target_cid, item, source_id, source_parent, existing, candidate, state):
+        """按策略处理库里同一位置已有的文件，返回 (动作, 本次文件的最终名称)。
 
         candidate 是本次文件的 ``{"rank", "release", "size"}``；库中文件优先用入库时记下的信息，
-        没有记录时从文件名识别。
+        没有记录时从文件名识别。replace 是人工选的「覆盖保存」：不比较版本，直接换掉库里的文件。
+        删除前先在扩展状态里记下决定，恢复时据此续跑。
         """
         name = item["target_name"]
         if strategy == "suffix":
@@ -426,20 +434,21 @@ class Organizer(_MediaLibrary):
                 if taken.get(candidate) in (None, source_id):
                     return "suffix", candidate
             raise FileExistsError(f"同名文件过多，保留源文件：{name}")
-        if strategy in ("skip", "upgrade"):
+        if strategy in ("skip", "upgrade", "replace"):
             existing_id = int(existing["id"])
             recorded = state.get(f"file:{existing_id}") or {}
             current = {"rank": recorded.get("rank") or resolution_rank(existing.get("name")),
                        "release": recorded.get("release") or release.from_text(existing.get("name")),
                        "size": existing.get("size") or recorded.get("size") or 0}
-            if strategy == "upgrade" and release.compare(candidate, current, runtime.get("release"), strict=True) > 0:
+            if strategy == "replace" or strategy == "upgrade" \
+                    and release.compare(candidate, current, runtime.get("release"), strict=True) > 0:
                 state.set(f"replaced:{existing_id}", {"by": source_id, "name": name})
-                self._auth.delete([existing_id])
-                return "upgrade", name
-            state.set(f"skipped:{source_id}", {"kept": existing_id, "name": name})
-            self._auth.delete([source_id])
+                self._remove(fs, existing_id, target_cid, "库里的旧文件")
+                return strategy, name
+            state.set(f"skipped:{source_id}", {"kept": existing_id, "name": name, "parent": int(source_parent)})
+            self._remove(fs, source_id, source_parent, "本次转存的文件")
             return "skip", name
-        raise FileExistsError(f"目标已有其他同名文件，保留源文件：{name}")
+        raise FileExistsError(f"库里已有「{existing.get('name')}」，请选择删除转存文件或覆盖保存")
 
     # ------------------------------------------------------------------ #
     def _validate(self, p) -> str | None:
@@ -490,17 +499,24 @@ class Organizer(_MediaLibrary):
             dir_cache[rel_dir] = pid
             return pid
 
-        strategy = runtime.get("plugins.organizer.conflict", "manual")
+        organize = ctx.ns("organize")
+        # 人工在冲突时选的处理（删除转存文件 / 覆盖保存）优先于配置的策略，整理成功后清除
+        strategy = organize.get("resolve") or runtime.get("plugins.organizer.conflict", "manual")
         state = runtime.services().state(self.name)
-        conflicts = ctx.ns("organize").setdefault("conflicts", [])
+        conflicts = organize.setdefault("conflicts", [])
         new_rank = resolution_rank(p.resolution)
         title, is_tv = _safe(p.title), p.media_type == "tv" or bool(p.episodes)
         ours = {int(item["src_id"]) for item in plan}  # 同一批的其他文件（如分段电影）不算冲突
 
         for item in plan:
             source_id = int(item["src_id"])
-            if state.get(f"skipped:{source_id}"):
-                continue  # 冲突时已按策略删除了本次的新文件
+            skipped = state.get(f"skipped:{source_id}")
+            if skipped:
+                # 冲突时已决定删除本次的新文件：上次删除结果不明就再删一次并读回
+                parent = skipped.get("parent")
+                if parent is not None and any(int(x["id"]) == source_id for x in fs.iterdir(int(parent))):
+                    self._remove(fs, source_id, parent, "本次转存的文件")
+                continue
             target_cid = ensure_dir(item["target_dir"])
             current = fs.get_attr(source_id, refresh=True)
             if item.get("size") is not None and current.get("size") != item["size"]:
@@ -515,12 +531,25 @@ class Organizer(_MediaLibrary):
                          "release": release.fill(p.release, release.from_text(item.get("src_name"))),
                          "size": current.get("size") or 0}
             if others:
+                others.sort(key=lambda x: x.get("name") != target_name)  # 同名的先处理：覆盖后目标名要空出来
+                existing = others[0]
+                if strategy == "manual":
+                    # 留给管理台展示两份文件，供人选择删除转存文件或覆盖保存
+                    organize["pending_conflict"] = {
+                        "target_dir": item["target_dir"], "target_name": item["target_name"],
+                        "existing": {"id": str(existing["id"]), "name": existing.get("name"),
+                                     "size": existing.get("size")},
+                        "incoming": {"id": str(source_id), "name": item.get("src_name"), "size": current.get("size")},
+                    }
                 action, target_name = self._resolve_conflict(
-                    strategy, fs, target_cid, item, source_id, others[0], candidate, state)
+                    strategy, fs, target_cid, item, source_id, current["parent_id"], existing, candidate, state)
                 conflicts.append({"target": f"{item['target_dir']}/{item['target_name']}",
-                                  "action": action, "existing_id": str(others[0]["id"])})
+                                  "action": action, "existing_id": str(existing["id"])})
                 if action == "skip":
+                    ctx.log(f"删除了本次转存的「{item.get('src_name')}」，保留库里的「{existing.get('name')}」")
                     continue
+                if action == "replace":
+                    ctx.log(f"覆盖保存：库里的「{existing.get('name')}」已删除，换成本次转存的文件")
             # 根据真实文件 ID 的当前位置续跑；已改名或已移动的步骤无需重做。
             if current["name"] != target_name:
                 auth.rename(source_id, target_name)

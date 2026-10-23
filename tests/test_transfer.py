@@ -42,6 +42,7 @@ class Cloud:
         self.before_mutation = None
         self.fail_move_after_effect = False
         self.ignore_move = False
+        self.fail_delete = None  # 'before'：请求失败未生效；'after'：已删除但响应中断；'ignore'：返回成功却没删
 
     @staticmethod
     def directory(fid, pid, name):
@@ -197,8 +198,14 @@ class Cloud:
     def fs_delete(self, ids):
         with self.lock:
             self.calls.append(('delete', list(ids)))
-            for fid in ids:
-                self.items.pop(int(fid), None)
+            fail, self.fail_delete = self.fail_delete, None
+            if fail == 'before':
+                raise TimeoutError('删除请求超时')
+            if fail != 'ignore':
+                for fid in ids:
+                    self.items.pop(int(fid), None)
+            if fail == 'after':
+                raise TimeoutError('删除成功，但响应中断')
         return {'state': True}
 
     def share_snap(self, payload):
@@ -757,6 +764,84 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cloud.items[fid]['name'], 'S01E01.mkv')
         self.assertEqual(self.cloud.items[fid]['parent_id'], manual.result['staging_cid'])
         self.assertEqual(self.cloud.items[existing['id']]['size'], 9)
+
+    async def conflict_task(self):
+        """库里已有 S01E01（旧模板命名），本次转存同一集：默认策略转人工，记下两份文件。"""
+        self.cloud.add_share('share', 'Show.S01E01.2160p.mkv')
+        existing, season = self.existing_library_file(size=9)
+        ctx = self.task()
+        manual = await self.execute(ctx)
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        conflict = manual.ns('organize')['pending_conflict']
+        landed = int(manual.ns('storage')['landed'][0]['id'])
+        self.assertEqual((conflict['existing']['id'], conflict['existing']['name'], conflict['incoming']['id']),
+                         (str(existing['id']), '剧集 - S01E01.mkv', str(landed)))
+        self.assertNotIn(('delete', [landed]), self.cloud.calls)
+        return ctx, existing, season, landed
+
+    async def test_conflict_choice_delete_new_copy(self):
+        ctx, existing, season, landed = await self.conflict_task()
+        await self.service.requeue_organize(ctx.task_id, conflict='skip')
+        done = await self.execute(ctx)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertNotIn(landed, self.cloud.items)
+        self.assertEqual([x['id'] for x in self.cloud.children(season)], [existing['id']])
+        self.assertEqual(done.ns('organize')['conflicts'][-1]['action'], 'skip')
+        self.assertFalse({'pending_conflict', 'resolve'} & set(done.ns('organize')))
+        self.assertEqual(len(self.cloud.receives()), 1)
+
+    async def test_conflict_choice_overwrite_library_file(self):
+        ctx, existing, season, landed = await self.conflict_task()
+        await self.service.requeue_organize(ctx.task_id, conflict='replace')
+        done = await self.execute(ctx)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertNotIn(existing['id'], self.cloud.items)
+        self.assertEqual([(x['id'], x['name']) for x in self.cloud.children(season)],
+                         [(landed, '剧集 - S01E01 - 第 1 集 - 2160p.mkv')])
+        self.assertEqual(done.ns('organize')['conflicts'][-1]['action'], 'replace')
+        self.assertIn('覆盖保存', '\n'.join(done.trail))
+
+    async def test_conflict_choice_requires_a_pending_conflict(self):
+        self.cloud.add_share('share', 'S01E01.mkv')
+        self.cloud.fail_move_after_effect = True
+        ctx = self.task()
+        self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)
+        with self.assertRaises(ConflictError):
+            await self.service.requeue_organize(ctx.task_id, conflict='replace')
+        with self.assertRaises(ValueError):
+            await self.service.requeue_organize(ctx.task_id, conflict='keep')
+
+    async def test_conflict_choice_cannot_change_directory(self):
+        ctx, *_ = await self.conflict_task()
+        with self.assertRaises(ConflictError):  # 处理冲突时换目录，选的那份文件就不是同一个位置了
+            await self.service.requeue_organize(ctx.task_id, conflict='skip', save_dir_alias='新目录')
+
+    async def test_overwrite_with_lost_delete_response_resumes_without_deleting_again(self):
+        ctx, existing, season, landed = await self.conflict_task()
+        await self.service.requeue_organize(ctx.task_id, conflict='replace')
+        self.cloud.fail_delete = 'after'
+        manual = await self.execute(ctx)
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        self.assertNotIn(existing['id'], self.cloud.items)  # 旧文件其实已删掉
+        await self.service.requeue_organize(ctx.task_id)  # 再点「重新整理」：旧文件已不在，直接整理
+        done = await self.execute(ctx)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual([x['id'] for x in self.cloud.children(season)], [landed])
+        self.assertEqual(self.cloud.calls.count(('delete', [existing['id']])), 1)
+
+    async def test_delete_new_copy_is_verified_and_retried_when_unclear(self):
+        ctx, existing, season, landed = await self.conflict_task()
+        await self.service.requeue_organize(ctx.task_id, conflict='skip')
+        self.cloud.fail_delete = 'ignore'  # 返回成功却没删：读回发现
+        manual = await self.execute(ctx)
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        self.assertIn('读回', manual.ns('organize')['error'])
+        self.assertIn(landed, self.cloud.items)
+        await self.service.requeue_organize(ctx.task_id)  # 已决定删除：续跑时再删一次并读回
+        done = await self.execute(ctx)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertNotIn(landed, self.cloud.items)
+        self.assertEqual([x['id'] for x in self.cloud.children(season)], [existing['id']])
 
     async def test_false_success_from_move_is_detected_by_readback(self):
         self.cloud.add_share('share', 'S01E01.mkv')

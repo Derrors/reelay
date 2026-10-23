@@ -150,6 +150,8 @@ export interface IInboxItem {
   storage_phase: string | null;
   has_landed: boolean;
   organize_error: string | null;
+  /** 整理时库里已有同一集 / 同一部的文件，等人选择删除转存文件或覆盖保存。 */
+  organize_conflict: IOrganizeConflict | null;
   /** 以下只在待确认（pending_approval）里返回。 */
   release?: IRelease;
   /** 版本信息的中文标签，如 ["简体中字", "内封字幕", "杜比视界"]。 */
@@ -259,4 +261,18 @@ export interface IConfigResponse {
   text: string;
   connections: Record<string, IConnection>;
   config_error: string | null;
+}
+
+export interface IConflictFile {
+  id: string;
+  name: string | null;
+  size: number | null;
+}
+
+/** 整理冲突：库里已有的文件与本次转存的文件。 */
+export interface IOrganizeConflict {
+  target_dir: string;
+  target_name: string;
+  existing: IConflictFile;
+  incoming: IConflictFile;
 }

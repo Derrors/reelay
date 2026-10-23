@@ -222,6 +222,21 @@ class TestFailureExplainer(Base):
         self.assertEqual(self.service.get_task(ctx.task_id)["explanation"]["action"], "reconcile")
         self.assertEqual(self.service.inbox("need_manual")["items"][0]["explanation"]["action"], "reconcile")
 
+    async def test_library_conflict_points_to_delete_or_overwrite(self):
+        ctx = tv_ctx()
+        ctx.state = TaskState.NEED_MANUAL
+        ctx.ns("storage").update(phase="stored", landed=[{"id": "9", "name": "a.mkv"}])
+        ctx.ns("organize").update(error="库里已有「剧 - S01E01.mkv」，请选择删除转存文件或覆盖保存", pending_conflict={
+            "target_dir": "剧 (2026)/Season 01", "target_name": "剧 - S01E01.mkv",
+            "existing": {"id": "1", "name": "剧 - S01E01.mkv", "size": 9},
+            "incoming": {"id": "9", "name": "a.mkv", "size": 10}})
+        self.store.save_task(ctx)
+        explanation = await self.run_on(ctx)
+        self.assertEqual((explanation["action"], explanation["label"]), ("resolve_conflict", "删除转存文件或覆盖保存"))
+        self.assertIn("库里已有「剧 - S01E01.mkv」", explanation["text"])
+        item = self.service.inbox("need_manual")["items"][0]
+        self.assertEqual(item["organize_conflict"]["existing"]["name"], "剧 - S01E01.mkv")
+
     async def test_failures_that_will_retry_stay_quiet(self):
         ctx = tv_ctx()
         ctx.state = TaskState.QUEUED  # Worker 已安排自动重试

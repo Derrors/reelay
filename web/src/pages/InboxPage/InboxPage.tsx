@@ -12,10 +12,12 @@ import { MediaMeta } from '@/components/app/MediaMeta';
 import { Page } from '@/components/app/Page';
 import { Select } from '@/components/app/Select';
 import { ToneBadge } from '@/components/app/StatusBadge';
+import { ConflictButtons } from '@/components/OrganizeConflict';
 import { TaskDetailSheet } from '@/components/TaskDetailSheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { CONFLICT_DONE, type ConflictChoice } from '@/lib/conflict';
 import { fullTime, relativeTime } from '@/lib/format';
 import { Realtime } from '@/lib/realtime';
 import { CONFIDENCE_CAP_LABELS, TONE_CLASS, type Tone } from '@/lib/status';
@@ -100,7 +102,7 @@ interface CardProps {
   busy: boolean;
   onToggle: () => void;
   onOpen: () => void;
-  onAct: (action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string) => void;
+  onAct: (action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string, conflict?: ConflictChoice) => void;
   onSubscribe: () => void;
 }
 
@@ -218,7 +220,10 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
               {item.storage_phase === 'receiving' ? (
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct('reconcile')}><ShieldCheck />核验转存</Button>
               ) : null}
-              {item.has_landed ? (
+              {item.has_landed && item.organize_conflict ? (
+                <ConflictButtons conflict={item.organize_conflict} busy={busy}
+                  onChoose={(choice) => onAct('reorganize', undefined, choice)} />
+              ) : item.has_landed ? (
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct('reorganize')}><FolderTree />重新整理</Button>
               ) : null}
             </>
@@ -292,13 +297,15 @@ export default function InboxPage() {
     setSelected((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
   };
 
-  const act = async (item: IInboxItem, action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string) => {
+  const act = async (item: IInboxItem, action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string,
+    conflict?: ConflictChoice) => {
     setBusy((prev) => new Set(prev).add(item.task_id));
     try {
-      const body = action === 'approve' && dir ? { save_dir_alias: dir } : action === 'reorganize' ? {} : undefined;
+      const body = action === 'approve' && dir ? { save_dir_alias: dir } : action === 'reorganize' ? (conflict ? { conflict } : {}) : undefined;
       await api.action(item.task_id, action, body);
       remove([item.task_id]);
-      toast.success({ approve: `已转存「${item.title ?? '资源'}」`, reject: '已忽略', reconcile: '已排队核验', reorganize: '已排队重新整理' }[action]);
+      toast.success(conflict ? CONFLICT_DONE[conflict]
+        : { approve: `已转存「${item.title ?? '资源'}」`, reject: '已忽略', reconcile: '已排队核验', reorganize: '已排队重新整理' }[action]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '操作失败');
     } finally {
@@ -447,7 +454,7 @@ export default function InboxPage() {
                 return next;
               })}
               onOpen={() => setOpenId(item.task_id)}
-              onAct={(action, dir) => void act(item, action, dir)}
+              onAct={(action, dir, conflict) => void act(item, action, dir, conflict)}
               onSubscribe={() => void subscribe(item)}
             />
           ))}

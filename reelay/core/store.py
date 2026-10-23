@@ -675,6 +675,15 @@ class Store:
             "AND state NOT IN ('rejected','skipped') GROUP BY title ORDER BY count DESC", (since,))]
 
     @_locked
+    def replaced_file_ids(self) -> set[str]:
+        """已入库后又被覆盖保存或洗版替换掉（进了回收站）的文件 ID，取自替换方任务记下的整理冲突。"""
+        return {str(r[0]) for r in self._conn.execute(
+            "SELECT json_extract(c.value,'$.existing_id') FROM tasks, "
+            "json_each(tasks.snapshot,'$.meta.organize.conflicts') c "
+            "WHERE tasks.state=? AND json_extract(c.value,'$.action') IN ('replace','upgrade')",
+            (TaskState.DONE.value,)) if r[0] is not None}
+
+    @_locked
     def library_titles(self, media_type: str) -> list[str]:
         """已入库任务的片名（按识别出的媒体类型）。"""
         return [r["title"] for r in self._conn.execute(

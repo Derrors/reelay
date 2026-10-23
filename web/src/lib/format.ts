@@ -13,6 +13,13 @@ export function relativeTime(seconds: number, now = Date.now() / 1000): string {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(seconds * 1000));
 }
 
+/** 字节 → "2.53 GB" / "850 MB"；未知时为空串。 */
+export function sizeText(bytes?: number | null): string {
+  if (bytes == null) return '';
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${gb.toFixed(2)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
 export function fullTime(seconds: number): string {
   return new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',

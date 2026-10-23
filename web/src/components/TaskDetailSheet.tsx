@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { api } from '@/api/client';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
+import { OrganizeConflict } from '@/components/OrganizeConflict';
 import { Select } from '@/components/app/Select';
 import { Sheet } from '@/components/app/Sheet';
 import { StatusBadge, ToneBadge } from '@/components/app/StatusBadge';
@@ -11,9 +12,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
+import { CONFLICT_DONE, type ConflictChoice } from '@/lib/conflict';
 import { fullTime, relativeTime } from '@/lib/format';
 import { CONFIDENCE_CAP_LABELS } from '@/lib/status';
-import type { IParsedResource, ITaskDetail } from '@/lib/types';
+import type { IOrganizeConflict, IParsedResource, ITaskDetail } from '@/lib/types';
 
 type Action = 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile';
 
@@ -110,13 +112,14 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
     };
   }, [detail]);
 
-  const run = async (action: Action) => {
+  const run = async (action: Action, conflict?: ConflictChoice) => {
     if (!detail) return;
     setBusy(true);
     try {
-      const body = action === 'approve' || action === 'reorganize' ? { save_dir_alias: targetDir || null } : undefined;
+      const body = conflict ? { conflict }
+        : action === 'approve' || action === 'reorganize' ? { save_dir_alias: targetDir || null } : undefined;
       await api.action(detail.task_id, action, body);
-      toast.success(ACTION_DONE[action]);
+      toast.success(conflict ? CONFLICT_DONE[conflict] : ACTION_DONE[action]);
       onChanged?.();
       onClose();
     } catch (err) {
@@ -151,6 +154,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
   const confidence = meta.confidence as { score?: number; caps?: string[] } | undefined;
   const plan = ((meta.organize as { plan?: Array<{ target_dir: string; target_name: string }> } | undefined)?.plan) ?? [];
   const organizeError = (meta.organize as { error?: string } | undefined)?.error;
+  const conflict = can.reorganize ? (meta.organize as { pending_conflict?: IOrganizeConflict } | undefined)?.pending_conflict : undefined;
 
   const hasActions = can.editable || can.reparse || can.retry || can.reconcile || can.reorganize || can.approve;
   const footer = detail && hasActions ? (
@@ -218,7 +222,13 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
             </div>
           ) : null}
 
-          {can.chooseDir && dirs.length ? (
+          {conflict ? (
+            <Section title="库里已有同一份资源">
+              <OrganizeConflict conflict={conflict} busy={busy} onChoose={(choice) => void run('reorganize', choice)} />
+            </Section>
+          ) : null}
+
+          {can.chooseDir && dirs.length && !conflict ? (
             <Section title="保存到">
               <Select value={targetDir} onValueChange={setTargetDir} options={dirs.map((d) => ({ value: d, label: d }))}
                 placeholder={detail.state === 'pending_approval' ? `自动 · ${detail.auto_path ?? detail.auto_dir ?? '按分类'}`

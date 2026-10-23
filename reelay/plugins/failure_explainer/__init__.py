@@ -26,6 +26,7 @@ ACTIONS = {
     "share_gone": "分享已失效，等来源重新分享",
     "reconcile": "核验转存",
     "reorganize": "重新整理",
+    "resolve_conflict": "删除转存文件或覆盖保存",
     "fix_parse": "修正片名或季集后重新整理",
     "fix_and_retry": "修正识别结果后重试",
     "manual_transfer": "到网盘挑选文件手动转存",
@@ -53,6 +54,7 @@ def facts(ctx: PipelineContext, error: str | None, retries: int) -> dict:
         "no_auto_retry": bool(ctx.meta.get("task", {}).get("no_auto_retry")),
         "storage_phase": storage.get("phase"), "manifest_files": len((storage.get("manifest") or {}).get("files") or []),
         "landed_files": len(storage.get("landed") or []), "organize_error": organize.get("error"),
+        "conflict": organize.get("pending_conflict"),
         "assist": {key: assist[key] for key in ("problem", "accepted", "rejected", "error") if key in assist} or None,
         "trail": [ai.scrub(line)[:160] for line in ctx.trail[-8:]],
     }
@@ -66,6 +68,8 @@ def action(f: dict) -> str:
     if f["state"] == TaskState.NEED_MANUAL.value:
         if f["storage_phase"] == "receiving" and f["manifest_files"]:
             return "reconcile"
+        if f["landed_files"] and f.get("conflict"):
+            return "resolve_conflict"
         if f["landed_files"]:
             problem = f["organize_error"] or ""
             return "fix_parse" if any(word in problem for word in _PARSE_WORDS) else "reorganize"
@@ -82,6 +86,8 @@ def rule_text(f: dict, act: str) -> str:
         "share_gone": error[:80],
         "reconcile": "转存请求已发出但结果不明，系统不会自动重发",
         "reorganize": f"文件已转存，整理没有完成：{(f['organize_error'] or '')[:60]}",
+        "resolve_conflict": f"库里已有「{((f.get('conflict') or {}).get('existing') or {}).get('name', '')}」，"
+                            "本次转存的是同一集 / 同一部的另一份文件",
         "fix_parse": f"文件已转存，但{(f['organize_error'] or '')[:60]}",
         "fix_and_retry": f"转存前校验未通过：{error[:70]}",
         "manual_transfer": f"转存前校验未通过：{error[:70]}",

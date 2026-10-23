@@ -196,6 +196,7 @@ class ManagementService:
                 "storage_phase": meta.get("storage", {}).get("phase"),
                 "has_landed": bool(meta.get("storage", {}).get("landed")),
                 "organize_error": meta.get("organize", {}).get("error"),
+                "organize_conflict": meta.get("organize", {}).get("pending_conflict"),
                 **(self._advice_fields(ctx, context) if pending
                    else {"explanation": self.explanation(ctx.task_id, ctx.state.value)}),
             })
@@ -381,10 +382,20 @@ class ManagementService:
         ctx.log("由管理端请求重新解析")
         self._update(ctx, expected=previous, reset_retries=True)
 
-    async def requeue_organize(self, task_id: str, *, save_dir_alias: str | None = None) -> None:
+    async def requeue_organize(self, task_id: str, *, save_dir_alias: str | None = None,
+                               conflict: str | None = None) -> None:
+        """conflict 是库里已有同一集 / 同一部时人工的选择：skip 删除本次转存的文件，replace 覆盖保存。"""
         ctx = self._require_context(task_id)
         if ctx.state != TaskState.NEED_MANUAL:
             raise ConflictError("只有待人工整理任务可以重新整理")
+        organize = ctx.ns("organize")
+        if conflict is not None:
+            if conflict not in ("skip", "replace"):
+                raise ValueError("conflict 只能是 skip 或 replace")
+            if not organize.get("pending_conflict"):
+                raise ConflictError("任务没有待处理的文件冲突")
+            if save_dir_alias and save_dir_alias != ctx.save_dir_alias:
+                raise ConflictError("处理冲突时不能同时更换保存目录")
         if save_dir_alias and save_dir_alias != ctx.save_dir_alias:
             self._validate_alias(save_dir_alias)
             ctx.save_dir_alias = save_dir_alias
@@ -394,6 +405,14 @@ class ManagementService:
             ctx.ns("organize").pop("base_cid", None)
         if not ctx.ns("storage").get("landed"):
             raise ConflictError("任务没有已落地文件记录，不能只重新整理")
+        pending = organize.pop("pending_conflict", None)
+        if conflict:
+            organize["resolve"] = conflict
+            existing = (pending.get("existing") or {}).get("name")
+            ctx.log(f"管理端选择删除本次转存的文件，保留库里的「{existing}」" if conflict == "skip"
+                    else f"管理端选择覆盖保存，替换库里的「{existing}」")
+        else:
+            organize.pop("resolve", None)
         ctx.state = TaskState.QUEUED
         ctx.ns("task")["action"] = "organize_only"
         ctx.ns("task")["generation"] = ctx.ns("task").get("generation", 0) + 1
@@ -621,7 +640,7 @@ class ManagementService:
     def library_query(self, *, query: str | None = None, media_type: str | None = None,
                       min_resolution: str | None = None, origin_country: str | None = None,
                       genre_id: int | None = None, limit: int = 30) -> dict[str, Any]:
-        groups = library.group_library(self.store.done_snapshots(query or None))
+        groups = library.group_library(self.store.done_snapshots(query or None), self.store.replaced_file_ids())
         found = library.filter_library(groups, media_type=media_type, min_resolution=min_resolution,
                                        origin_country=origin_country, genre_id=genre_id)
         return {"total": len(found), "items": found[:max(1, min(limit, 100))]}

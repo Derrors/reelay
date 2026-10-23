@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { extras, type IAuth115Side, type IAuth115Status } from '@/api/extras';
 import { fullTime, relativeTime } from '@/lib/format';
+import { confirmDialog } from '@/lib/confirm';
 import type { Tone } from '@/lib/status';
 
 type QrMode = 'cookie' | 'oauth';
@@ -169,7 +170,11 @@ export default function Auth115Card() {
   }, [qrMode, qrUid, qrUrl, loadStatus]);
 
   const clearOauth = async () => {
-    if (!window.confirm('取消后，转存后的改名整理会改用扫码登录执行。确定取消文件管理授权吗？')) return;
+    if (!(await confirmDialog({
+      title: '取消文件管理授权？',
+      description: '取消后，转存后的改名整理会改用扫码登录执行。',
+      confirmText: '取消授权', cancelText: '保留授权', destructive: true,
+    }))) return;
     try {
       await extras.auth115ClearOauth();
       toast.success('已取消文件管理授权');

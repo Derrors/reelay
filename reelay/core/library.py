@@ -16,12 +16,24 @@ from .rules import MIN_RESOLUTIONS
 RANK_LABELS = {4: "2160p", 3: "1080p", 2: "720p", 1: "标清"}
 
 
-def group_library(snapshots: list[dict]) -> list[dict[str, Any]]:
+def kept_files(snap: dict, replaced: set[str]) -> tuple[list[dict], bool]:
+    """（这次入库还在网盘里的文件, 是否已全部被之后的版本替换）。replaced 见 Store.replaced_file_ids。"""
+    landed = ((snap.get("meta") or {}).get("storage") or {}).get("landed") or []
+    kept = [f for f in landed if str(f.get("id")) not in replaced]
+    return kept, bool(landed) and not kept
+
+
+def group_library(snapshots: list[dict], replaced: set[str] = frozenset()) -> list[dict[str, Any]]:
+    """replaced 是被覆盖保存或洗版替换掉的文件 ID：不再计入，全部被替换的任务整条跳过。"""
     groups: dict[tuple, dict] = {}
     for snap in snapshots:
         p = snap.get("parsed") or {}
         if not p.get("title"):
             continue
+        kept, gone = kept_files(snap, replaced)
+        if gone:
+            continue
+        storage = (snap.get("meta") or {}).get("storage") or {}
         raw = p.get("raw_fields") or {}
         episodic = p.get("media_type") in ("tv", "anime") or bool(p.get("episodes"))
         key = ("tmdb", raw["tmdbid"]) if raw.get("tmdbid") else ("title", tmdb.normalize(p["title"]))
@@ -33,8 +45,7 @@ def group_library(snapshots: list[dict]) -> list[dict[str, Any]]:
         group["origin_country"].update(p.get("origin_country") or [])
         group["best_rank"] = max(group["best_rank"], resolution_rank(p.get("resolution")))
         group["release"].update(release.describe(p.get("release")))
-        storage = (snap.get("meta") or {}).get("storage") or {}
-        group["files"] += len(storage.get("landed") or []) or 1
+        group["files"] += len(kept) or 1
         if episodic:
             # 跨多季的合集识别结果没有季、集为各季的并集，按转存清单的（季, 集）汇总
             pairs = (storage.get("manifest") or {}).get("pairs") or [

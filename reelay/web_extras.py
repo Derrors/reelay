@@ -17,7 +17,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .core import secret_store
+from .core import library, secret_store
 from .core.media import multi_season
 
 
@@ -460,8 +460,12 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
             f"WHERE {' AND '.join(where)} ORDER BY updated_at DESC LIMIT ?",
             (*args, limit)).fetchall()
         groups: dict[str, dict] = {}
+        replaced = store.replaced_file_ids()
         for r in rows:
             snap = json.loads(r["snapshot"])
+            kept, gone = library.kept_files(snap, replaced)
+            if gone:
+                continue  # 文件都已被之后的版本覆盖保存或洗版替换，网盘里已不在
             p = snap.get("parsed") or {}
             key = p.get("title") or "(未识别)"
             g = groups.setdefault(key, {"title": key, "media_type": p.get("media_type"),
@@ -470,7 +474,8 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
                                         "files": [], "updated_at": r["updated_at"]})
             g["poster_path"] = g["poster_path"] or (p.get("raw_fields") or {}).get("poster_path")
             g["save_dir_alias"] = g["save_dir_alias"] or snap.get("save_dir_alias")
-            plan = ((snap.get("meta") or {}).get("organize") or {}).get("plan") or []
+            plan = [i for i in ((snap.get("meta") or {}).get("organize") or {}).get("plan") or []
+                    if str(i.get("src_id")) not in replaced]
             g["files"] = (g["files"] + ["/".join(x for x in (i.get("target_dir"), i.get("target_name")) if x)
                                         for i in plan])[:100]
             eps = p.get("episodes") or []
@@ -481,13 +486,17 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
             g["pairs"] |= {(int(s), int(e)) for s, e in manifest.get("pairs") or []} or {
                 (season, int(e)) for e in eps if isinstance(e, int)}
             g["tasks"] += 1
-            size = p.get("size")
-            g["bytes"] += int(_parse_size_gb(size) * 1024 ** 3)
+            landed = ((snap.get("meta") or {}).get("storage") or {}).get("landed") or []
+            sizes = [f.get("size") for f in kept]
+            if len(kept) < len(landed) and all(type(x) is int for x in sizes):
+                g["bytes"] += sum(sizes)  # 部分文件已被替换：只算还在的
+            else:
+                g["bytes"] += int(_parse_size_gb(p.get("size")) * 1024 ** 3)
         for g in groups.values():
             g["episode_pairs"] = multi_season(sorted(g.pop("pairs")))
         return {
             "groups": sorted(groups.values(), key=lambda x: -x["tasks"]),
-            "total_done": len(rows),
+            "total_done": sum(g["tasks"] for g in groups.values()),
             "estimated_gb": round(sum(g["bytes"] for g in groups.values()) / 1024 ** 3, 2),
         }
 

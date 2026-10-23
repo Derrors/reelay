@@ -132,6 +132,7 @@ class TestManagementApi(unittest.TestCase):
         self.assertEqual(restored.ns('storage')['phase'], 'receiving')
         self.assertEqual(restored.ns('storage')['manifest'], storage['manifest'])
         self.assertEqual(self.client.post(f'/api/tasks/{ctx.task_id}/reparse').status_code, 409)
+        self.assertEqual(self.client.post(f'/api/tasks/{ctx.task_id}/reorganize', json={'conflict': 'keep'}).status_code, 422)
 
 
     def test_config_validation_returns_422_without_replacing_valid_file(self):

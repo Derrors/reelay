@@ -8,6 +8,7 @@ import { Panel } from '@/components/app/Panel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { confirmDialog } from '@/lib/confirm';
 import { cn } from '@/lib/utils';
 
 const FETCH_LIMIT = 600;
@@ -110,7 +111,11 @@ export default function LogsPage() {
 
   const [clearing, setClearing] = useState(false);
   const clear = async () => {
-    if (!window.confirm('清空全部运行日志（含轮转留下的旧日志文件）？清空后无法恢复。')) return;
+    if (!(await confirmDialog({
+      title: '清空运行日志？',
+      description: '包括轮转留下的旧日志文件，清空后无法恢复。',
+      confirmText: '清空日志', destructive: true,
+    }))) return;
     setClearing(true);
     try {
       const r = await extras.clearLogs();

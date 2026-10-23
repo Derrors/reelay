@@ -1314,6 +1314,36 @@ class TestConsoleApi(unittest.TestCase):
         single = next(g for g in self.client.get("/api/tasks/advanced").json()["groups"] if g["title"] == "剧4")
         self.assertIsNone(single["episode_pairs"])
 
+    def test_library_skips_files_replaced_by_overwrite_or_upgrade(self):
+        store = self.app.state.store
+
+        def done(msg_id, title, landed, media_type="movie", size=None, episodes=(), conflicts=()):
+            ctx = message(msg_id=msg_id)
+            ctx.parsed = ParsedResource(is_media=True, title=title, media_type=media_type, share_code="abc",
+                                        season=1 if episodes else None, episodes=list(episodes), size=size)
+            ctx.state = TaskState.DONE
+            ctx.ns("storage")["landed"] = [{"id": fid, "name": f"{fid}.mkv", "size": gb * 1024 ** 3} for fid, gb in landed]
+            ctx.ns("organize").update(conflicts=list(conflicts), plan=[
+                {"src_id": fid, "target_dir": title, "target_name": f"{title} {fid}.mkv"} for fid, _ in landed])
+            store.save_task(ctx)
+
+        done("r1", "空枪", [("10", 33)], size="33 GB")
+        done("r2", "空枪", [("11", 32)], size="32 GB",
+             conflicts=[{"target": "空枪/空枪.mkv", "action": "replace", "existing_id": "10"}])
+        done("r3", "合集剧", [("20", 1), ("21", 2)], media_type="tv", size="3 GB", episodes=(1, 2))
+        done("r4", "合集剧", [("22", 4)], media_type="tv", size="4 GB", episodes=(2,),
+             conflicts=[{"target": "合集剧/E02.mkv", "action": "upgrade", "existing_id": "21"},
+                        {"target": "x", "action": "skip", "existing_id": "20"}])  # 保留旧文件的不算替换
+        self.assertEqual(store.replaced_file_ids(), {"10", "21"})
+        groups = {g["title"]: g for g in self.client.get("/api/tasks/advanced").json()["groups"]}
+        self.assertEqual((groups["空枪"]["tasks"], groups["空枪"]["files"], round(groups["空枪"]["bytes"] / 1024 ** 3)),
+                         (1, ["空枪/空枪 11.mkv"], 32))
+        self.assertEqual((groups["合集剧"]["tasks"], sorted(groups["合集剧"]["files"]), round(groups["合集剧"]["bytes"] / 1024 ** 3)),
+                         (2, ["合集剧/合集剧 20.mkv", "合集剧/合集剧 22.mkv"], 5))
+        self.assertEqual(groups["合集剧"]["episodes"], [1, 2])
+        items = {g["title"]: g for g in self.app.state.service.library_query()["items"]}
+        self.assertEqual((items["空枪"]["files"], items["合集剧"]["files"]), (1, 2))
+
     def test_dashboard_has_recent_counts_and_catalog_merges_multi_event_extensions(self):
         self.assertEqual(self.client.get("/api/dashboard").json()["recent"]["received_24h"], 5)
         events = self.client.get("/api/extensions").json()["events"]

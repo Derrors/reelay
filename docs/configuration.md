@@ -159,7 +159,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `plugins.organizer.layout` | `category` | 目录方式：`category` 二级分类（规则见下）；`media_type` 按媒体类型（按 `type_dirs`）；`none` 不分类，直接放在来源的保存目录下 |
 | `plugins.organizer.type_dirs` | `{movie: 电影, tv: 剧集, anime: 动漫}` | 按媒体类型时的文件夹名（单层）。类型为动漫或题材含动画（16）的作品放进 `anime`；`anime` 留空则不单独分，按电影 / 剧集归入 |
 | `plugins.organizer.naming.movie` / `tv` | 见示例 | 受限 Jinja2 路径模板，变量与 MoviePilot 的重命名格式一致：`title` `original_title` `name` `en_name` `year` `tmdbid` `season` `episode` `season_episode` `part` `videoFormat` `videoCodec` `audioCodec` `resourceType` `effect` `edition` `releaseGroup` `fileExt`（含点）`original_name`（原文件名）；电影的季集为空；`en_title` `season_year` `imdbid` `doubanid` `episode_title` `episode_date` `customization` 暂为空；过滤器：`default` `lower` `upper` `replace` `trim` `join` `length` `pad2` |
-| `plugins.organizer.conflict` | `manual` | 目标已有同名不同文件时：`manual` 转人工；`skip` 保留旧文件、新文件进回收站；`suffix` 新文件加「 (2)」并存；`upgrade` 洗版——按 `release` 版本偏好比较，新文件更好则替换（旧文件进回收站），否则同 skip |
+| `plugins.organizer.conflict` | `manual` | 库里已有同一集 / 同一部的文件时：`manual` 转人工，在管理台选择删除本次转存的文件或覆盖保存；`skip` 保留旧文件、新文件进回收站；`suffix` 新文件加「 (2)」并存；`upgrade` 洗版——按 `release` 版本偏好比较，新文件更好则替换（旧文件进回收站），否则同 skip |
 
 二级分类的规则随插件发布（[`reelay/plugins/organizer/category.yaml`](../reelay/plugins/organizer/category.yaml)），不在配置文件里，管理台只读展示。匹配方式与 MoviePilot 相同：TMDB 类型为电影的按 `movie`、剧集（含动漫、纪录片、综艺）按 `tv`，从上到下取第一个满足全部条件的分类；条件字段 `genre_ids`（TMDB 题材 ID）、`origin_country`（两位国家/地区代码）、`release_year`（年份，可写 `2000-2010`），逗号分隔为"或"；没有条件的分类遇到即命中（放在最后就是兜底）；作品缺少条件用到的信息时该分类不命中，都不命中时直接放在保存目录下。
 

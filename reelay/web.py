@@ -11,7 +11,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 try:
     from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -39,6 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class ActionPayload(BaseModel):
     save_dir_alias: str | None = None
+    conflict: Literal["skip", "replace"] | None = None  # 重新整理时处理文件冲突
 
 
 class ParsePatchPayload(BaseModel):
@@ -236,7 +237,7 @@ def create_app(
     @app.post("/api/tasks/{task_id}/reorganize")
     async def reorganize(task_id: str, payload: ActionPayload):
         try:
-            await service.requeue_organize(task_id, save_dir_alias=payload.save_dir_alias)
+            await service.requeue_organize(task_id, save_dir_alias=payload.save_dir_alias, conflict=payload.conflict)
             return {"ok": True}
         except Exception as exc:
             raise _error(exc) from exc

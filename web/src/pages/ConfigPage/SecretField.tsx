@@ -5,6 +5,7 @@ import { api } from '@/api/client';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { confirmDialog } from '@/lib/confirm';
 import type { ISecretStatus } from '@/lib/types';
 
 const message = (e: unknown) => (e instanceof Error ? e.message : '保存失败');
@@ -32,7 +33,9 @@ export function SecretField({ name, secrets, onSaved, hint, placeholder, generat
   const [busy, setBusy] = useState(false);
 
   const save = async (next: string | null) => {
-    if (next === null && !window.confirm(`确定清除「${label}」吗？清除后相关功能会停用。`)) return;
+    if (next === null && !(await confirmDialog({
+      title: `清除「${label}」？`, description: '清除后相关功能会停用。', confirmText: '清除', destructive: true,
+    }))) return;
     setBusy(true);
     try {
       onSaved(await api.saveSecrets({ [name]: next }));
@@ -82,7 +85,11 @@ export function PasswordField({ secrets, onSaved }: { secrets: ISecretStatus; on
   const mismatch = Boolean(confirm) && next !== confirm;
 
   const save = async (value: string | null) => {
-    if (value === null && !window.confirm('清除后访问管理台不再需要登录。只在本机使用时才建议清除，确定吗？')) return;
+    if (value === null && !(await confirmDialog({
+      title: '清除管理台密码？',
+      description: '清除后访问管理台不再需要登录，只在本机使用时才建议清除。',
+      confirmText: '清除密码', destructive: true,
+    }))) return;
     setBusy(true);
     try {
       onSaved(await api.saveSecrets({ web_password: value }, current));
