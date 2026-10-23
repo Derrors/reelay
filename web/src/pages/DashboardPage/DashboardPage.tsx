@@ -223,7 +223,7 @@ export default function DashboardPage() {
           <Panel
             title="最近入库"
             icon={LibraryBig}
-            actions={<Link to="/library" className="flex items-center gap-1 text-xs font-medium text-primary hover:underline">媒体库<ArrowRight className="size-3.5" /></Link>}
+            actions={<Link to="/library" className="-my-2 flex items-center gap-1 py-2 text-xs font-medium text-primary hover:underline">媒体库<ArrowRight className="size-3.5" /></Link>}
           >
             {!snapshot ? (
               <div className="grid grid-cols-4 gap-3 sm:grid-cols-8">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="aspect-[2/3]" />)}</div>

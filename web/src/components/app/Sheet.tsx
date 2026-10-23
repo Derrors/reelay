@@ -30,7 +30,7 @@ export function Sheet({ open, onOpenChange, title, description, children, footer
             className,
           )}
         >
-          <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
+          <div className="flex items-start justify-between gap-4 border-b px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
             <div className="min-w-0">
               <DialogPrimitive.Title className="text-base font-semibold leading-6">{title}</DialogPrimitive.Title>
               {description ? (
@@ -42,8 +42,8 @@ export function Sheet({ open, onOpenChange, title, description, children, footer
               <span className="sr-only">关闭</span>
             </DialogPrimitive.Close>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">{children}</div>
-          {footer ? <div className="border-t bg-card/60 px-5 py-3">{footer}</div> : null}
+          <div className={cn('min-h-0 flex-1 overflow-y-auto px-5 pt-5', footer ? 'pb-5' : 'pb-[calc(1.25rem+env(safe-area-inset-bottom))]')}>{children}</div>
+          {footer ? <div className="border-t bg-card/60 px-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3">{footer}</div> : null}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

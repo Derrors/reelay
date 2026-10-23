@@ -1,0 +1,17 @@
+{
+  "name": "Reelay · 网盘转存助手",
+  "short_name": "Reelay",
+  "description": "Telegram 资源识别、115 转存与媒体库整理",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f9fbfb",
+  "theme_color": "#f9fbfb",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

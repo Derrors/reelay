@@ -229,7 +229,7 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
                 {FORWARD_TOKENS.map(([token, label]) => (
                   <button
                     key={token} type="button" onClick={() => insertToken(token)}
-                    className="rounded-md border border-border bg-muted/60 px-1.5 py-0.5 transition-colors hover:border-primary/40 hover:text-primary"
+                    className="rounded-md border border-border bg-muted/60 px-2 py-1.5 transition-colors hover:border-primary/40 hover:text-primary sm:px-1.5 sm:py-0.5"
                   >
                     {label} <code className="font-mono text-[11px]">{token}</code>
                   </button>

@@ -172,7 +172,7 @@ export default function LibraryPage() {
               role="radio"
               aria-checked={type === t.value}
               onClick={() => setType(t.value)}
-              className={cn('rounded-md px-3 py-1 text-sm font-medium transition-colors',
+              className={cn('rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:py-1',
                 type === t.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground')}
             >
               {t.label}

@@ -74,7 +74,7 @@ function NavItem({ item, count, onNavigate }: { item: NavEntry; count?: number; 
       to={item.path}
       onClick={onNavigate}
       className={({ isActive }) => cn(
-        'group flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13.5px] font-medium transition-colors',
+        'group flex items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-[14px] font-medium transition-colors lg:py-[7px] lg:text-[13.5px]',
         isActive
           ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-xs ring-1 ring-sidebar-border'
           : 'text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground',
@@ -178,7 +178,20 @@ function ShellFooter({ workerOnline, loaded }: { workerOnline: boolean; loaded: 
   );
 }
 
-function NavContent({ badges, onNavigate }: { badges: Record<BadgeKey, number>; onNavigate?: () => void }) {
+function NavContent({ badges, onNavigate, mobile }: {
+  badges: Record<BadgeKey, number>; onNavigate?: () => void; mobile?: boolean;
+}) {
+  if (mobile) {
+    // 底部标签栏已有总览、待审批、任务、媒体库；抽屉只放其余入口，工具不再折叠
+    const tabs = new Set(MOBILE_TABS.map((t) => t.path));
+    return (
+      <nav aria-label="主导航" className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+        <NavGroup title="媒体" items={MEDIA.filter((t) => !tabs.has(t.path))} badges={badges} onNavigate={onNavigate} />
+        <NavGroup title="系统" items={SYSTEM} badges={badges} onNavigate={onNavigate} />
+        <NavGroup title="工具" items={TOOLS} badges={badges} onNavigate={onNavigate} />
+      </nav>
+    );
+  }
   return (
     <nav aria-label="主导航" className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
       <NavGroup items={PRIMARY} badges={badges} onNavigate={onNavigate} />
@@ -203,7 +216,7 @@ export const Layout = () => {
       </aside>
 
       {/* 移动端顶栏 */}
-      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-background/85 px-4 backdrop-blur lg:hidden">
+      <header className="sticky top-0 z-30 flex h-[calc(3.5rem+env(safe-area-inset-top))] items-center justify-between border-b bg-background/85 px-4 pt-[env(safe-area-inset-top)] backdrop-blur lg:hidden">
         <Brand />
         <button
           type="button"
@@ -216,7 +229,7 @@ export const Layout = () => {
       </header>
       <Sheet open={drawer} onOpenChange={setDrawer} title="导航" side="left" className="bg-sidebar p-0">
         <div className="-mx-5 -my-5 flex h-[calc(100%+2.5rem)] flex-col">
-          <NavContent badges={status.badges} onNavigate={() => setDrawer(false)} />
+          <NavContent badges={status.badges} onNavigate={() => setDrawer(false)} mobile />
           <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} />
         </div>
       </Sheet>

@@ -249,7 +249,7 @@ export default function OrganizePage() {
       title="命名预览"
       description="贴入转存后的文件名，看看按当前命名规则会整理成什么样。只是预览，不会改动网盘。"
     >
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
         <Panel title="资源信息" icon={WandSparkles} description="填得越准确，预览越接近真实整理效果">
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void preview(); }}>
             <Field

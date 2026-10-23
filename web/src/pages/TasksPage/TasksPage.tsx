@@ -167,7 +167,7 @@ export default function TasksPage() {
       actions={<Button variant="outline" size="sm" onClick={() => setReloadToken((t) => t + 1)}><RefreshCw />刷新</Button>}
     >
       <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center">
-        <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:px-0 sm:pb-0 [&::-webkit-scrollbar]:hidden">
+        <div className="flex flex-wrap gap-1.5">
           {STATE_GROUPS.map((g) => {
             const active = g.key === group.key;
             const count = countOf(g.states);
@@ -178,7 +178,7 @@ export default function TasksPage() {
                 aria-pressed={active}
                 onClick={() => setParams(g.key === 'all' ? {} : { group: g.key }, { replace: true })}
                 className={cn(
-                  'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-[13px] font-medium transition-colors',
+                  'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-medium transition-colors sm:py-1',
                   active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground hover:text-foreground',
                 )}
               >
