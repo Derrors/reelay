@@ -1,12 +1,14 @@
 """示例插件：Webhook 通知渠道（A 类 Provider）。
 
-把任务事件（识别、待审批、完成、失败）和系统通知（告警、审批汇总、日报）以 JSON POST
+把任务事件（identified 识别完成、pending_approval 待确认、saved 已入库、organize_failed 整理失败、
+failed 失败、transfer_uncertain 转存结果待核对）和系统通知（告警、审批汇总、日报）以 JSON POST
 到 ``plugins.webhook.url``，可接 Bark、Gotify、ntfy、Home Assistant 或自建中转服务。
 
 启用：
-1. 把本文件放进 ``data/plugins/``（Docker 部署把 ``deploy/plugins`` 挂载到 ``/app/data/plugins``）；
-2. 在管理台「插件」页开启 Webhook 通知渠道并填写地址（即 ``providers.notify: [console, webhook]``
-   与 ``plugins.webhook.url``）。
+1. 把 ``webhook_notify`` 目录放进 ``data/plugins/``（Docker 部署放进 ``deploy/plugins/``，它挂载到
+   ``/app/data/plugins``），重启主进程与管理台；
+2. 在管理台「插件」页开启「Webhook 通知」并填写地址（即 ``providers.notify`` 加上 ``webhook``，
+   地址写在 ``plugins.webhook.url``）。
 
 发送失败直接抛异常即可：内核的 Outbox 会按退避策略重试，不影响转存主流程。
 载荷刻意不含分享链接与访问码。
@@ -25,6 +27,8 @@ from reelay.core.registry import register
 @register(kind="provider", ptype="notify")
 class WebhookNotify:
     name = "webhook"
+    ui_label = "Webhook 通知"
+    ui_description = "把任务事件与系统通知以 JSON POST 到指定地址。"
     ui_fields = [{"path": "url", "label": "Webhook 地址", "type": "string"}]  # 相对 plugins.webhook
 
     async def notify(self, ctx: PipelineContext, event: str) -> None:

@@ -5,9 +5,12 @@ tmdbid 与最近更新时间。每日巡检：
 
 - 自动跟踪（track_all）：最近 lookback_days 天有新集入库的剧，只报告「首个已入库集之后」
   的断档，以及 TMDB 已播出但尚未入库的新集——中途开始追的剧不会天天提示缺前面的集；
-- 显式订阅（subscriptions）：从第 1 集开始检查，可用 total 指定总集数。
+- 显式订阅：从第 1 集开始检查，可用 total 指定总集数（订阅在管理台「追剧订阅」、Telegram 与 MCP 里维护）。
 
-配置示例（订阅清单是系统配置 ``subscriptions``，在管理台「追剧订阅」维护）::
+最近一次巡检结果作为能力 ``episode_report`` 提供给内核（订阅列表、缺集问答）与日报；追更提醒上的按钮
+（某部剧不用等了、不再提醒、撤销）由本扩展经 ``bot_action:<前缀>`` 处理。
+
+配置示例::
 
     plugins:
       episode_tracker:
@@ -18,33 +21,16 @@ tmdbid 与最近更新时间。每日巡检：
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 
-from ...core import runtime, subscriptions, tmdb
+from ...core import runtime, tmdb
 from ...core.contracts import PipelineContext
-from ...core.messages import esc, type_icon
+from ...core.media import format_episodes
+from ...core.messages import callback, esc, short_key, type_icon
 from ...core.registry import register
 
 log = logging.getLogger("reelay.plugin.episode_tracker")
-
-
-def format_episodes(episodes: list[int], limit: int = 12) -> str:
-    """[1,2,3,5] → E01-E03、E05。"""
-    ranges, start, prev = [], None, None
-    for ep in sorted(episodes):
-        if start is None:
-            start = prev = ep
-        elif ep == prev + 1:
-            prev = ep
-        else:
-            ranges.append((start, prev))
-            start = prev = ep
-    if start is not None:
-        ranges.append((start, prev))
-    parts = [f"E{a:02d}" if a == b else f"E{a:02d}-E{b:02d}" for a, b in ranges]
-    return "、".join(parts[:limit]) + (" 等" if len(parts) > limit else "")
 
 
 def missing_episodes(have: set[int], *, total: int | None, aired: int | None, from_first: bool) -> list[int]:
@@ -74,22 +60,19 @@ def _ago_range(low: int, high: int) -> str:
 # 或 {"all": true}（这部不再提醒）。只影响提醒，不影响订阅的自动转存。
 MUTED = "muted:"
 BUTTONS = 8
-
-
-def series_hash(key: str) -> str:
-    """按钮里指代一部剧一季（片名|Sxx）的短键：按钮数据限 64 字节。"""
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+# 追更提醒上的按钮前缀：tm 某部剧的选项、tmi 现在缺的集不用等了、tmo 不再提醒这部、tmu 撤销、tmb 返回
+BOT_ACTIONS = ("tm", "tmi", "tmo", "tmu", "tmb")
 
 
 def find_series(state, digest: str) -> tuple[str, dict] | None:
     """按短键找回 (片名|Sxx, 那一季的缺集情况)：先找最近一次巡检结果；已经不再提醒的剧不在里面，
     从提醒设置里找（缺集情况为空），撤销时用。"""
     series = (state.get("last_report") or {}).get("series") or {}
-    found = next(((key, info) for key, info in series.items() if series_hash(key) == digest), None)
+    found = next(((key, info) for key, info in series.items() if short_key(key) == digest), None)
     if found:
         return found
     muted = (key[len(MUTED):] for key in state.items() if key.startswith(MUTED))
-    return next(((key, {}) for key in muted if series_hash(key) == digest), None)
+    return next(((key, {}) for key in muted if short_key(key) == digest), None)
 
 
 def mute(state, key: str, episodes: list[int] | None = None) -> None:
@@ -111,7 +94,7 @@ def buttons(report: dict[str, dict]) -> list:
     rows = []
     for key in ordered[:BUTTONS]:
         title, _, season = key.rpartition("|")
-        rows.append([(f"🔕 {title} {season}"[:40], f"tm:{series_hash(key)}")])
+        rows.append([(f"🔕 {title} {season}"[:40], callback("tm", short_key(key)))])
     return rows
 
 
@@ -142,11 +125,49 @@ class _Base:
     name = "episode_tracker"
     ui_label = "缺集追更"
     ui_description = "记录剧集入库进度，每日巡检断档与 TMDB 已播未入库的新集并提醒；订阅的剧在「追剧订阅」中维护。"
+    provides = {"episode_report": "report", **{f"bot_action:{action}": "bot_action" for action in BOT_ACTIONS}}
     ui_fields = [
         {'path': 'track_all', 'label': '自动跟踪所有在追剧集', 'type': 'boolean', 'default': True},
         {'path': 'lookback_days', 'label': '自动跟踪：最近 N 天有更新', 'type': 'number',
          'min': 1, 'max': 365, 'default': 30},
     ]
+
+
+    @staticmethod
+    def report() -> dict:
+        """最近一次巡检结果：{"date", "series": {片名|Sxx: {have, missing, aired, overdue, media_type}}}。"""
+        return runtime.services().state(_Base.name).get("last_report") or {}
+
+    @staticmethod
+    def bot_action(action: str, digest: str, original: str = "") -> tuple[str | None, list | None, str | None]:
+        """追更提醒上某部剧的按钮：选项只换按钮，执行后在提醒末尾加一行结果。返回 (正文, 按钮, 顶部提示)。"""
+        from ...core.messages import with_result
+        state = runtime.services().state(_Base.name)
+        found = find_series(state, digest)
+        if not found:
+            return None, None, "这条提醒已经过期，等明天的巡检"
+        key, info = found
+        title, _, season = key.rpartition("|")
+        if not info and action not in ("tmu", "tmb"):
+            return None, None, "这部剧已经不再提醒"
+        if action == "tmb":
+            return None, buttons(state.get("last_report", {}).get("series") or {}), None
+        if action == "tm":
+            missing = format_episodes(info["missing"], limit=3)
+            return None, [[(f"🙈 {missing} 不用等了"[:40], callback("tmi", digest))],
+                          [(f"🔕 不再提醒 {title}"[:40], callback("tmo", digest)), ("↩ 返回", callback("tmb", digest))]], None
+        if action == "tmu":
+            unmute(state, key)
+            text = with_result(original, f"↩ 《{esc(title)}》{season} 照常提醒") if original else None
+            return text, buttons(state.get("last_report", {}).get("series") or {}), "已撤销"
+        if action == "tmi":
+            mute(state, key, info["missing"])
+            done = f"🙈 《{title}》{season} 现在缺的 {format_episodes(info['missing'])} 不再提醒，之后新缺的集照常提醒"
+        else:
+            mute(state, key)
+            done = f"🔕 《{title}》{season} 不再提醒缺集（订阅的自动转存不受影响）"
+        undo = [[("↩ 撤销", callback("tmu", digest))]]
+        return (with_result(original, esc(done)) if original else None), undo, done[:190]
 
 
 @register(kind="event", event="on_saved")
@@ -177,7 +198,7 @@ class EpisodeTracker(_Base):
         everything = state.items()
         records = {key: value for key, value in everything.items() if key.startswith("series:")}
         muted = {key[len(MUTED):]: value for key, value in everything.items() if key.startswith(MUTED)}
-        stored = services.store.stored_series()
+        stored = services.stored_series()
         targets: dict[tuple[str, int], dict] = {}
         if config.get("track_all", True):
             since = time.time() - float(config.get("lookback_days", 30)) * 86400
@@ -185,14 +206,13 @@ class EpisodeTracker(_Base):
                 if record.get("updated_at", 0) >= since:
                     targets[(record["title"], record["season"])] = {"tmdbid": record.get("tmdbid"), "from_first": True}
         today = time.strftime("%Y-%m-%d")
-        finished = services.store.state_get(*subscriptions.FINISHED, {}) or {}
         ended = []
-        for item in subscriptions.items(runtime.get_config(), finished):
+        for item in services.subscriptions():
             if item["finished"]:
                 continue  # 已完结：不再巡检
             episodes = await self._season_complete(item, stored.get((item["title"], item["season"]), set()), today)
             if episodes:
-                finished[subscriptions.key(item)] = {"date": today, "episodes": episodes}
+                services.finish_subscription(item["id"], {"date": today, "episodes": episodes})
                 ended.append(item | {"episodes": episodes})
                 continue
             season = item["season"]
@@ -200,13 +220,12 @@ class EpisodeTracker(_Base):
             targets[(item["title"], season)] = {"tmdbid": item["tmdbid"] or record.get("tmdbid"),
                                                 "total": item["total"], "from_first": False}
         if ended:
-            services.store.state_set(*subscriptions.FINISHED, finished)
             lines = [f"🏁 《{e['title']}》第 {e['season']} 季已播完，{e['episodes']} 集全部入库，订阅已自动结束" for e in ended]
             services.notify("\n".join(lines) + "\n不再自动转存这一季；出了特别篇或补了集时可以继续订阅。",
                             key="subscription_finished",
                             buttons=[[(f"▶️ 继续订阅 {e['title']} S{e['season']:02d}"[:40],
-                                       f"so:{subscriptions.button_key(e)}")] for e in ended[:BUTTONS]])
-        media_types = services.store.title_media_types()
+                                       callback("so", e["id"]))] for e in ended[:BUTTONS]])
+        media_types = services.title_media_types()
         report = {}
         for (title, season), info in sorted(targets.items()):
             silence = muted.get(f"{title}|S{season:02d}") or {}

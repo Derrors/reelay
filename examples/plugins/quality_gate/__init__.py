@@ -1,8 +1,10 @@
 """示例插件：低画质拦截（B 类 Hook，挂在 after_parse）。
 
 正文命中 CAM/TS/枪版 等关键词时返回 False，任务按 skipped 结束，不进入审批与转存。
-关键词可在 ``plugins.quality_gate.block``（逗号分隔）覆盖。放进 ``data/plugins/`` 即生效，
-``plugins.quality_gate.enabled: false`` 可关闭。
+关键词可在 ``plugins.quality_gate.block``（逗号分隔）覆盖。把 ``quality_gate`` 目录放进 ``data/plugins/``，
+重启后生效；在管理台「插件」页可关闭。
+
+order=40：排在 TMDB 补全（50）与分享检查（60）之前，被拦下的资源不再查 TMDB、不请求 115。
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ from reelay.core.registry import register
 DEFAULT_BLOCK = "CAM,HDCAM,TS,HDTS,TC,枪版,抢先版"
 
 
-@register(kind="hook", stage="after_parse", order=60)
+@register(kind="hook", stage="after_parse", order=40)
 class QualityGate:
     name = "quality_gate"
     ui_label = "低画质拦截"

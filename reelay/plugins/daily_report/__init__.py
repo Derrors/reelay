@@ -15,9 +15,8 @@ import json
 import time
 
 from ...core import ai, runtime
-from ...core.media import pairs_label
+from ...core.media import format_episodes, pairs_label
 from ...core.messages import esc, type_icon
-from ..episode_tracker import format_episodes
 from ...core.contracts import PipelineContext
 from ...core.registry import register
 
@@ -116,9 +115,9 @@ class DailyReport(ai.UsesAI):
         runtime.services().notify(render(summary, date, story), key="daily_report", html=True)
 
     async def _narrate(self, summary: dict, date: str) -> str | None:
-        store = runtime.services().store
-        week = store.titles_since(time.time() - 7 * 86400)
-        tracker = store.state_get("episode_tracker", "last_report") or {}
+        services = runtime.services()
+        week = services.titles_since(time.time() - 7 * 86400)
+        tracker = services.query("episode_report") or {}
         if tracker.get("date", "") < time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400)):
             tracker = {}  # 追更巡检与日报同时触发，最多用前一天的巡检结果
 

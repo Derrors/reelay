@@ -54,7 +54,7 @@ class ConsoleNotify:
 
         elif event == "pending_approval":
             # 关键：按钮 callback_data 只带 task_id
-            subscribed = subscriptions.subscribed({"subscriptions": runtime.get("subscriptions", []) or []}, ctx)
+            subscribed = subscriptions.subscribed(_subscriptions(), ctx)
             await self._send(messages.approval_card(ctx), messages.approval_buttons(ctx, subscribed=subscribed),
                              photo=messages.card_image_url(ctx))
 
@@ -74,6 +74,13 @@ class ConsoleNotify:
             await self._sender(text=text, **({"html": True} if html else {}), **({"buttons": buttons} if buttons else {}))
         else:
             log.info("[系统通知] %s", (messages.plain(text) if html else text).replace("\n", " / "))
+
+
+def _subscriptions() -> list[dict]:
+    try:
+        return runtime.services().subscriptions()
+    except RuntimeError:  # 不在管线作用域里（如测试直接调用）
+        return []
 
 
 def _drive_path(ctx: PipelineContext) -> str:

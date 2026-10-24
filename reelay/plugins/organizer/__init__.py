@@ -1,44 +1,41 @@
-"""媒体库整理：before_save 选存放目录 + after_save 整理入库（方案 Stage 3 核心）。
+"""媒体库整理：before_save 选存放目录 + after_save 整理入库。
 
 两个 Hook 同名（organizer），共用一个开关与 plugins.organizer 设置：
 
 - ``LibraryRouter``（转存前）：按目录方式（``layout``）决定存进哪个保存目录、其下哪个文件夹——
   二级分类（本目录的 ``category.yaml``，MoviePilot 风格，管理台只读）、按媒体类型（``type_dirs``）或不分类。分类结果的
   第一段与某个保存目录别名同名时转存根目录跟随它，所以必须在转存前决定（去重键含目标 CID）。
-- ``Organizer``（转存完成后）：把落地的视频文件按媒体库规范改名、组织目录结构（全在 115 内部，
-  不下载到本地），读回核验。
+- ``Organizer``（转存完成后）：把落地的视频文件按媒体库规范改名、组织目录结构（全在网盘内部，
+  不下载到本地），读回核验。网盘操作经存储 Provider 的 ``library()`` 接口（115 或模拟存储）。
 
 执行顺序：before_save(LibraryRouter) → StorageProvider(转存) → after_save(Organizer) → 读回。
 
-稳妥要点（方案「整理有副作用，务必稳妥」）：
+稳妥要点（整理有副作用）：
 - 集数/季/标题来自 AI 解析，可能出错 → 关键字段不全时**不硬整理**，标 need_manual；
-- 每一步先在 ctx 记「整理计划」，Pipeline 持久化后才执行；
-- 重名冲突策略（organize.conflict）：
+- 每一步先在 ctx 记「整理计划」，Pipeline 持久化后才执行；按文件 ID 读取实际位置续跑；
+- 重名冲突策略（plugins.organizer.conflict）：
   - manual（默认）：保留两份文件并转人工，不标记完成；
   - skip：保留库中已有文件，删除本次新转存的文件（进 115 回收站）；
   - suffix：新文件改名为「名称 (2).ext」并存；
   - upgrade（洗版）：按 ``release`` 偏好比较（偏好的字幕 → 清晰度 → HDR → 音轨 → 片源 → 体积，
     与收件箱推荐版本同一套比较），新文件更好则删除旧文件（进回收站）后入库，否则同 skip。
-    删除前先记入扩展状态，中断后重放不会重复删除或误判。
+    删除前先把决定记进任务（替换记录与扩展状态）并落库，中断后重放不会重复删除或误判。
 
 命名模板取自 plugins.organizer.naming（遵循 Jellyfin/Emby 通用 SxxEyy 规范）。
 
 本目录：``settings.py`` 默认设置与校验，``naming.py`` 受限 Jinja2 命名模板，
 ``category.py`` / ``category.yaml`` 目录方式与二级分类规则。
-dry-run 只生成整理计划；真实模式缺客户端则失败。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 
-from ...core.auth115 import get_store
-from ...core.contracts import ParsedResource, PipelineContext
+from ...core.contracts import ParsedResource, PipelineContext, StorageBusy
 from ...core.io import run_blocking
-from ...core.media import episode_of as _episode_of, is_video, resolution_rank
+from ...core.media import episode_of as _episode_of, is_video, resolution_rank, strip_ext
 from ...core.registry import register
 from ...core.validation import validate_resource
 from ...core import release, runtime, tmdb
@@ -144,7 +141,7 @@ def build_plan(p, landed: list[dict], category_path: str = "",
 
 def _naming_values(p, name: str, ext: str, season: int | None, episode: int | None) -> dict:
     """命名模板的变量，名称与含义同 MoviePilot；电影的季集为空字符串。"""
-    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", name)
+    stem = strip_ext(name)
     en_name = _title_before_markers(re.sub(r"^\s*[\[【][^\]】]+[\]】]", "", stem))
     tv = episode is not None
     return {
@@ -184,7 +181,7 @@ def guess_from_names(names: list[str]) -> dict:
     """从文件名猜片名、年份、季与集：开头方括号里的中文名优先，否则取年份 / 季集之前的部分。"""
     if not names:
         return {"title": "", "year": None, "media_type": None, "season": None, "episodes": []}
-    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", names[0])
+    stem = strip_ext(names[0])
     year = _YEAR.search(re.sub(r"(?i)\d{3,4}[pi]", "", stem))
     pairs = [_episode_of(name) for name in names]
     episodes = sorted({ep for _, ep in pairs if ep is not None})
@@ -204,7 +201,7 @@ def _same_slot(existing: dict, target_name: str, title: str, is_tv: bool) -> boo
     name = existing.get("name") or ""
     if name == target_name:
         return True
-    if existing.get("is_directory") or existing.get("is_dir") or not is_video(name) \
+    if existing.get("is_dir") or not is_video(name) \
             or not name.casefold().startswith(title.casefold()):
         return False
     if not is_tv:
@@ -222,7 +219,8 @@ class _MediaLibrary:
     ui_config_type = "media_library"
     # 管理台设置编辑器调用的动作（POST /api/extensions/organizer/actions/<名>）
     ui_actions = ("preview_naming", "category_rules", "preview_plan", "parse_names")
-    storage_provider = "p115"
+    # 整理要用存储 Provider 的网盘接口（见 contracts.StorageProvider）；没有它的存储不能开启整理
+    requires_storage = ("library",)
 
     def preview_naming(self, payload: dict) -> dict:
         """用示例影片渲染命名模板，返回整理后的相对路径；模板不安全或无效时抛 ValueError。"""
@@ -271,10 +269,9 @@ class _MediaLibrary:
             raise ValueError("names 必须是文件名数组")
         names = [n.strip() for n in names if n.strip()]
         guess = {**guess_from_names(names), "tmdbid": None, "tmdb": "unconfigured"}
-        if not names or not guess["title"] or not tmdb.api_key() \
-                or os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        if not names or not guess["title"] or not tmdb.api_key():
             return guess
-        stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", names[0])
+        stem = strip_ext(names[0])
         en_name = _title_before_markers(re.sub(r"^\s*[\[【][^\]】]+[\]】]", "", stem))
         queries = list(dict.fromkeys(q for q in (guess["title"], en_name) if q))
         kinds = ["tv"] if guess["episodes"] else ["movie", "tv"]
@@ -340,17 +337,8 @@ class Organizer(_MediaLibrary):
     stage = "after_save"
     order = 20
 
-    def __init__(self) -> None:
-        # 读（列目录/读属性）走凭证中心的 cookie 客户端；写（建目录/改名/移动/删除）
-        # 走混合鉴权（OAuth 优先、cookie 回退）。测试替换 ``_auth`` 为伪凭证中心。
-        self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
-        self._auth = get_store()
-
-    def _read_client(self):
-        return None if self._dry_run else self._auth.cookie_client()
-
     async def prepare(self, ctx: PipelineContext) -> None:
-        """Pipeline 在执行前持久化此计划；恢复沿同一组文件 ID 续跑。"""
+        """Pipeline 在执行前持久化此计划；恢复沿同一组文件 ID 续跑。重新整理时内核会先清掉旧计划。"""
         ns = ctx.ns("organize")
         relative_category = ctx.ns("library").get("relative_category", "")
         if (ns.get("plan") and ns.get("base_cid") == ctx.save_dir_cid
@@ -377,18 +365,15 @@ class Organizer(_MediaLibrary):
         try:
             await self.prepare(ctx)
             plan = ctx.ns("organize")["plan"]
-            if self._dry_run:
-                ctx.ns("organize")["applied"] = False
-                ctx.log("[dry-run] 整理计划已生成，不执行网盘操作")
-                return True
-            if self._read_client() is None:
-                raise RuntimeError("整理客户端不可用：读核验需要 cookie，写操作可走 OAuth")
-            await run_blocking(self._apply_sync, ctx, ctx.parsed, plan)
-            self._cleanup_staging(ctx)
+            drive = runtime.services().storage(ctx.ns("storage").get("provider", "p115")).library()
+            await run_blocking(self._apply_sync, ctx, ctx.parsed, plan, drive)
+            self._cleanup(ctx, drive)
             ctx.ns("organize")["applied"] = True
             for key in ("error", "pending_conflict", "resolve"):
                 ctx.ns("organize").pop(key, None)
             ctx.log("整理文件 ID、目录和名称全部读回核验通过")
+        except StorageBusy:
+            raise  # 网盘暂时拒绝一切请求（如 115 风控冷却）：交给内核到点再整理，不算失败
         except Exception as exc:
             ctx.ns("organize")["error"] = str(exc)
             ctx.ns("organize")["applied"] = False
@@ -397,40 +382,34 @@ class Organizer(_MediaLibrary):
                 ctx.result["verified"] = False
         return True
 
-    def _cleanup_staging(self, ctx: PipelineContext) -> None:
-        """整理成功后删除空的 .reelay-<task> 暂存目录。
-
-        仅在该暂存目录确实为空时删除；非空（有文件没被移走）则保留，绝不误删。
-        dry-run 不清理。
-        """
-        if self._dry_run:
-            return
-        read_client = self._read_client()
-        if read_client is None:
-            return
-        from p115client import P115FileSystem
+    def _cleanup(self, ctx: PipelineContext, drive) -> None:
+        """整理成功后：删除空的 .reelay-<task> 暂存目录（非空则保留，绝不误删），清掉只在重放时用的删除记录。"""
+        state = runtime.services().state(self.name)
+        for item in ctx.ns("organize").get("plan") or []:
+            state.delete(f"skipped:{int(item['src_id'])}")
         manifest = ctx.ns("storage").get("manifest") or {}
         stage = manifest.get("staging_cid")
         if not isinstance(stage, int):
             return
         try:
-            fs = P115FileSystem(read_client)
-            if list(fs.iterdir(stage)):
+            if drive.iterdir(stage):
                 log.info("暂存目录非空，保留：%s", stage)
                 return
-            self._auth.delete([stage])
+            drive.delete([stage])
             ctx.log("已清理空暂存目录")
         except Exception as exc:  # noqa: BLE001
             # 清理失败不影响已完成的整理结果
             log.warning("清理暂存目录失败（已忽略）：%s", exc)
 
-    def _remove(self, fs, file_id: int, parent: int, what: str) -> None:
-        """删除（进 115 回收站）后读回目录，确认文件已不在原处。删除可重复执行，结果不明时重来即可。"""
-        self._auth.delete([file_id])
-        if any(int(x["id"]) == file_id for x in fs.iterdir(int(parent))):
+    @staticmethod
+    def _remove(drive, file_id: int, parent: int, what: str) -> None:
+        """删除（进回收站）后读回目录，确认文件已不在原处。删除可重复执行，结果不明时重来即可。"""
+        drive.delete([file_id])
+        if any(x["id"] == file_id for x in drive.iterdir(int(parent))):
             raise RuntimeError(f"删除{what}后读回仍在原目录，停止整理")
 
-    def _resolve_conflict(self, strategy, fs, target_cid, item, source_id, source_parent, existing, candidate, state):
+    def _resolve_conflict(self, ctx, strategy, drive, target_cid, item, source_id, source_parent, existing, candidate,
+                          state):
         """按策略处理库里同一位置已有的文件，返回 (动作, 本次文件的最终名称)。
 
         candidate 是本次文件的 ``{"rank", "release", "size"}``；库中文件优先用入库时记下的信息，
@@ -441,7 +420,7 @@ class Organizer(_MediaLibrary):
         if strategy == "suffix":
             stem, dot, ext = name.rpartition(".")
             stem, ext = (stem, f".{ext}") if dot else (name, "")
-            taken = {x.get("name"): int(x["id"]) for x in fs.iterdir(target_cid)}
+            taken = {x["name"]: x["id"] for x in drive.iterdir(target_cid)}
             if taken.get(name) in (None, source_id):
                 return "suffix", name  # 文件名本来就不同（如清晰度不同），两份各用自己的名字
             for index in range(2, 100):
@@ -457,11 +436,12 @@ class Organizer(_MediaLibrary):
                        "size": existing.get("size") or recorded.get("size") or 0}
             if strategy == "replace" or strategy == "upgrade" \
                     and release.compare(candidate, current, runtime.get("release"), strict=True) > 0:
-                state.set(f"replaced:{existing_id}", {"by": source_id, "name": name})
-                self._remove(fs, existing_id, target_cid, "库里的旧文件")
+                # 先把替换记进任务并落库（媒体库据此不再计入旧文件），再删除；中断后重放时旧文件已不在
+                self._record_conflict(ctx, item, strategy, existing_id)
+                self._remove(drive, existing_id, target_cid, "库里的旧文件")
                 return strategy, name
             state.set(f"skipped:{source_id}", {"kept": existing_id, "name": name, "parent": int(source_parent)})
-            self._remove(fs, source_id, source_parent, "本次转存的文件")
+            self._remove(drive, source_id, source_parent, "本次转存的文件")
             return "skip", name
         raise FileExistsError(f"库里已有「{existing.get('name')}」，请选择删除转存文件或覆盖保存")
 
@@ -475,15 +455,17 @@ class Organizer(_MediaLibrary):
             # 季允许缺省为 1
         return None
 
-    def _apply_sync(self, ctx: PipelineContext, p, plan: list[dict]) -> None:
-        from p115client import P115FileSystem
+    @staticmethod
+    def _record_conflict(ctx: PipelineContext, item: dict, action: str, existing_id: int) -> None:
+        """记下这次冲突怎么处理的（同一个目标只记一次）；替换类的决定在删除前就落库。"""
+        conflicts = ctx.ns("organize").setdefault("conflicts", [])
+        target = f"{item['target_dir']}/{item['target_name']}"
+        if not any(c["target"] == target and c["existing_id"] == str(existing_id) for c in conflicts):
+            conflicts.append({"target": target, "action": action, "existing_id": str(existing_id)})
+        if action in ("replace", "upgrade"):
+            runtime.services().store.save_task(ctx)
 
-        fs = P115FileSystem(self._read_client())
-        auth = self._auth
-
-        def do_mkdir(parent: int, name: str) -> int:
-            return int(auth.mkdir(int(parent), name)["id"])
-
+    def _apply_sync(self, ctx: PipelineContext, p, plan: list[dict], drive) -> None:
         base_cid = int(ctx.save_dir_cid or 0)
         dir_cache: dict[str, int] = {}
 
@@ -502,23 +484,20 @@ class Organizer(_MediaLibrary):
                     pid = dir_cache[key]
                     continue
                 # 找同名子目录，没有则建
-                found = None
-                for item in fs.iterdir(pid):
-                    if (item.get("is_directory") or item.get("is_dir")) and item.get("name") == seg:
-                        found = int(item["id"])
-                        break
+                found = next((item["id"] for item in drive.iterdir(pid) if item["is_dir"] and item["name"] == seg),
+                             None)
                 if found is None:
-                    found = do_mkdir(pid, seg)
+                    found = drive.mkdir(pid, seg)
                 dir_cache[key] = found
                 pid = found
             dir_cache[rel_dir] = pid
             return pid
 
         organize = ctx.ns("organize")
+        organize.setdefault("conflicts", [])  # 每处冲突怎么处理的（见 _record_conflict），媒体库据此排除被替换的文件
         # 人工在冲突时选的处理（删除转存文件 / 覆盖保存）优先于配置的策略，整理成功后清除
         strategy = organize.get("resolve") or runtime.get("plugins.organizer.conflict", "manual")
         state = runtime.services().state(self.name)
-        conflicts = organize.setdefault("conflicts", [])
         new_rank = resolution_rank(p.resolution)
         title, is_tv = _safe(p.title), p.media_type == "tv" or bool(p.episodes)
         ours = {int(item["src_id"]) for item in plan}  # 同一批的其他文件（如分段电影）不算冲突
@@ -529,19 +508,19 @@ class Organizer(_MediaLibrary):
             if skipped:
                 # 冲突时已决定删除本次的新文件：上次删除结果不明就再删一次并读回
                 parent = skipped.get("parent")
-                if parent is not None and any(int(x["id"]) == source_id for x in fs.iterdir(int(parent))):
-                    self._remove(fs, source_id, parent, "本次转存的文件")
+                if parent is not None and any(x["id"] == source_id for x in drive.iterdir(int(parent))):
+                    self._remove(drive, source_id, parent, "本次转存的文件")
                 continue
             target_cid = ensure_dir(item["target_dir"])
-            current = fs.get_attr(source_id, refresh=True)
+            current = drive.get_attr(source_id)
             if item.get("size") is not None and current.get("size") != item["size"]:
                 raise ValueError("落地文件大小已变化，停止整理")
             if item.get("sha1") and (current.get("sha1") or '').upper() != item["sha1"].upper():
                 raise ValueError("落地文件内容已变化，停止整理")
             target_name = item["target_name"]
-            others = [x for x in fs.iterdir(target_cid)
-                      if x.get("name") == target_name and int(x["id"]) != source_id
-                      or int(x["id"]) not in ours and _same_slot(x, target_name, title, is_tv)]
+            others = [x for x in drive.iterdir(target_cid)
+                      if x["name"] == target_name and x["id"] != source_id
+                      or x["id"] not in ours and _same_slot(x, target_name, title, is_tv)]
             candidate = {"rank": resolution_rank(item.get("src_name")) or new_rank,
                          "release": release.fill(p.release, release.from_text(item.get("src_name"))),
                          "size": current.get("size") or 0}
@@ -557,9 +536,8 @@ class Organizer(_MediaLibrary):
                         "incoming": {"id": str(source_id), "name": item.get("src_name"), "size": current.get("size")},
                     }
                 action, target_name = self._resolve_conflict(
-                    strategy, fs, target_cid, item, source_id, current["parent_id"], existing, candidate, state)
-                conflicts.append({"target": f"{item['target_dir']}/{item['target_name']}",
-                                  "action": action, "existing_id": str(existing["id"])})
+                    ctx, strategy, drive, target_cid, item, source_id, current["parent_id"], existing, candidate, state)
+                self._record_conflict(ctx, item, action, int(existing["id"]))
                 if action == "skip":
                     ctx.log(f"删除了本次转存的「{item.get('src_name')}」，保留库里的「{existing.get('name')}」")
                     continue
@@ -567,11 +545,11 @@ class Organizer(_MediaLibrary):
                     ctx.log(f"覆盖保存：库里的「{existing.get('name')}」已删除，换成本次转存的文件")
             # 根据真实文件 ID 的当前位置续跑；已改名或已移动的步骤无需重做。
             if current["name"] != target_name:
-                auth.rename(source_id, target_name)
-            if int(current["parent_id"]) != target_cid:
-                auth.move(source_id, target_cid)
+                drive.rename(source_id, target_name)
+            if current["parent_id"] != target_cid:
+                drive.move(source_id, target_cid)
             state.set(f"file:{source_id}", {"rank": candidate["rank"], "release": candidate["release"],
                                             "size": current.get("size"), "name": item.get("src_name")})
-            final = fs.get_attr(source_id, refresh=True)
-            if int(final["parent_id"]) != target_cid or final["name"] != target_name:
+            final = drive.get_attr(source_id)
+            if final["parent_id"] != target_cid or final["name"] != target_name:
                 raise RuntimeError("整理读回核验不通过，保留计划供后续重试")

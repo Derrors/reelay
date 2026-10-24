@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ...core.rules import COUNTRIES, GENRES, _csv
+from ...core.rules import COUNTRIES, GENRES, csv_set
 
 CATEGORY_FILE = Path(__file__).with_name("category.yaml")
 
@@ -33,7 +33,7 @@ FIELD_LABELS = {"genre_ids": "题材", "origin_country": "地区", "release_year
 def _expand(value: str) -> set[str]:
     """条件值：逗号分隔为「或」；``2000-2010`` 这样前后都是数字的写法展开为范围（同 MoviePilot）。"""
     values = set()
-    for item in _csv(value):
+    for item in csv_set(value):
         start, dash, stop = item.partition("-")
         if dash and start.isdecimal() and stop.isdecimal() and int(start) <= int(stop):
             values.update(str(year) for year in range(int(start), int(stop) + 1))

@@ -2,10 +2,11 @@
 
 用法::
 
-    python3 -m reelay.main --dry-run     # 无依赖冒烟：模拟源 → 解析 → 决策 → 转存(占位) → 状态
-    python3 -m reelay.main               # 正常运行：真实源 + worker 长驻
+    python -m reelay.main --dry-run     # 模拟运行：样例消息 → 识别 → 审批 → 转存 → 整理，全在内存里
+    python -m reelay.main               # 正常运行：Telegram 监听 + Worker + 控制 Bot 长驻
 
---dry-run 用内置 DryRunSource 与 115 占位实现，端到端验证内核骨架，不碰网络与凭证。
+--dry-run 用内置默认配置、模拟消息源与内存网盘（见 ``providers/dryrun.py``），不读本机的配置与密钥，
+不访问网络，走的是与正常运行相同的识别、选集、核验与整理逻辑。
 
 运行文件都在 data/ 下（见 ``core/paths.py``）；配置与密钥在管理台修改。首次启动时写出默认配置。
 """
@@ -15,17 +16,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
+import time
 
 from .core import messages, paths
-from .core.config import ensure_config, load_config
+from .core.config import ensure_config, load_config, normalize_config
 from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
 from .core.registry import discover
 from .core.store import Store
 from .core.service import ManagementService
 from .core.worker import Worker
-from .control.panel import ControlPanel
 
 
 # 审批超时扫描间隔（秒）
@@ -63,61 +63,53 @@ def _setup_log(*, to_file: bool) -> None:
 
 
 async def _run_dry() -> int:
-    """无依赖端到端冒烟。"""
-    os.environ["REELAY_DRY_RUN"] = "1"
-    cfg = load_config()
-    # dry-run 用规则解析器（无需 LLM key），并给两个样例源配好规则
-    cfg["defaults"]["parser"] = "regex"
-    cfg["sources"] = [
-        {"bot": "@example_tv_bot", "approval_mode": "manual", "save_to": "剧集",
-         "filters": {"must_have": ["115."], "block_keywords": ["招商", "广告", "更多资源关注"]}},
-        {"bot": "@example_movie_bot", "approval_mode": "auto", "save_to": "电影",
-         "filters": {"must_have": ["115."], "block_keywords": ["招商", "广告"]}},
-    ]
-
+    """模拟运行：内置默认配置 + 模拟消息源 + 内存网盘，打印每条任务的轨迹与整理后的媒体库。"""
+    from .providers import dryrun
     reg = discover()
     log = logging.getLogger("reelay.dry")
-    log.info("已注册：%s", reg.summary())
-
+    storage = dryrun.install(reg)
+    dirs = {alias: str(storage.drive.mkdir(0, alias)) for alias in ("电影", "剧集", "动漫")}
+    cfg = normalize_config({
+        "save_dirs": {**dirs, "默认": "0"},
+        "providers": {"source": "dryrun", "notify": ["console"]},
+        "defaults": {"parser": "regex", "storage": "dryrun"},
+        "sources": [
+            {"bot": "@example_tv_bot", "approval_mode": "manual", "save_to": "剧集",
+             "filters": {"must_have": ["115."], "block_keywords": ["招商", "广告", "更多资源关注"]}},
+            {"bot": "@example_movie_bot", "approval_mode": "auto", "save_to": "电影",
+             "filters": {"must_have": ["115."], "block_keywords": ["招商", "广告"]}},
+        ],
+    })
+    reg.validate_config(cfg)
     store = Store(":memory:")
     pipeline = Pipeline(reg, store, cfg)
-    panel = ControlPanel(store, pipeline)
-
-    # dry-run 直接推进到审批/队列，便于在一次冒烟中验证完整路径
-    source = reg.get_provider("source", "dryrun")
 
     async def emit(raw: RawMessage) -> None:
         await pipeline.process_new(PipelineContext(raw=raw))
 
-    await source.listen(emit)
-
-    # 模拟人工：把所有 pending_approval 自动确认，演示完整转存链路
+    await reg.get_provider("source", "dryrun").listen(emit)
+    # 模拟人工：把所有 pending_approval 都批准，演示完整转存链路
     for r in store.list_by_state(TaskState.PENDING_APPROVAL, 100):
         log.info("模拟人工确认：%s（%s）", r["task_id"], r["title"])
         await pipeline.approve(r["task_id"])
-
     # 消费者：把队列排干
-    worker = Worker(pipeline, store, concurrency=2)
-    await worker.run(drain=True)
+    await Worker(pipeline, store, concurrency=2).run(drain=True)
 
-    # 汇报
-    print("\n================= DRY-RUN 结果 =================")
-    print("状态计数：", panel.status()["counts"])
+    counts = store.counts_by_state()
+    print("\n================= 模拟运行结果 =================")
+    print("状态计数：", counts)
     print("\n各任务轨迹：")
-    for st in (TaskState.DONE, TaskState.REJECTED, TaskState.SKIPPED,
-               TaskState.NEED_MANUAL, TaskState.FAILED):
+    for st in (TaskState.DONE, TaskState.REJECTED, TaskState.SKIPPED, TaskState.NEED_MANUAL, TaskState.FAILED):
         for r in store.list_by_state(st, 100):
             ctx = store.get_task(r["task_id"])
             print(f"\n[{st.value}] {r['title'] or r['task_id']}  (来源 {ctx.raw.source})")
             for t in ctx.trail:
                 print(f"    · {t}")
-
-    counts = panel.status()["counts"]
-    done = counts.get("done", 0)
-    rejected = counts.get("rejected", 0)
+    print("\n整理后的网盘（内存里）：")
+    print("\n".join(f"    {line}" for line in storage.drive.tree()) or "    （空）")
+    done, rejected = counts.get("done", 0), counts.get("rejected", 0)
     ok = done >= 2 and rejected >= 1     # 2 条资源应转存成功、1 条广告应被拒
-    print("\n冒烟判定：", "✅ PASS" if ok else "❌ FAIL",
-          f"(done={done}, rejected={rejected})")
+    print("\n冒烟判定：", "✅ PASS" if ok else "❌ FAIL", f"(done={done}, rejected={rejected})")
     print("================================================\n")
     store.close()
     return 0 if ok else 1
@@ -141,10 +133,9 @@ async def _serve_fetch(store: Store, source, request: dict) -> None:
 async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) -> None:
     """监听来源、目标清单都跟随有效配置；切换来源先关闭旧会话。
 
-    断开超过 telegram.alert_after_sec（默认 120 秒）告警一次，恢复后发送恢复通知；
+    断开（含还没配置或登录 Telegram）超过 telegram.alert_after_sec（默认 120 秒）告警一次，恢复后发送恢复通知；
     监听意外停止时先落告警再退出，由容器重启拉起，告警经 Outbox 在新进程中送达。
     """
-    import time
     while True:
         alert_after = int(pipeline.cfg["telegram"]["alert_after_sec"])
         name = pipeline.cfg["providers"]["source"]
@@ -183,9 +174,9 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                 elif down_since is None:
                     down_since = time.monotonic()
                 elif time.monotonic() - down_since >= alert_after:
-                    pipeline.store.raise_alert(
-                        "source", f"消息源 {name} 已断开超过 {alert_after // 60 or 1} 分钟，期间消息将在重连后补拉",
-                        pipeline.notify_targets())
+                    problem = health.get("error") or (f"消息源 {name} 已断开超过 {alert_after // 60 or 1} 分钟，"
+                                                      "期间消息将在重连后补拉")
+                    pipeline.store.raise_alert("source", problem, pipeline.notify_targets())
                 await asyncio.sleep(poll_interval)
         except Exception as exc:
             status, error = "failed", type(exc).__name__

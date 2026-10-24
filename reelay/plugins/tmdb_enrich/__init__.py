@@ -1,4 +1,4 @@
-"""TMDB 元数据匹配 —— after_parse Hook（评审 P1-04）。
+"""TMDB 元数据匹配 —— after_parse Hook。
 
 从 AI 解析出的候选标题去 TMDB 搜规范条目，按标题相似度与年份挑选候选，回填规范标题、
 年份、tmdbid、类型 ID 与国家/地区，让下游分类和整理入库建出能被 Jellyfin/Emby 正确刮削的
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
 from ...core import tmdb
 from ...core.contracts import PipelineContext
@@ -43,13 +42,10 @@ class TmdbEnrich:
     stage = "after_parse"
     order = 50
 
-    def __init__(self) -> None:
-        self._dry_run = os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
-
     @property
     def _key(self) -> str | None:
         """用到时读取密钥：管理台填好 TMDB key 后不用重启。"""
-        return None if self._dry_run else tmdb.api_key()
+        return tmdb.api_key()
 
     def needs_refresh(self, ctx: PipelineContext) -> bool:
         """配置 key 之前识别、或上次查询出错的任务，启动时补跑一次。"""
@@ -67,7 +63,7 @@ class TmdbEnrich:
         ns.clear()
         if not self._key:
             ns["matched"] = False
-            ns["note"] = "模拟模式，沿用原标题" if self._dry_run else "未配 TMDB key，沿用 AI 标题"
+            ns["note"] = "未配 TMDB key，沿用识别出的标题"
             return True
 
         from ...core import runtime
@@ -132,7 +128,6 @@ class TmdbEnrich:
         for key in ("languages", "cast", "rating"):
             if extra.get(key):
                 p.raw_fields[key] = extra[key]
-        p.raw_fields.setdefault("genre", "")
         p.genre_ids = [int(value) for value in hit.get("genre_ids") or []
                        if type(value) is int and value > 0]
         countries = hit.get("origin_country") or []

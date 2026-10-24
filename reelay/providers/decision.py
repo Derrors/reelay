@@ -90,9 +90,7 @@ class SubscriptionDecision(DefaultDecision):
     转存分享里的其他季。
     """
     name = "subscription"
-
-    def validate_config(self, cfg: dict) -> None:
-        subscriptions.validate(cfg)
+    releases_subscriptions = True  # 订阅的剧的新集会自动放行（「追剧订阅」页据此提示哪些来源不会自动放行）
 
     async def decide(self, ctx: PipelineContext) -> Decision:
         ctx.meta.pop("subscription", None)  # 重新解析后不沿用上次的放行
@@ -109,7 +107,10 @@ class SubscriptionDecision(DefaultDecision):
             return decision
         pairs = planned_pairs(ctx)
         seasons = {season for season, _ in pairs} or ({p.season} if p.season is not None else set())
-        subs = subscriptions.items(runtime.get_config(), subscriptions.finished_records())  # 已完结的不再放行
+        try:
+            subs = runtime.services().subscriptions()  # 已完结的不再放行（见 subscriptions.match）
+        except RuntimeError:
+            return decision
         # 季未知时与这部剧任何一季的订阅比对，只为在轨迹里说明为什么没有放行
         item = subscriptions.match(subs, p, ctx.meta.get("tmdb", {}), seasons=seasons or {s["season"] for s in subs})
         if not item:
@@ -124,10 +125,7 @@ class SubscriptionDecision(DefaultDecision):
         season = seasons.pop()
         episodes = {ep for s, ep in pairs if s == season}
         if episodes:
-            try:
-                have = runtime.services().store.stored_series().get((p.title, season), set())
-            except RuntimeError:
-                have = set()
+            have = runtime.services().stored_series().get((p.title, season), set())
             if episodes <= have:
                 ctx.log(f"订阅《{item['title']}》：消息里的集都已入库，仍交给你确认")
                 return decision
@@ -158,11 +156,11 @@ def decision_history(source: str, limit: int) -> list[dict]:
     if limit <= 0:
         return []
     try:
-        store = runtime.services().store
+        rows = runtime.services().recent_feedback(source=source, kinds=("approve", "reject"), limit=limit)
     except RuntimeError:
         return []
     out = []
-    for row in store.recent_feedback(source=source, kinds=("approve", "reject"), limit=limit):
+    for row in rows:
         parsed = row["parsed"] or {}
         item = {"decision": row["kind"], **{key: parsed.get(key) for key in (
             "title", "media_type", "year", "season", "episodes", "resolution", "release") if parsed.get(key)}}

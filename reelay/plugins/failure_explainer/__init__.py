@@ -16,13 +16,14 @@ import re
 import time
 
 from ...core import ai, runtime
-from ...core.contracts import PipelineContext, TaskState
+from ...core.auth115 import is_auth_failure
+from ...core.contracts import MAX_AUTO_RETRIES, PipelineContext, TaskState
 from ...core.registry import register
 
 log = logging.getLogger("reelay.plugin.failure_explainer")
 
 ACTIONS = {
-    "relogin": "在「115 连接」重新扫码登录",
+    "relogin": "在「设置 → 115 网盘」重新扫码登录",
     "share_gone": "忽略这条任务",
     "reconcile": "核验转存",
     "reorganize": "重新整理",
@@ -46,7 +47,6 @@ _PROMPT = (
 def facts(ctx: PipelineContext, error: str | None, retries: int) -> dict:
     storage, organize = ctx.meta.get("storage", {}), ctx.meta.get("organize", {})
     assist = ctx.meta.get("assist", {})
-    from ...core.worker import is_auth_failure
     return {
         "title": ctx.parsed.title if ctx.parsed else None,
         "state": ctx.state.value, "error": ai.scrub(error)[:300] if error else None, "retries": retries,
@@ -97,25 +97,47 @@ def rule_text(f: dict, act: str) -> str:
 
 
 def is_final(ctx: PipelineContext, retries: int) -> bool:
-    from ...core.worker import MAX_RETRIES
     return (ctx.state == TaskState.NEED_MANUAL or bool(ctx.meta.get("task", {}).get("no_auto_retry"))
-            or retries > MAX_RETRIES)
+            or retries > MAX_AUTO_RETRIES)
 
 
-@register(kind="event", event="on_failed")
-class FailureExplainer(ai.UsesAI):
+class _Base:
     name = "failure_explainer"
     ui_label = "失败解释"
     ui_description = "任务失败或转为待人工时说明原因，并指出该用哪个操作；任务停下来等人处理时通知一次。"
+    provides = {"task_explanation": "explanation"}
+
+    @staticmethod
+    def explanation(task_id: str) -> dict | None:
+        """这条任务最近一次的解释：{action, label, text, source, state, …}；没有时为 None。"""
+        return runtime.services().state(_Base.name).get(f"task:{task_id}")
+
+
+@register(kind="event", event="on_daily")
+class ExplanationCleanup(_Base):
+    """每天清掉已经处理完（不再是失败或待人工）的任务的解释，扩展状态不会一直变大。"""
+    event = "on_daily"
+
+    async def handle(self, ctx: PipelineContext) -> None:
+        services = runtime.services()
+        state = services.state(self.name)
+        for key in [key for key in state.items() if key.startswith("task:")]:
+            task = services.task(key[len("task:"):])
+            if not task or task.state not in (TaskState.FAILED, TaskState.NEED_MANUAL):
+                state.delete(key)
+
+
+@register(kind="event", event="on_failed")
+class FailureExplainer(ai.UsesAI, _Base):
     event = "on_failed"
 
     async def handle(self, ctx: PipelineContext) -> None:
         services = runtime.services()
-        current = services.store.get_task(ctx.task_id)
+        current = services.task(ctx.task_id)
         # 投递时任务可能已回到原阶段等待自动重试：那次失败不必解释。
         if not current or current.state not in (TaskState.FAILED, TaskState.NEED_MANUAL):
             return
-        record = services.store.get_task_record(ctx.task_id) or {}
+        record = services.task_record(ctx.task_id) or {}
         retries = int(record.get("retries") or 0)
         f = facts(current, record.get("error"), retries)
         act = action(f)

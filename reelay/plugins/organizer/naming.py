@@ -12,6 +12,8 @@ from typing import Any
 from jinja2 import StrictUndefined, meta, nodes
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from ...core.media import resolution_name
+
 # 变量名与含义同 MoviePilot 的重命名格式，可直接沿用其模板。季、集等对电影为空字符串。
 FILE_INFO_VARIABLES = ("videoFormat", "videoCodec", "audioCodec", "resourceType", "effect", "edition",
                        "releaseGroup", "part")
@@ -25,9 +27,8 @@ ALLOWED_VARIABLES = {
 }
 
 _EDGE = r"(?<![A-Za-z0-9]){}(?![A-Za-z0-9])"
-# (模式, 写进文件名的写法)，按顺序取第一个命中的
-_RESOLUTION = [(r"2160[pi]|4k|uhd", "2160p"), (r"1080[pi]", "1080p"), (r"720p", "720p"), (r"576p", "576p"),
-               (r"480p", "480p")]
+# (模式, 写进文件名的写法)，按顺序取第一个命中的。写法与 MoviePilot 一致（H265、WEB-DL、DV），
+# 不同于 core.release 给版本比较用的枚举值（h265、web-dl、dolby_vision），两套各管各的
 _VIDEO_CODEC = [(r"[hx]\.?265|hevc", "H265"), (r"[hx]\.?264|avc", "H264"), (r"av1", "AV1"), (r"vp9", "VP9")]
 _AUDIO_CODEC = [(r"truehd(?:[ ._-]?atmos)?", "TrueHD"), (r"dts[ ._-]?hd(?:[ ._-]?ma)?", "DTS-HD MA"),
                 (r"dts[ ._-]?x", "DTS-X"), (r"dts", "DTS"), (r"e-?ac-?3|ddp|dd\+|dolby[ ._-]?digital[ ._-]?plus", "DDP"),
@@ -61,7 +62,7 @@ def file_info(name: str, resolution: str | None = None) -> dict[str, str]:
     group = re.search(r"-([A-Za-z0-9@]+)$", stem)
     part = _PART.search(stem)
     info = {
-        "videoFormat": _first(_RESOLUTION, text) or _first(_RESOLUTION, resolution or "") or (resolution or ""),
+        "videoFormat": resolution_name(text) or resolution_name(resolution) or (resolution or ""),
         "videoCodec": " ".join(v for v in (_first(_VIDEO_CODEC, text), f"{depth.group(1)}bit" if depth else "") if v),
         "audioCodec": _first(_AUDIO_CODEC, text),
         "resourceType": _first(_SOURCE, text),
