@@ -107,12 +107,13 @@ class SecretStore:
             return {name: bool(self._data["values"].get(name)) for name in NAMES}
 
     def update(self, changes: dict[str, str | None]) -> None:
-        """设置或清除（值为空）；web_password 传明文，保存摘要。"""
+        """设置或清除（值为空）；web_password 传明文，保存摘要。全部校验通过才一起生效，有一项不合格就都不改。"""
         unknown = set(changes) - set(NAMES)
         if unknown:
             raise ValueError(f"未知的密钥：{'、'.join(sorted(unknown))}")
         with self._lock:
             self._reload()
+            values = dict(self._data["values"])
             for name, value in changes.items():
                 if value is not None and type(value) is not str:
                     raise ValueError(f"{NAMES[name]}必须是字符串")
@@ -123,14 +124,19 @@ class SecretStore:
                     if len(value) < MIN_TOKEN_LENGTH:
                         raise ValueError(f"{NAMES[name]}至少 {MIN_TOKEN_LENGTH} 个字符")
                     other = next(item for item in TOKEN_NAMES if item != name)
-                    paired = (changes[other] or "").strip() if other in changes else self._data["values"].get(other)
+                    paired = (changes[other] or "").strip() if other in changes else values.get(other)
                     if value == paired:
                         raise ValueError("读写与只读的 MCP 访问令牌不能相同")
                 if value:
-                    self._data["values"][name] = hash_password(value) if name == "web_password" else value
+                    values[name] = hash_password(value) if name == "web_password" else value
                 else:
-                    self._data["values"].pop(name, None)
-            self._save()
+                    values.pop(name, None)
+            previous, self._data = self._data, {**self._data, "values": values}
+            try:
+                self._save()
+            except BaseException:
+                self._data = previous
+                raise
 
     def check_password(self, password: str) -> bool:
         stored = self.get("web_password")

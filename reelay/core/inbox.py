@@ -14,7 +14,7 @@ from typing import Any
 
 from . import ai, release, tmdb
 from .contracts import PipelineContext
-from .media import pairs_label, planned_pairs
+from .media import pairs_text, planned_pairs
 
 ACTIONS = {"approve": "建议批准", "reject": "建议忽略", "review": "需要你看一下"}
 # 每次请 AI 措辞的条数：输出随条数线性增长，太多会超时
@@ -61,16 +61,6 @@ def pick_versions(contexts: list[PipelineContext], prefs: dict) -> dict[str, dic
         for ctx in items:
             result[ctx.task_id] = {"count": len(items), "best": ctx is best, "best_task_id": best.task_id}
     return result
-
-
-def _pairs_text(pairs: list[list[int]], *, with_season: bool = False) -> str:
-    """单季写成「E01-E03」（with_season 时为「S02 E01-E03」），跨多季写成「S01–S03 共 30 集」。"""
-    seasons = {season for season, _ in pairs}
-    if len(seasons) > 1:
-        return pairs_label(pairs)
-    from ..plugins.episode_tracker import format_episodes
-    text = format_episodes([ep for _, ep in pairs], limit=4)
-    return f"S{seasons.pop():02d} {text}" if with_season and seasons else text
 
 
 def version_label(p) -> str:
@@ -139,16 +129,16 @@ def rule_text(f: dict, act: str) -> str:
     # 只有第 1 季时沿用「E01-E03」，涉及其他季或多季时写明季号
     with_season = f.get("seasons", [1]) != [1]
     if f.get("stored_episodes"):
-        parts.append(f"已入库 {_pairs_text(f['stored_episodes'], with_season=with_season)}")
+        parts.append(f"已入库 {pairs_text(f['stored_episodes'], with_season=with_season)}")
     if act == "reject":
         if f.get("episodes") and not f.get("new_episodes"):
-            parts.append(f"{_pairs_text(f['episodes'], with_season=with_season)} 都已入库")
+            parts.append(f"{pairs_text(f['episodes'], with_season=with_season)} 都已入库")
         else:
             parts.append(f"同一集还有 {f['versions']['count'] - 1} 个版本，另一个更符合偏好")
     else:
         version = f"（{f['version']}）" if f["version"] else ""
         if f.get("new_episodes"):
-            parts.append(f"这是 {_pairs_text(f['new_episodes'], with_season=with_season)}{version}")
+            parts.append(f"这是 {pairs_text(f['new_episodes'], with_season=with_season)}{version}")
         else:
             parts.append(f"库里还没有{version}")
         if f.get("versions"):

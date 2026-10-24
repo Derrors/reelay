@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import inspect
-from pathlib import Path
+import json
 import logging
+import math
+import time
+from pathlib import Path
 from typing import Any
 
 from .contracts import (
@@ -27,6 +29,7 @@ from .contracts import (
     PipelineContext,
     RawMessage,
     ShareUnavailable,
+    StorageBusy,
     TaskState,
     TransferRejected,
     TransferUncertain,
@@ -49,11 +52,12 @@ class Pipeline:
         self.cfg = normalize_config(config)
         runtime.set_process_config(self.cfg)
         self.revision = config_revision(self.cfg)
+        self.store.put_config_snapshot(self.revision, self.cfg)
         self.config_path: Path | None = None
         self.config_error: str | None = None
         self.save_dirs: dict[str, str] = self.cfg["save_dirs"]
         self._organize_locks: dict[str, asyncio.Lock] = {}
-        self.services = runtime.Services(store, self.notify_targets)
+        self.services = runtime.Services(store, self.notify_targets, registry)
         # 启动补拉期间推迟日报（见 hold_daily）；消息源完成补拉后由主进程置为 True
         self.sources_ready = True
         self._daily_hold_until: float | None = None
@@ -61,9 +65,15 @@ class Pipeline:
     def notify_targets(self) -> list[str]:
         return list(self.cfg.get("providers", {}).get("notify", ["console"]))
 
-    def _scope(self, ctx_or_cfg):
-        cfg = self.task_config(ctx_or_cfg) if isinstance(ctx_or_cfg, PipelineContext) else ctx_or_cfg
+    def scope(self, ctx_or_cfg=None):
+        """内核服务与配置的作用域：传任务时用任务接收时的配置，省略时用当前配置。"""
+        cfg = self.task_config(ctx_or_cfg) if isinstance(ctx_or_cfg, PipelineContext) else (ctx_or_cfg or self.cfg)
         return runtime.scope(cfg, self.services)
+
+    def query(self, capability: str, *args, **kwargs):
+        """调用某个已启用扩展声明的能力（见 Registry.capability），不在任务作用域里时也可以用。"""
+        with self.scope():
+            return self.services.query(capability, *args, **kwargs)
 
     def apply_config(self, config: dict) -> None:
         cfg = normalize_config(config)
@@ -71,6 +81,7 @@ class Pipeline:
         self.cfg, self.save_dirs = cfg, cfg["save_dirs"]
         runtime.set_process_config(cfg)
         self.revision = config_revision(cfg)
+        self.store.put_config_snapshot(self.revision, cfg)
         self.config_error = None
 
     def reload_config(self) -> bool:
@@ -87,12 +98,20 @@ class Pipeline:
                 return False
             self.apply_config(cfg)
             return True
-        except Exception:
-            self.config_error = "配置更新无效，继续使用上一有效版本"
+        except Exception as exc:  # noqa: BLE001 - 原因交给管理台显示，用户据此修改文件
+            self.config_error = f"配置文件 {self.config_path} 无效，继续使用上一有效版本：{str(exc)[:300]}"
             return False
 
     def task_config(self, ctx: PipelineContext) -> dict:
-        return ctx.meta.get("runtime", {}).get("config", self.cfg)
+        """任务接收时的配置（按快照里的配置版本号取）；没有记录时用当前配置。"""
+        revision = ctx.meta.get("runtime", {}).get("revision")
+        if revision is None or revision == self.revision:
+            return self.cfg
+        return self.store.config_snapshot(revision) or self.cfg
+
+    def stamp_config(self, ctx: PipelineContext) -> None:
+        """任务从此按当前配置执行（接收、重新识别、重新整理时）。"""
+        ctx.ns("runtime")["revision"] = self.revision
 
     async def refresh_metadata(self) -> int:
         """补跑元数据补全（如配置 TMDB 之前识别的任务），不重新调用 LLM；返回更新的任务数。
@@ -118,15 +137,16 @@ class Pipeline:
         ctx = self.store.get_task(task_id)
         if not ctx or not ctx.parsed:
             return False
-        hooks = [hook for hook in self.reg.hooks_for("after_parse", self.cfg)
-                 if hasattr(hook, "needs_refresh") and hook.needs_refresh(ctx)]
+        with self.scope(ctx):
+            hooks = [hook for hook in self.reg.hooks_for("after_parse", self.cfg)
+                     if hasattr(hook, "needs_refresh") and hook.needs_refresh(ctx)]
         if not hooks:
             return False
         fresh = copy.deepcopy(ctx)
         fresh.log("补跑元数据补全（未重新调用 LLM）")
         for hook in hooks:
             try:
-                with self._scope(fresh):
+                with self.scope(fresh):
                     await hook.run(fresh)
             except Exception as exc:  # 与识别阶段一样失败隔离
                 log.warning("补跑 %s 失败：%s", self.reg.extension_name(hook), exc)
@@ -158,7 +178,7 @@ class Pipeline:
 
     def target_preview(self, ctx: PipelineContext) -> str:
         """不手动改目录时任务将存入的位置（含二级分类），供审批卡片与管理台展示。"""
-        with self._scope(ctx):
+        with self.scope(ctx):
             for hook in self.reg.hooks_for("before_save", self.task_config(ctx)):
                 if hasattr(hook, "preview"):
                     return hook.preview(ctx)
@@ -167,24 +187,28 @@ class Pipeline:
     # ------------------------------------------------------------------ #
     # Hook / Event 基础设施
     # ------------------------------------------------------------------ #
-    async def _run_hooks(self, stage: str, ctx: PipelineContext) -> bool:
+    async def run_hooks(self, stage: str, ctx: PipelineContext) -> bool:
         """跑某挂载点的所有 Hook。返回 False 表示被拦截。"""
         for hook in self.reg.hooks_for(stage, self.task_config(ctx)):
             try:
-                bound = getattr(hook, "storage_provider", None)
-                if stage == "after_save" and bound and bound != ctx.ns("storage").get("provider", "p115"):
-                    raise ValueError("整理扩展与任务的存储 Provider 不匹配")
+                if stage == "after_save" and getattr(hook, "requires_storage", None):
+                    storage = self.reg.get_provider("storage", ctx.ns("storage").get("provider", "p115"))
+                    missing = self.reg.missing_storage(hook, storage)
+                    if missing:
+                        raise ValueError(f"任务的存储 Provider 不提供 {missing}，无法整理")
                 if stage == "after_save" and hasattr(hook, "prepare"):
-                    with self._scope(ctx):
+                    with self.scope(ctx):
                         await hook.prepare(ctx)
                     self.store.save_task(ctx)  # 整理计划必须先落库
-                with self._scope(ctx):
+                with self.scope(ctx):
                     ok = await hook.run(ctx)
                 if ok is False:
                     ctx.log(f"hook 拦截 @{stage}: {hook.__class__.__name__}")
                     if stage == "after_save" and ctx.result is not None:
                         ctx.result["verified"] = False
                     return False
+            except StorageBusy:
+                raise  # 网盘暂时拒绝一切请求：不是扩展出错，交给 Worker 到点再执行
             except Exception as exc:  # 失败隔离
                 log.warning("hook 异常 @%s %s: %s（已隔离）", stage, hook.__class__.__name__, exc)
                 ctx.log(f"hook 异常 @{stage}: {exc}")
@@ -207,7 +231,7 @@ class Pipeline:
         key = f"{generation}:{kind}:{event}:{target}:{sequence}"
         ctx.ns("deliveries")[key] = {"kind": kind, "event": event, "target": target}
 
-    async def _emit(self, event: str, ctx: PipelineContext, *, persist: bool = True) -> None:
+    async def emit(self, event: str, ctx: PipelineContext, *, persist: bool = True) -> None:
         if event == "on_failed":
             ctx.ns("task")["failures"] = ctx.ns("task").get("failures", 0) + 1
         if event in ("on_failed", "on_saved"):
@@ -263,11 +287,10 @@ class Pipeline:
                         obj = next(obj for obj in self.reg.listeners_for(row["event"])
                                    if self.reg.extension_name(obj) == row["target"])
                         callback = obj.handle(ctx)
-                with self._scope(cfg):
+                with self.scope(cfg):
                     await asyncio.wait_for(callback, timeout=30)
             except Exception as exc:
                 category = type(exc).__name__
-                import math
                 seconds = getattr(exc, "seconds", None)
                 delay = min(seconds, 86400) if type(seconds) in (int, float) and math.isfinite(seconds) and seconds > 0 else None
                 self.store.finish_delivery(row["id"], error=category, retry_after=delay)
@@ -283,9 +306,9 @@ class Pipeline:
     # ------------------------------------------------------------------ #
     async def accept(self, ctx: PipelineContext) -> PipelineContext | None:
         """快速接收新消息并落为 RECEIVED；返回 None 表示消息级重复。"""
-        ctx.source_rule = self._rule_for(ctx.raw.source)
-        ctx.ns("runtime").update(config=copy.deepcopy(self.cfg), revision=self.revision)
-        await self._emit("on_message", ctx, persist=False)
+        ctx.source_rule = self.rule_for(ctx.raw.source)
+        self.stamp_config(ctx)
+        await self.emit("on_message", ctx, persist=False)
         ctx.state = TaskState.RECEIVED
         ctx.log("消息已接收并落库")
         if not self.store.accept_task(ctx):
@@ -305,7 +328,7 @@ class Pipeline:
         """从 RECEIVED 推进到 rejected / pending_approval / queued。"""
         if ctx.state != TaskState.RECEIVED:
             return
-        if not await self._run_hooks("before_parse", ctx):
+        if not await self.run_hooks("before_parse", ctx):
             ctx.state = TaskState.SKIPPED
             self.store.save_task(ctx)
             return
@@ -315,14 +338,14 @@ class Pipeline:
         )
         parser = self.reg.get_provider("parser", parser_name)
         try:
-            with self._scope(ctx):
+            with self.scope(ctx):
                 ctx.parsed = await parser.parse(ctx)
         except Exception as exc:
             ctx.state = TaskState.FAILED
             ctx.ns("task")["retry_from"] = TaskState.RECEIVED.value
             ctx.log(f"解析失败：{exc}")
-            await self._emit("on_failed", ctx, persist=False)
-            await self._notify_all(ctx, "failed", persist=False)
+            await self.emit("on_failed", ctx, persist=False)
+            await self.notify_all(ctx, "failed", persist=False)
             self.store.save_task(ctx, error=str(exc))
             return
 
@@ -333,21 +356,21 @@ class Pipeline:
         )
         self.store.save_task(ctx)
 
-        if not await self._run_hooks("after_parse", ctx):
+        if not await self.run_hooks("after_parse", ctx):
             ctx.state = TaskState.SKIPPED
             self.store.save_task(ctx)
             return
 
         # 决策只看确定性信号算出的置信度；TMDB 等补全 Hook 已在上面跑完。
         confidence.apply(ctx)
-        blocked = ignored.match(ignored.items(self.cfg), ctx.parsed, ctx.meta.get("tmdb", {}))
+        blocked = ignored.match(self.store.ignored_works(), ctx.parsed, ctx.meta.get("tmdb", {}))
         if blocked:
             ctx.decision = Decision.SKIP
             ctx.log(f"你已设置不再接收《{blocked['title']}》，直接忽略")
         else:
             decider = self.reg.get_provider("decision",
                                             ctx.source_rule.get("decision", self.cfg["defaults"]["decision"]))
-            with self._scope(ctx):
+            with self.scope(ctx):
                 ctx.decision = await decider.decide(ctx)
         if ctx.decision == Decision.SAVE and ctx.meta.get("parse", {}).get("fallback"):
             ctx.decision = Decision.ASK
@@ -359,7 +382,7 @@ class Pipeline:
                 if (ctx.parsed and ctx.parsed.is_ad)
                 else TaskState.SKIPPED
             )
-            await self._emit("on_rejected", ctx, persist=False)
+            await self.emit("on_rejected", ctx, persist=False)
             self.store.save_task(ctx)
             return
 
@@ -370,12 +393,12 @@ class Pipeline:
             ctx.log("转人工确认（审批态已落库，可跨重启）")
         else:
             ctx.state = TaskState.QUEUED
-        await self._emit("on_identified", ctx, persist=False)
-        await self._notify_all(ctx, "identified", persist=False)
+        await self.emit("on_identified", ctx, persist=False)
+        await self.notify_all(ctx, "identified", persist=False)
         # 补拉的历史消息不逐条推送确认卡片：长时间停机后会一次补进上百条，刷屏且多已过时；
         # 它们照常进入管理台「待审批」，超时后由审批汇总提醒覆盖。
         if ctx.decision == Decision.ASK and not ctx.raw.extra.get("backfill"):
-            await self._notify_all(ctx, "pending_approval", persist=False)
+            await self.notify_all(ctx, "pending_approval", persist=False)
         self.store.save_task(ctx)
 
     # ------------------------------------------------------------------ #
@@ -430,7 +453,7 @@ class Pipeline:
             await self._abandon(ctx, storage)
             return
         if not ns.get("manifest"):
-            if not await self._run_hooks("before_save", ctx):
+            if not await self.run_hooks("before_save", ctx):
                 ctx.state = TaskState.SKIPPED
                 self.store.save_task(ctx)
                 return
@@ -459,7 +482,7 @@ class Pipeline:
             ns["stored_episodes"] = (self.store.stored_episode_pairs(ctx.parsed.title, ctx.save_dir_cid, provider_name)
                                      if ctx.parsed.title else [])
             try:
-                with self._scope(ctx):
+                with self.scope(ctx):
                     manifest = await storage.prepare(ctx)
             except AlreadyStored as exc:
                 ctx.state = TaskState.SKIPPED
@@ -482,6 +505,8 @@ class Pipeline:
                 await self._fail(ctx, f"转存前校验未通过，需人工处理：{exc}", retry_from=TaskState.QUEUED,
                                  auto_retry=False)
                 return
+            except StorageBusy:
+                raise
             except Exception as exc:
                 await self._fail(ctx, f"转存准备失败：{exc}", retry_from=TaskState.QUEUED)
                 return
@@ -511,30 +536,35 @@ class Pipeline:
                 return
 
         auto_recheck = ns.pop("auto_recheck_run", False)  # 这一轮是 Worker 的后台自动复查
+        sending = ns["phase"] == "ready"
         try:
-            if ns["phase"] == "ready":
+            if sending:
                 ns["phase"] = "receiving"
                 self.store.save_task(ctx)  # 必须在远端写请求之前提交
                 try:
-                    with self._scope(ctx):
+                    with self.scope(ctx):
                         receipt = await storage.save(ctx)
-                except TransferRejected:
+                except (TransferRejected, StorageBusy):
                     raise
                 except Exception as error:
                     ctx.log(f"转存请求没有确认结果（{type(error).__name__}），改为只读核验，不重发")
-                    with self._scope(ctx):
+                    with self.scope(ctx):
                         receipt = await storage.reconcile(ctx)
             elif ns["phase"] == "receiving" and ns.get("accept_partial") and hasattr(storage, "reconcile_partial"):
-                with self._scope(ctx):
+                with self.scope(ctx):
                     receipt = await storage.reconcile_partial(ctx)
                 self._accept_partial(ctx, receipt)
             elif ns["phase"] == "receiving":
-                with self._scope(ctx):
+                with self.scope(ctx):
                     receipt = await storage.reconcile(ctx)
             else:
                 raise TransferUncertain("转存检查点状态异常，需人工核验")
             if receipt.get("storage_verified") is not True or not receipt.get("landed"):
                 raise TransferUncertain("转存回执未确认全部文件落地")
+        except StorageBusy:
+            if sending:
+                ns["phase"] = "ready"  # save() 抛 StorageBusy 表示转存请求没有发出，回到发送前
+            raise
         except TransferRejected as rejected:
             await self._transfer_rejected(ctx, storage, rejected)
             return
@@ -592,11 +622,37 @@ class Pipeline:
         ctx.log(f"按已到的 {len(arrived)} 个文件继续；没到的 {len(missing)} 个不转存、不记为已入库："
                 f"{'、'.join(missing[:3])}{' 等' if len(missing) > 3 else ''}")
 
-    async def _abandon(self, ctx: PipelineContext, storage) -> None:
-        """放弃这次转存：删除暂存目录（进 115 回收站）并读回确认，然后忽略任务、释放占位。"""
+    def defer(self, ctx: PipelineContext, busy: StorageBusy) -> None:
+        """网盘暂时拒绝一切请求（如 115 风控冷却），这次请求没有发出：回到所在阶段，到点后 Worker 再领取。
+
+        不算失败、不消耗自动重试次数、不发提醒。转存还没发出时放开资源占位，让其他任务也能排队。
+        """
         ns = ctx.ns("storage")
+        if ctx.state in (TaskState.STORED, TaskState.ORGANIZING) or ns.get("phase") == "stored":
+            ctx.state = TaskState.STORED
+        elif ctx.state in (TaskState.RECEIVED, TaskState.PARSED):
+            ctx.state = TaskState.RECEIVED
+        else:
+            ctx.state = TaskState.QUEUED
+            if ns.get("phase") == "preparing":
+                for key in ("phase", "identity"):
+                    ns.pop(key, None)
+                self.store.release_resource(ctx.task_id)
+        resume = time.strftime("%H:%M", time.localtime(busy.until))
+        ctx.log(f"{busy}，{resume} 后自动继续")
+        self.store.defer_task(ctx, until=busy.until)
+
+    async def _abandon(self, ctx: PipelineContext, storage) -> None:
+        """放弃这次转存：删除暂存目录（进回收站）并读回确认，然后忽略任务、释放占位。"""
+        ns = ctx.ns("storage")
+        if not hasattr(storage, "abandon"):
+            ctx.state = TaskState.NEED_MANUAL
+            ns.pop("abandon", None)
+            ctx.log(f"存储 {storage.name} 不支持放弃转存，请到网盘里手动删除暂存目录")
+            self.store.save_task(ctx, error="存储不支持放弃转存")
+            return
         try:
-            with self._scope(ctx):
+            with self.scope(ctx):
                 await storage.abandon(ctx)
         except Exception as exc:  # noqa: BLE001 - 删除结果不明：保留决定，再点一次会先读回再删
             ctx.state = TaskState.NEED_MANUAL
@@ -607,7 +663,7 @@ class Pipeline:
             ns.pop(key, None)
         ns["phase"] = "abandoned"
         ctx.state = TaskState.SKIPPED
-        ctx.log("已放弃这次转存：暂存目录连同已到的文件移进 115 回收站，不再处理")
+        ctx.log("已放弃这次转存：暂存目录连同已到的文件移进回收站，不再处理")
         self.store.save_task(ctx)
         self.store.release_resource(ctx.task_id)
 
@@ -621,13 +677,12 @@ class Pipeline:
             ctx.result = dict(ctx.result or {})
             ctx.result["verified"] = True
             self.store.save_task(ctx)
-            ok = await self._run_hooks("after_save", ctx)
+            ok = await self.run_hooks("after_save", ctx)
             verified = ok and ctx.result.get("verified") is True
             ctx.state = TaskState.DONE if verified else TaskState.NEED_MANUAL
-            ctx.log(("[dry-run] 模拟转存整理完成" if ctx.result.get("dry_run") else "整理完成且已读回核验")
-                    if verified else "转存已完成，整理需人工处理")
-            await self._notify_all(ctx, "saved" if verified else "organize_failed", persist=False)
-            await self._emit("on_saved" if verified else "on_failed", ctx, persist=False)
+            ctx.log("整理完成且已读回核验" if verified else "转存已完成，整理需人工处理")
+            await self.notify_all(ctx, "saved" if verified else "organize_failed", persist=False)
+            await self.emit("on_saved" if verified else "on_failed", ctx, persist=False)
             self.store.save_task(ctx)
 
     @staticmethod
@@ -639,8 +694,8 @@ class Pipeline:
 
     async def notify_uncertain(self, ctx: PipelineContext) -> None:
         """提醒转存结果待人工核验（通知渠道与 on_failed 事件）；由调用方保存任务。"""
-        await self._notify_all(ctx, "transfer_uncertain", persist=False)
-        await self._emit("on_failed", ctx, persist=False)
+        await self.notify_all(ctx, "transfer_uncertain", persist=False)
+        await self.emit("on_failed", ctx, persist=False)
 
     @staticmethod
     def _episodic(ctx: PipelineContext) -> bool:
@@ -702,7 +757,7 @@ class Pipeline:
         ctx.log(f"执行前去重命中：{reason}")
         if hasattr(storage, "discard"):
             try:
-                with self._scope(ctx):
+                with self.scope(ctx):
                     await storage.discard(ctx)
             except Exception as exc:  # noqa: BLE001 - 空暂存目录残留不影响去重结果
                 log.warning("清理未使用的暂存目录失败：%s", exc)
@@ -719,7 +774,7 @@ class Pipeline:
             return
         if hasattr(storage, "discard"):
             try:
-                with self._scope(ctx):
+                with self.scope(ctx):
                     await storage.discard(ctx)
             except Exception as error:  # noqa: BLE001 - 空暂存目录残留不影响结果
                 log.warning("清理未使用的暂存目录失败：%s", error)
@@ -737,14 +792,14 @@ class Pipeline:
         else:
             task["no_auto_retry"] = True
         ctx.log(message)
-        await self._emit("on_failed", ctx, persist=False)
-        await self._notify_all(ctx, "failed", persist=False)
+        await self.emit("on_failed", ctx, persist=False)
+        await self.notify_all(ctx, "failed", persist=False)
         self.store.save_task(ctx, error=message)
 
     # ------------------------------------------------------------------ #
     # 工具
     # ------------------------------------------------------------------ #
-    async def _notify_all(self, ctx: PipelineContext, event: str, *, persist: bool = True) -> None:
+    async def notify_all(self, ctx: PipelineContext, event: str, *, persist: bool = True) -> None:
         # 「Bot 通知」关闭时不推送审批卡片与入库通知（在管理台处理）；需要处理的提醒照常发送。
         if event in ("pending_approval", "saved") and not ctx.source_rule.get("bot_notify", True):
             return
@@ -754,7 +809,7 @@ class Pipeline:
         if persist:
             self.store.save_task(ctx)
 
-    def _rule_for(self, source: str) -> dict[str, Any]:
+    def rule_for(self, source: str) -> dict[str, Any]:
         merged = copy.deepcopy(self.cfg.get("defaults", {}))
         merged["forward"] = copy.deepcopy(self.cfg.get("forward", {}))
         for rule in self.cfg.get("sources", []):
@@ -763,7 +818,7 @@ class Pipeline:
         return merged
 
     # ------------------------------------------------------------------ #
-    # 审批超时清扫（评审 P0-01：manual 卡片久未处理的兜底）
+    # 审批超时清扫：待审批久未处理的兜底
     # ------------------------------------------------------------------ #
     async def sweep_approval_timeouts(self) -> int:
         """把超时未处理的 pending_approval 按策略处理，返回处理条数。
@@ -773,7 +828,6 @@ class Pipeline:
         - remind：reminder=digest（默认）合并成一条汇总通知，reminder=card 逐条重推确认卡片；
           每条最多提醒 max_reminders 次（0 表示不限），之后停止提醒但保留在待审批列表。
         """
-        import time
         ap = self.cfg.get("approval", {}) or {}
         hours = float(ap.get("timeout_hours", 24))
         action = ap.get("on_timeout", "remind")
@@ -800,7 +854,7 @@ class Pipeline:
             ctx.log(f"审批超时（>{hours:g}h），第 {count + 1} 次提醒")
             ctx.ns("task")["approval_reminders"] = count + 1
             if style == "card":
-                await self._notify_all(ctx, "pending_approval", persist=False)
+                await self.notify_all(ctx, "pending_approval", persist=False)
             try:
                 self.store.update_task_context(ctx, expected=TaskState.PENDING_APPROVAL)
             except ValueError:
@@ -838,7 +892,6 @@ class Pipeline:
     def hold_daily(self, seconds: float, now: float | None = None) -> None:
         """启动时调用：消息源补拉完、补拉的消息解析完之前不发日报，否则会少算停机期间的
         消息；最多推迟 seconds 秒，消息源迟迟连不上时照常发送。"""
-        import time
         self.sources_ready = False
         self._daily_hold_until = (time.time() if now is None else now) + seconds
 
@@ -852,7 +905,6 @@ class Pipeline:
 
     async def emit_daily(self, now: float | None = None) -> bool:
         """到达 schedule.daily_hour 后每天发一次 on_daily；返回本次是否发出。"""
-        import time
         now = time.time() if now is None else now
         local = time.localtime(now)
         today = time.strftime("%Y-%m-%d", local)
@@ -865,9 +917,11 @@ class Pipeline:
                               task_id=f"daily-{today}")
         ctx.meta["system"] = {"event": "on_daily", "date": today,
                               "summary": self.store.summary_since(now - 86400)}
-        ctx.ns("runtime").update(config=copy.deepcopy(self.cfg), revision=self.revision)
-        await self._emit("on_daily", ctx, persist=False)
+        self.stamp_config(ctx)
+        await self.emit("on_daily", ctx, persist=False)
         self.store.stage_system_event(ctx)
         self.store.state_set("kernel", "daily_event", today)
         self.store.prune_llm_calls(now - 90 * 86400)  # AI 调用记录保留 90 天
+        # 已投递的通知与事件保留 7 天（排查用），投递失败的保留 30 天
+        self.store.prune_deliveries(done_before=now - 7 * 86400, failed_before=now - 30 * 86400)
         return True

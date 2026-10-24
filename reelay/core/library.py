@@ -10,10 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from . import release, tmdb
-from .media import resolution_rank
+from .media import RESOLUTION_LABELS, multi_season, resolution_rank
 from .rules import MIN_RESOLUTIONS
 
-RANK_LABELS = {4: "2160p", 3: "1080p", 2: "720p", 1: "标清"}
 
 
 def kept_files(snap: dict, replaced: set[str]) -> tuple[list[dict], bool]:
@@ -24,7 +23,11 @@ def kept_files(snap: dict, replaced: set[str]) -> tuple[list[dict], bool]:
 
 
 def group_library(snapshots: list[dict], replaced: set[str] = frozenset()) -> list[dict[str, Any]]:
-    """replaced 是被覆盖保存或洗版替换掉的文件 ID：不再计入，全部被替换的任务整条跳过。"""
+    """已入库任务按作品汇总，最近入库的作品在前；管理台媒体库、MCP 与对话助手共用。
+
+    同一 tmdbid（没有时同一规范片名）是一部作品。replaced 是被覆盖保存或洗版替换掉的文件 ID：
+    不再计入，全部被替换的任务整条跳过。体积优先用还在网盘里的文件大小，没有时按消息写的大小估算。
+    """
     groups: dict[tuple, dict] = {}
     for snap in snapshots:
         p = snap.get("parsed") or {}
@@ -33,19 +36,30 @@ def group_library(snapshots: list[dict], replaced: set[str] = frozenset()) -> li
         kept, gone = kept_files(snap, replaced)
         if gone:
             continue
-        storage = (snap.get("meta") or {}).get("storage") or {}
+        meta = snap.get("meta") or {}
+        storage = meta.get("storage") or {}
         raw = p.get("raw_fields") or {}
         episodic = p.get("media_type") in ("tv", "anime") or bool(p.get("episodes"))
         key = ("tmdb", raw["tmdbid"]) if raw.get("tmdbid") else ("title", tmdb.normalize(p["title"]))
         group = groups.setdefault(key, {
             "title": p["title"], "year": p.get("year"), "media_type": p.get("media_type"), "tmdbid": raw.get("tmdbid"),
             "genre_ids": set(), "origin_country": set(), "best_rank": 0, "release": set(), "seasons": {},
-            "save_dir": snap.get("save_dir_alias"), "files": 0})
+            "save_dir_alias": snap.get("save_dir_alias"), "poster_path": None, "tasks": 0, "file_count": 0,
+            "bytes": 0, "files": [], "updated_at": snap.get("updated_at") or 0})
         group["genre_ids"].update(p.get("genre_ids") or [])
         group["origin_country"].update(p.get("origin_country") or [])
         group["best_rank"] = max(group["best_rank"], resolution_rank(p.get("resolution")))
         group["release"].update(release.describe(p.get("release")))
-        group["files"] += len(kept) or 1
+        group["poster_path"] = group["poster_path"] or raw.get("poster_path")
+        group["tasks"] += 1
+        group["file_count"] += len(kept) or 1
+        sizes = [f.get("size") for f in kept]
+        group["bytes"] += (sum(sizes) if sizes and all(type(x) is int for x in sizes)
+                           else release.size_bytes(p.get("size")) or 0)
+        plan = [item for item in (meta.get("organize") or {}).get("plan") or [] if str(item.get("src_id")) not in replaced]
+        group["files"] = (group["files"] + ["/".join(x for x in (item.get("target_dir"), item.get("target_name")) if x)
+                                            for item in plan])[:100]
+        group["updated_at"] = max(group["updated_at"], snap.get("updated_at") or 0)
         if episodic:
             # 跨多季的合集识别结果没有季、集为各季的并集，按转存清单的（季, 集）汇总
             pairs = (storage.get("manifest") or {}).get("pairs") or [
@@ -56,10 +70,12 @@ def group_library(snapshots: list[dict], replaced: set[str] = frozenset()) -> li
                 group["seasons"].setdefault(int(season), set()).add(int(ep))
     out = []
     for group in groups.values():
+        pairs = sorted((season, ep) for season, eps in group["seasons"].items() for ep in eps)
         out.append({**group, "genre_ids": sorted(group["genre_ids"]), "origin_country": sorted(group["origin_country"]),
-                    "resolution": RANK_LABELS.get(group["best_rank"]), "release": sorted(group["release"]),
+                    "resolution": RESOLUTION_LABELS.get(group["best_rank"]), "release": sorted(group["release"]),
+                    "episodes": sorted({ep for _, ep in pairs}), "episode_pairs": multi_season(pairs),
                     "seasons": {str(s): sorted(eps) for s, eps in sorted(group["seasons"].items())}})
-    return out
+    return sorted(out, key=lambda g: -g["updated_at"])
 
 
 def filter_library(groups: list[dict], *, media_type: str | None = None, min_resolution: str | None = None,
@@ -152,7 +168,7 @@ def source_quality(snapshots: list[dict], decisions: dict[str, dict]) -> list[di
                  "unavailable_rate": rate(item["unavailable"], item["media"]),
                  "decisions": human.get("decisions", 0), "approve_rate": rate(human.get("approved", 0), human.get("decisions", 0)),
                  "correct_rate": rate(human.get("corrected", 0), human.get("decisions", 0)),
-                 "resolution": RANK_LABELS.get(round(sum(ranks) / len(ranks))) if ranks else None}
+                 "resolution": RESOLUTION_LABELS.get(round(sum(ranks) / len(ranks))) if ranks else None}
         flags = []
         if received >= 10 and stats["ad_rate"] >= 0.5:
             flags.append("广告占一半以上")

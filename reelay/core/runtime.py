@@ -6,8 +6,13 @@ Pipeline 用 ContextVar 注入当前任务的配置和内核服务，协程和 t
 
 扩展通过 ``services()`` 使用内核能力，而不是直接持有 Store：
 
-- ``services().notify(text)``：给所有通知渠道发一条系统通知（经 Outbox 持久化投递）；
-- ``services().state(name)``：按扩展名称隔离的持久化 KV。
+- ``notify(text)``：给所有通知渠道发一条系统通知（经 Outbox 持久化投递）；
+- ``state(name)``：按扩展名称隔离的持久化 KV；
+- ``storage(name)``：存储 Provider（如读取分享、整理用的网盘接口，见 contracts.StorageProvider）；
+- ``query(capability, ...)``：调用其他扩展声明的能力（``provides``），没有扩展提供或已关闭时返回 None；
+- 只读数据：``subscriptions()``、``ignored_works()``、``stored_series()``、``task(task_id)``、
+  ``task_record(task_id)``、``title_media_types()``、``titles_since(since)``、``recent_feedback(...)``；
+- ``finish_subscription(id, record)``：标记订阅的一季已播完。
 """
 
 from __future__ import annotations
@@ -16,7 +21,6 @@ from typing import Any
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-_CONFIG: dict[str, Any] = {}
 # 进程当前的有效配置（Pipeline 设置）：不在任务作用域里的调用（如 Web 发起的 TMDB 查询）读系统配置用
 _PROCESS: dict[str, Any] = {}
 _SCOPED: ContextVar[dict[str, Any] | None] = ContextVar("reelay_config", default=None)
@@ -43,11 +47,12 @@ class PluginState:
 
 
 class Services:
-    """内核暴露给扩展的最小能力集。"""
+    """内核暴露给扩展的能力集。``store`` 只供内核模块使用，扩展用下面的方法。"""
 
-    def __init__(self, store, notify_targets) -> None:
+    def __init__(self, store, notify_targets, registry=None) -> None:
         self.store = store
         self._targets = notify_targets
+        self._registry = registry
 
     def notify(self, text: str, *, key: str = "plugin", html: bool = False, buttons: list | None = None) -> None:
         targets = self._targets()
@@ -56,6 +61,45 @@ class Services:
 
     def state(self, plugin: str) -> PluginState:
         return PluginState(self.store, plugin)
+
+    def storage(self, name: str):
+        """名为 name 的存储 Provider；没有注册时抛 KeyError。"""
+        if self._registry is None:
+            raise KeyError(f"未找到 provider storage/{name}")
+        return self._registry.get_provider("storage", name)
+
+    def query(self, capability: str, *args: Any, **kwargs: Any) -> Any:
+        """调用某个已启用的扩展声明的能力（``provides = {能力名: 方法名}``）；没有扩展提供时返回 None。"""
+        method = self._registry.capability(capability, get_config()) if self._registry is not None else None
+        return method(*args, **kwargs) if method else None
+
+    def subscriptions(self) -> list[dict[str, Any]]:
+        return self.store.subscriptions()
+
+    def finish_subscription(self, subscription_id: int, record: dict[str, Any] | None) -> bool:
+        return self.store.set_subscription_finished(subscription_id, record)
+
+    def ignored_works(self) -> list[dict[str, Any]]:
+        return self.store.ignored_works()
+
+    def stored_series(self) -> dict[tuple[str, int], set[int]]:
+        """按（片名, 季）汇总的已入库集。"""
+        return self.store.stored_series()
+
+    def task(self, task_id: str):
+        return self.store.get_task(task_id)
+
+    def task_record(self, task_id: str) -> dict[str, Any] | None:
+        return self.store.get_task_record(task_id)
+
+    def title_media_types(self) -> dict[str, str]:
+        return self.store.title_media_types()
+
+    def titles_since(self, since: float) -> list[dict[str, Any]]:
+        return self.store.titles_since(since)
+
+    def recent_feedback(self, *, source: str | None, kinds: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+        return self.store.recent_feedback(source=source, kinds=kinds, limit=limit)
 
 
 @contextmanager
@@ -79,7 +123,7 @@ def services() -> Services:
 
 
 def observe(component: str, status: str, error: str = "") -> None:
-    """记录一次真实调用的结果（如 LLM、TMDB），管理台「连接状态」显示最近一次结果。
+    """记录一次真实调用的结果（如 LLM、TMDB），管理台「总览 → 运行状态」显示最近一次结果。
 
     这类观察只在实际调用时产生，不会因为一段时间没有调用而过期；不在管线作用域内时忽略。
     """

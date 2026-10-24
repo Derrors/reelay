@@ -56,10 +56,12 @@ LANGUAGES = {
 
 CONDITION_FIELDS = ("media_type", "genre_ids", "origin_country")
 MEDIA_TYPES = {"movie", "tv", "anime"}
-MIN_RESOLUTIONS = {"480p": 1, "720p": 2, "1080p": 3, "2160p": 4}
+# 可选的最低清晰度 → 画质等级（与 core.media 的等级一致）
+MIN_RESOLUTIONS = {name: resolution_rank(name) for name in ("480p", "720p", "1080p", "2160p")}
 
 
-def _csv(value: str) -> set[str]:
+def csv_set(value: str) -> set[str]:
+    """条件里逗号分隔的取值，如 "16,10762" → {"16", "10762"}（统一大写）。"""
     return {item.strip().upper() for item in value.split(",") if item.strip()}
 
 
@@ -67,9 +69,9 @@ def validate_condition(cond: Any, label: str) -> None:
     if not isinstance(cond, dict) or not cond or set(cond) - set(CONDITION_FIELDS):
         raise ValueError(f"{label} 必须是只含 {'/'.join(CONDITION_FIELDS)} 的非空对象")
     for field, value in cond.items():
-        if not isinstance(value, str) or not _csv(value):
+        if not isinstance(value, str) or not csv_set(value):
             raise ValueError(f"{label}.{field} 必须是逗号分隔的非空字符串")
-        values = _csv(value)
+        values = csv_set(value)
         if field == "media_type" and values - {v.upper() for v in MEDIA_TYPES}:
             raise ValueError(f"{label}.media_type 只能是 movie、tv、anime")
         if field == "genre_ids" and any(not item.isdecimal() for item in values):
@@ -101,7 +103,7 @@ def validate_filters(filters: Any, label: str) -> None:
 
 def condition_matches(cond: dict, parsed) -> bool:
     for field, value in cond.items():
-        wanted = _csv(value)
+        wanted = csv_set(value)
         if field == "media_type":
             actual = {str(parsed.media_type or "").upper()}
         elif field == "genre_ids":

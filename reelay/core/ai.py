@@ -2,7 +2,7 @@
 
 所有 AI 能力（解析、偏好决策、转人工前的方案兜底、规则起草、建议措辞……）都经过这里：
 
-- ``make_client()``：按系统配置 ``llm``（地址、模型）与密钥创建客户端；未配 key、未装 SDK 或模拟模式
+- ``make_client()``：按系统配置 ``llm``（地址、模型）与密钥创建客户端；未配 key 或未装 SDK 时
   返回 None，调用方自行降级；使用方继承 ``UsesAI``，每次用到时取，管理台改了立即生效；
 - ``complete_json()``：一次结构化调用 —— JSON schema 约束输出，调用方的 ``validate`` 做本地严格校验；
   瞬时错误退避重试，非法输出重试一次；
@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from typing import Any, Callable
@@ -39,18 +38,14 @@ class AIError(RuntimeError):
         self.category = category
 
 
-def dry_run() -> bool:
-    return os.getenv("REELAY_DRY_RUN", "").lower() in {"1", "true", "yes"}
-
-
 log = logging.getLogger("reelay.ai")
 _CLIENTS: dict[tuple[str, str], Any] = {}
 
 
-def client_for(base_url: str) -> Any | None:
-    """用已保存的密钥与给定地址创建客户端（管理台获取模型列表、测试连通性时用表单里还没保存的地址）。"""
-    key = secret_store.get("llm_api_key")
-    if not key or dry_run():
+def client_for(base_url: str, key: str | None = None) -> Any | None:
+    """用给定地址与密钥（省略时用已保存的）创建客户端；没有密钥或没装 SDK 时为 None。"""
+    key = key or secret_store.get("llm_api_key")
+    if not key:
         return None
     try:
         from openai import AsyncOpenAI  # 延迟导入
@@ -65,7 +60,7 @@ def make_client() -> tuple[Any | None, str]:
     """返回 (客户端或 None, 模型名)；同一组 key 与地址复用同一个客户端。"""
     model = str(runtime.get("llm.model") or DEFAULT_MODEL)
     key = secret_store.get("llm_api_key")
-    if dry_run() or not key:
+    if not key:
         return None, model
     base_url = str(runtime.get("llm.base_url") or "")
     client = _CLIENTS.get((key, base_url))

@@ -2,12 +2,13 @@
 
 配置文件（固定为 data/config.yaml）分两部分::
 
-    system:   # 系统配置：保存目录、默认规则、来源、订阅、AI 服务、TMDB、Telegram、115 限流……
+    system:   # 系统配置：保存目录、默认规则、来源、AI 服务、TMDB、Telegram、115 限流……
     plugins:  # 插件配置：plugins.<插件名> 下是 enabled 开关与该插件自己的设置
 
 运行时内部表示把 ``system`` 平铺到顶层（``cfg["defaults"]`` 等），插件配置在
 ``cfg["plugins"][名称]``；只在读写文件时套上或拆掉 ``system``（见 ``from_file`` / ``to_file``）。
-内置插件的默认设置与校验在插件目录的 ``settings.py``。密钥不在这里，见 ``core/secret_store.py``。
+内置插件的默认设置与校验在插件目录的 ``settings.py``。密钥不在这里，见 ``core/secret_store.py``；
+追剧订阅与不再接收的作品是用户数据，在数据库里（``Store.subscriptions`` / ``Store.ignored_works``）。
 """
 from __future__ import annotations
 
@@ -40,10 +41,6 @@ _DEFAULT_CONFIG: dict[str, Any] = {
                  "storage": "p115", "save_to": "默认", "confidence_threshold": 0.5,
                  "llm_response_format": "json_schema", "episodes_from": "share"},
     "sources": [],
-    # 剧集订阅：订阅放行与缺集追更共用（每项 title/season/total/tmdbid/auto，见 core/subscriptions.py）
-    "subscriptions": [],
-    # 不再接收的作品：同一部作品之后的消息直接忽略（每项 title/tmdbid/kind，见 core/ignored.py）
-    "ignored_works": [],
     "approval": {"timeout_hours": 24, "on_timeout": "remind", "reminder": "digest", "max_reminders": 3},
     "schedule": {"daily_hour": 9},
     # AI 能力：人工裁决回流、转人工前的方案兜底、收件箱建议与自动审批建议
@@ -173,9 +170,8 @@ def normalize_config(data: Any) -> dict[str, Any]:
     if any(not re.fullmatch(r'[0-9]+', str(cid)) for cid in dirs.values()):
         raise ValueError("save_dirs CID 必须是十进制非负整数字符串")
     cfg["save_dirs"] = {alias: str(cid) for alias, cid in dirs.items()}
-    for key in ("sources", "subscriptions", "ignored_works"):
-        if not isinstance(cfg[key], list):
-            raise ValueError(f"{key} 必须是数组")
+    if not isinstance(cfg["sources"], list):
+        raise ValueError("sources 必须是数组")
     _normalize_plugins(cfg["plugins"])
     prov = cfg["providers"]
     if not isinstance(prov.get("source"), str) or not prov["source"]:
@@ -216,10 +212,6 @@ def normalize_config(data: Any) -> dict[str, Any]:
     _validate_ai(cfg["ai"])
     from .release import validate_preferences
     validate_preferences(cfg["release"])
-    from .subscriptions import validate as validate_subscriptions
-    validate_subscriptions(cfg)
-    from .ignored import validate as validate_ignored
-    validate_ignored(cfg)
     _validate_services(cfg)
     try:
         json.dumps(cfg, sort_keys=True, allow_nan=False)
@@ -348,11 +340,13 @@ def _validate_forward(fc: dict) -> None:
         raise ValueError("开启转发时必须提供 target 与 template")
     from string import Formatter
     try:
-        for _, field, spec, conversion in Formatter().parse(fc["template"]):
-            if field is not None and (field not in {"title", "year", "resolution", "size", "link"} or spec or conversion):
-                raise ValueError("forward.template 包含不支持的字段")
+        fields = [(field, spec, conversion) for _, field, spec, conversion in Formatter().parse(fc["template"])]
     except ValueError as exc:
-        raise ValueError("forward.template 格式无效") from exc
+        raise ValueError("forward.template 格式无效（花括号没有成对）") from exc
+    allowed = {"title", "year", "resolution", "size", "link"}
+    for field, spec, conversion in fields:
+        if field is not None and (field not in allowed or spec or conversion):
+            raise ValueError(f"forward.template 不支持「{{{field}}}」，可用 {'、'.join('{' + f + '}' for f in sorted(allowed))}")
 
 
 def config_revision(cfg: dict) -> str:

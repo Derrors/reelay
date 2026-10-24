@@ -87,7 +87,7 @@ class Registry:
         return getattr(instance, "default_enabled", True)
 
     @staticmethod
-    def config_path(instance: Any, kind: str | None = None) -> str:
+    def config_path(instance: Any) -> str:
         """扩展自己的设置在 plugins.<名> 下；ui_fields 声明的是相对这里的路径。"""
         return f"plugins.{Registry.extension_name(instance)}"
 
@@ -98,6 +98,14 @@ class Registry:
         """全部已注册的扩展（能力槽实现、Hook、事件监听）；同名扩展的多个挂载点各算一个。"""
         return ([obj for entries in self.providers.values() for obj in entries.values()]
                 + [obj for groups in (self.hooks, self.listeners) for items in groups.values() for obj in items])
+
+    def capability(self, capability: str, config: dict | None = None) -> Callable[..., Any] | None:
+        """已启用扩展在 ``provides``（能力名 → 方法名）里声明的能力，如失败解释、缺集报告、控制 Bot 按钮。"""
+        for obj in self.instances():
+            method = (getattr(obj, "provides", None) or {}).get(capability)
+            if method and self.is_enabled(obj, config):
+                return getattr(obj, method)
+        return None
 
     def action(self, name: str, action: str) -> Callable[[dict], Any] | None:
         """扩展在 ``ui_actions`` 里声明的动作（供管理台调用的普通方法）；未声明的方法一律取不到。"""
@@ -117,23 +125,31 @@ class Registry:
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
         from .config_fields import validate_declared_field
-        objects = [(obj, "provider") for entries in self.providers.values() for obj in entries.values()]
-        objects += [(obj, "plugin") for groups in (self.hooks, self.listeners)
-                    for entries in groups.values() for obj in entries]
-        for obj, kind in objects:
-            prefix = self.config_path(obj, kind)
+        objects = self.instances()
+        for obj in objects:
+            prefix = self.config_path(obj)
             for field in getattr(obj, 'ui_fields', []):
                 validate_declared_field(cfg, {**field, "path": f"{prefix}.{field['path']}"})
             # 扩展自己的复杂配置（数组、对象）由扩展校验；只校验已启用的扩展。
             if hasattr(obj, 'validate_config') and self.is_enabled(obj, cfg):
                 obj.validate_config(cfg)
         # 插件被删除后留下的 plugins.<名> 不影响运行，启动日志里提示（见 unclaimed_sections）
-        # 声明了 storage_provider 的扩展（如媒体库整理）只能用于对应的存储
+        # 声明了 requires_storage 的扩展（如媒体库整理要网盘接口 library）只能配合提供这些方法的存储使用
         storages = {rule.get("storage", cfg["defaults"]["storage"]) for rule in [cfg["defaults"], *cfg["sources"]]}
-        for obj, _ in objects:
-            bound = getattr(obj, "storage_provider", None)
-            if bound and self.is_enabled(obj, cfg) and storages - {bound}:
-                raise ValueError(f"{self.extension_name(obj)} 仅支持 {bound}；其他存储需关闭它并注册对应的扩展")
+        for obj in objects:
+            if not self.is_enabled(obj, cfg):
+                continue
+            for name in storages:
+                missing = self.missing_storage(obj, self.get_provider("storage", name))
+                if missing:
+                    raise ValueError(f"{getattr(obj, 'ui_label', self.extension_name(obj))}需要存储提供 {missing}，"
+                                     f"{name} 没有；请关闭这个插件或换一种转存方式")
+
+    @staticmethod
+    def missing_storage(extension: Any, storage: Any) -> str | None:
+        """扩展要求、而这个存储 Provider 没有提供的方法（requires_storage）；都提供时为 None。"""
+        missing = [method for method in getattr(extension, "requires_storage", ()) if not hasattr(storage, method)]
+        return "、".join(missing) or None
 
     def plugin_names(self) -> set[str]:
         """所有扩展（含能力槽的实现）的名称，即 plugins 下允许出现的键。"""
@@ -150,7 +166,7 @@ class Registry:
         """目录直接来自已加载注册表；新扩展声明 ui_fields 即可获得配置表单。"""
         def describe(obj, kind, slot):
             name = self.extension_name(obj)
-            prefix = self.config_path(obj, kind)
+            prefix = self.config_path(obj)
             return {
                 'name': name, 'kind': kind, 'slot': slot,
                 'label': getattr(obj, 'ui_label', name),
@@ -161,7 +177,9 @@ class Registry:
                 'fields': [{**f, 'path': f"{prefix}.{f['path']}"} for f in getattr(obj, 'ui_fields', [])],
                 'config_section': prefix,
                 'config_type': getattr(obj, 'ui_config_type', None),
-                'required_storage': getattr(obj, 'storage_provider', None),
+                # 不能配合使用的存储 Provider（缺少扩展要求的方法），管理台据此提示
+                'unsupported_storage': [storage for storage, provider in self.providers.get('storage', {}).items()
+                                        if self.missing_storage(obj, provider)],
                 'actions': list(getattr(obj, 'ui_actions', ())),
             }
         return {

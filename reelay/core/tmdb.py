@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import unicodedata
 import urllib.parse
@@ -23,6 +24,7 @@ DEFAULT_BASE = "https://api.themoviedb.org/3"
 ACCEPT_SCORE = 0.8          # 年份无冲突时的最低标题相似度
 ACCEPT_SCORE_YEAR = 0.6     # 年份精确一致时放宽的标题相似度
 _CACHE: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
+_CACHE_LOCK = threading.Lock()  # 查询在工作线程里并发执行（asyncio.to_thread）
 _CACHE_TTL = 24 * 3600
 _CACHE_SIZE = 512
 
@@ -52,15 +54,17 @@ def _request(path: str, params: dict[str, Any], *, timeout: float) -> dict:
 
 
 def _cached(key: tuple, loader):
-    item = _CACHE.get(key)
-    if item and time.monotonic() - item[0] < _CACHE_TTL:
+    with _CACHE_LOCK:
+        item = _CACHE.get(key)
+        if item and time.monotonic() - item[0] < _CACHE_TTL:
+            _CACHE.move_to_end(key)
+            return item[1]
+    value = loader()  # 请求不持锁：并发查不同的片名互不等待
+    with _CACHE_LOCK:
+        _CACHE[key] = (time.monotonic(), value)
         _CACHE.move_to_end(key)
-        return item[1]
-    value = loader()
-    _CACHE[key] = (time.monotonic(), value)
-    _CACHE.move_to_end(key)
-    while len(_CACHE) > _CACHE_SIZE:
-        _CACHE.popitem(last=False)
+        while len(_CACHE) > _CACHE_SIZE:
+            _CACHE.popitem(last=False)
     return value
 
 

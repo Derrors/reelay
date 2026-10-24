@@ -13,7 +13,7 @@ from typing import Any
 
 from . import ai, release
 from .config import config_revision, normalize_config
-from .rules import CONDITION_FIELDS, GENRES, MIN_RESOLUTIONS, _csv
+from .rules import CONDITION_FIELDS, GENRES, MIN_RESOLUTIONS, csv_set
 
 _NULLABLE_STR = {"type": ["string", "null"]}
 _CONDITION = {"type": "object", "additionalProperties": False,
@@ -65,8 +65,8 @@ _PROMPT = (
 
 
 def _clean_condition(cond: dict) -> dict:
-    return {field: ",".join(sorted(_csv(value))) if field != "media_type" else ",".join(
-        sorted(item.lower() for item in _csv(value)))
+    return {field: ",".join(sorted(csv_set(value))) if field != "media_type" else ",".join(
+        sorted(item.lower() for item in csv_set(value)))
             for field, value in cond.items() if value is not None and str(value).strip()}
 
 
