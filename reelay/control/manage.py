@@ -1,18 +1,20 @@
 """控制 Bot 里不依赖 AI 的管理操作：修正识别结果的文字解析，以及 /pending、/failed、/subs、/ignored 列表。
 
-列表都是「正文 + 按钮」：每条一个按钮，点开重新发出那条任务的卡片（``cd``），或直接取消订阅、恢复接收；
-按钮数据不超过 64 字节，订阅与不再接收的作品用短哈希指代（``short_key``），点的时候再按当前配置找回。
+列表都是「正文 + 按钮」：每条一个按钮，点开重新发出那条任务的卡片（``cd``），或直接取消订阅、恢复接收。
+按钮数据用 ``messages.callback`` 拼接（不超过 64 字节）：订阅与不再接收的作品用数据库 ID，订阅建议用短键。
+「全部批准 / 全部忽略」先列出要处理的任务并记成待确认的计划（十分钟内有效），确认时只处理计划里的任务。
 """
 from __future__ import annotations
 
-import hashlib
 import re
+import time
+import uuid
 from typing import Any
 
-from ..core import ignored, messages, subscriptions
+from ..core import messages
 from ..core.contracts import TaskState
-from ..core.media import pairs_label, planned_pairs
-from ..plugins.episode_tracker import format_episodes
+from ..core.messages import callback, short_key
+from ..core.media import episode_list, format_episodes, pairs_label, planned_pairs, resolution_name
 
 PAGE = 8
 MAX_EPISODE = 2000
@@ -21,15 +23,11 @@ MAX_EPISODE = 2000
 # 修正识别结果：回复「修正」提示的一句话 → 要改的字段
 # --------------------------------------------------------------------------- #
 _TYPES = {"电影": "movie", "剧集": "tv", "电视剧": "tv", "连续剧": "tv", "动漫": "anime", "动画": "anime", "番剧": "anime"}
-_RESOLUTIONS = {"4k": "2160p", "2160p": "2160p", "1080p": "1080p", "720p": "720p", "480p": "480p"}
 _RANGE = r"\s*(?:-|~|～|到|至)\s*"
 
 
 def _episodes(start: str, end: str | None) -> list[int]:
-    a, b = int(start), int(end or start)
-    if not 0 < a <= b <= MAX_EPISODE:
-        raise ValueError(f"集数 {a}-{b} 无效")
-    return list(range(a, b + 1))
+    return episode_list(f"{start}-{end or start}", maximum=MAX_EPISODE)
 
 
 def parse_correction(text: str) -> dict[str, Any]:
@@ -63,7 +61,7 @@ def parse_correction(text: str) -> dict[str, Any]:
     take(r"年份\s*[:：]?\s*(\d{4})|(?<!\d)(\d{4})\s*年|(?<![\d.])((?:19|20)\d{2})(?![\dpk])",
          lambda m: patch.__setitem__("year", int(next(g for g in m.groups() if g))))
     take(r"(?<![\da-z])(4k|2160p|1080p|720p|480p)(?![\da-z])",
-         lambda m: patch.__setitem__("resolution", _RESOLUTIONS[m.group(1).lower()]))
+         lambda m: patch.__setitem__("resolution", resolution_name(m.group(1))))
     take(r"类型\s*[:：]?", lambda m: None)
     take(r"(?:^|(?<=\s))(" + "|".join(_TYPES) + r")(?=\s|$)",
          lambda m: patch.__setitem__("media_type", _TYPES[m.group(1)]))
@@ -104,11 +102,6 @@ def describe_changes(before, after) -> str:
 # --------------------------------------------------------------------------- #
 # 列表
 # --------------------------------------------------------------------------- #
-def short_key(*parts: Any) -> str:
-    """按钮里指代一条订阅或作品的短键（配置里的顺序会变，不能用序号）。"""
-    return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()[:10]
-
-
 def _task_label(ctx) -> str:
     """列表按钮上的一条任务：类型图标、片名、季集。"""
     p = ctx.parsed
@@ -128,9 +121,9 @@ def _task_label(ctx) -> str:
 def _pager(prefix: str, offset: int, total: int) -> list[tuple[str, str]]:
     row = []
     if offset > 0:
-        row.append(("⬅️ 上一页", f"{prefix}:{max(0, offset - PAGE)}"))
+        row.append(("⬅️ 上一页", callback(prefix, max(0, offset - PAGE))))
     if offset + PAGE < total:
-        row.append(("下一页 ➡️", f"{prefix}:{offset + PAGE}"))
+        row.append(("下一页 ➡️", callback(prefix, offset + PAGE)))
     return row
 
 
@@ -144,8 +137,8 @@ def _nav(service, *skip: str) -> list:
     """列表底部互相跳转的一行按钮：待处理、失败（有才显示数字）与运行概况。"""
     counts = _counts(service)
     pending = f"📋 待处理 {counts['pending']}" if counts["pending"] else "📋 待处理"
-    items = [("pending", pending, "pl:0"),
-             ("failed", f"❌ 失败 {counts['failed']}", "fl:0"), ("status", "📊 运行概况", "st")]
+    items = [("pending", pending, callback("pl", 0)),
+             ("failed", f"❌ 失败 {counts['failed']}", callback("fl", 0)), ("status", "📊 运行概况", callback("st"))]
     row = [(label, data) for key, label, data in items if key not in skip and (key != "failed" or counts["failed"])]
     return [row] if row else []
 
@@ -171,33 +164,52 @@ def pending_list(service, offset: int = 0) -> tuple[str, list]:
     hint = "点下方一条打开卡片处理" + ("；⚠️ 是转存或整理停下来、需要你处理的" if manual else "") + "。"
     if len(rows) > PAGE:
         hint += f"\n第 {offset + 1}–{offset + len(page)} 条，共 {len(rows)} 条。"
-    buttons = [[(("⚠️ " if ctx.state == TaskState.NEED_MANUAL else "") + _task_label(ctx), f"cd:{ctx.task_id}")]
+    buttons = [[(("⚠️ " if ctx.state == TaskState.NEED_MANUAL else "") + _task_label(ctx), callback("cd", ctx.task_id))]
                for ctx in page if ctx]
     pager = _pager("pl", offset, len(rows))
     if pager:
         buttons.append(pager)
     if approval:
-        buttons.append([(f"✅ 全部批准（{approval}）", "pa"), (f"🚫 全部忽略（{approval}）", "pr")])
+        buttons.append([(f"✅ 全部批准（{approval}）", callback("pa")), (f"🚫 全部忽略（{approval}）", callback("pr"))])
     return _view(head, hint), buttons
 
 
+# 「全部批准 / 全部忽略」的待确认计划：计划 ID → {action, task_ids, expires}；确认时只处理计划里的任务
+BULK_TTL = 600
+_BULK_PLANS: dict[str, dict] = {}
+
+
 def bulk_confirm(service, action: str) -> tuple[str, list]:
-    count = len(service.store.list_by_state(TaskState.PENDING_APPROVAL, 500))
+    """列出现在待审批的任务并记成计划；确认按钮只带计划 ID。之后新到的任务不在计划里。"""
+    now = time.time()
+    for plan_id in [key for key, plan in _BULK_PLANS.items() if plan["expires"] < now]:
+        _BULK_PLANS.pop(plan_id, None)
+    task_ids = [row["task_id"] for row in service.store.list_by_state(TaskState.PENDING_APPROVAL, 500)]
     verb = "批准转存" if action == "pa" else "忽略"
-    return (f"⚠️ 确认{verb}待审批里的全部 <b>{count}</b> 条？",
-            [[(f"确认{verb}", f"{action}y"), ("↩ 返回", "pl:0")]])
+    if not task_ids:
+        return "✅ 待审批里已经没有资源了。", [[("📋 查看待处理", callback("pl", 0))]]
+    plan_id = uuid.uuid4().hex[:12]
+    _BULK_PLANS[plan_id] = {"action": "approve" if action == "pa" else "reject", "task_ids": task_ids,
+                            "expires": now + BULK_TTL}
+    return (f"⚠️ 确认{verb}待审批里的这 <b>{len(task_ids)}</b> 条？之后新到的不包括在内，十分钟内有效。",
+            [[(f"确认{verb}", callback(f"{action}y", plan_id)), ("↩ 返回", callback("pl", 0))]])
 
 
-async def bulk_run(service, action: str) -> str:
-    done, failed = 0, 0
-    for row in service.store.list_by_state(TaskState.PENDING_APPROVAL, 500):
-        try:
-            await (service.approve(row["task_id"]) if action == "pay" else service.reject(row["task_id"]))
-            done += 1
-        except Exception:  # noqa: BLE001 - 期间已被处理的跳过
-            failed += 1
-    verb = "批准，正在转存，完成后逐条通知" if action == "pay" else "忽略"
-    return f"✅ 已{verb} {done} 条" + (f"，{failed} 条期间已被处理" if failed else "")
+async def bulk_run(service, plan_id: str) -> str:
+    plan = _BULK_PLANS.pop(plan_id, None)
+    if not plan or plan["expires"] < time.time():
+        return "ℹ️ 这组操作已经过期或处理过了，请重新打开 /pending。"
+    results = await service.bulk(plan["action"], plan["task_ids"])
+    done = sum(1 for item in results if item["ok"])
+    stale = sum(1 for item in results if not item["ok"] and item.get("stale"))
+    failed = [item for item in results if not item["ok"] and not item.get("stale")]
+    verb = "批准，正在转存，完成后逐条通知" if plan["action"] == "approve" else "忽略"
+    text = f"✅ 已{verb} {done} 条"
+    if stale:
+        text += f"，{stale} 条期间已被处理"
+    if failed:
+        text += f"，{len(failed)} 条失败：{messages.esc(failed[0]['error'])[:80]}"
+    return text
 
 
 def failed_list(service, offset: int = 0) -> tuple[str, list]:
@@ -219,13 +231,12 @@ def failed_list(service, offset: int = 0) -> tuple[str, list]:
 
 
 def find_subscription(service, key: str) -> dict | None:
-    finished = service.store.state_get(*subscriptions.FINISHED, {}) or {}
-    return next((item for item in subscriptions.items(service.get_config(), finished)
-                 if subscriptions.button_key(item) == key), None)
+    """按钮里的订阅 ID → 订阅；已经删掉时为 None。"""
+    return service.store.subscription(int(key)) if key.isdigit() else None
 
 
 def find_suggestion(service, key: str) -> dict | None:
-    return next((item for item in service.subscription_suggestions() if subscriptions.button_key(item) == key), None)
+    return next((item for item in service.subscription_suggestions() if short_key(item["key"]) == key), None)
 
 
 def _suggestions(suggestions: list[dict]) -> tuple[str, list]:
@@ -258,24 +269,20 @@ def subs_list(service) -> tuple[str, list]:
         blocks.append(f"{icon} <b>{messages.esc(item['title'])}</b> · S{item['season']:02d}\n"
                       f"已入库 {len(item['have'])} 集 · {state}")
         name = f"{item['title']} S{item['season']:02d}"
-        key = subscriptions.button_key(item)
-        buttons.append([(f"▶️ 继续订阅 {name}"[:40], f"so:{key}")] if item.get("finished")
-                       else [(f"🗑 取消订阅 {name}"[:40], f"us:{key}")])
+        buttons.append([(f"▶️ 继续订阅 {name}"[:40], callback("so", item["id"]))] if item.get("finished")
+                       else [(f"🗑 取消订阅 {name}"[:40], callback("us", item["id"]))])
     if len(items) > 20:
         blocks.append(f"… 另有 {len(items) - 20} 部")
     return _view(f"🔔 <b>追剧订阅</b> · {len(items)} 部", *blocks, suggested), buttons + suggestion_buttons
 
 
-def ignored_key(item: dict) -> str:
-    return short_key("ign", ignored.identity(item))
-
-
 def find_ignored(service, key: str) -> dict | None:
-    return next((item for item in ignored.items(service.get_config()) if ignored_key(item) == key), None)
+    """按钮里的作品 ID → 不再接收的作品；已经恢复接收时为 None。"""
+    return service.store.ignored_work(int(key)) if key.isdigit() else None
 
 
 def ignored_list(service) -> tuple[str, list]:
-    items = ignored.items(service.get_config())
+    items = service.store.ignored_works()
     if not items:
         return (_view("⛔ <b>不再接收</b>", "没有不再接收的作品。\n审批卡片上点「⛔ 不再接收」后，那部作品之后的消息会直接忽略。"),
                 _nav(service))
@@ -283,7 +290,7 @@ def ignored_list(service) -> tuple[str, list]:
     if len(items) > 20:
         lines.append(f"… 另有 {len(items) - 20} 部")
     return (_view(f"⛔ <b>不再接收</b> · {len(items)} 部", "这些作品之后的消息会直接忽略，点下方按钮恢复。", "\n".join(lines)),
-            [[(f"↩️ 恢复接收 {item['title']}"[:40], f"ui:{ignored_key(item)}")] for item in items[:20]])
+            [[(f"↩️ 恢复接收 {item['title']}"[:40], callback("ui", item["id"]))] for item in items[:20]])
 
 
 # --------------------------------------------------------------------------- #
@@ -327,13 +334,13 @@ def status_view(service) -> tuple[str, list]:
     totals = [("已入库", data["done"]), ("已忽略", counts.get(TaskState.SKIPPED.value, 0)),
               ("已过滤", counts.get(TaskState.REJECTED.value, 0))]
     alerts = "\n".join(f"• {messages.esc(alert['text'])}" for alert in data.get("alerts") or [])
-    head = "📊 <b>运行概况</b>" + (" · 模拟模式" if data.get("mode") == "simulation" else "")
+    head = "📊 <b>运行概况</b>"
     text = _view(head, health,
                  f"📥 <b>过去 24 小时</b>\n新收 {recent.get('received_24h', 0)} 条 · 入库 {recent.get('done_24h', 0)} 条",
                  "📌 <b>待处理</b>\n" + " · ".join(f"{label} {count}" for label, count in backlog),
                  "📚 <b>累计</b>\n" + " · ".join(f"{label} {count}" for label, count in totals),
                  f"⚠️ <b>告警</b>\n{alerts}" if alerts else "")
-    return text, [*_nav(service, "status"), [("🔄 刷新", "st")]]
+    return text, [*_nav(service, "status"), [("🔄 刷新", callback("st"))]]
 
 
 def help_view(service) -> tuple[str, list]:
@@ -349,7 +356,7 @@ def help_view(service) -> tuple[str, list]:
         "💬 <b>直接说话</b>" + ("" if ai else "（要先在管理台配置 AI）")
         + f"\n<blockquote>{messages.esc(examples)}</blockquote>\n写操作会先列出来，点「执行」后才执行。",
     )
-    return text, [[("📋 待处理", "pl:0"), ("🔔 追剧订阅", "sl"), ("📊 运行概况", "st")]]
+    return text, [[("📋 待处理", callback("pl", 0)), ("🔔 追剧订阅", callback("sl")), ("📊 运行概况", callback("st"))]]
 
 
 # 命令菜单（control/bot.py 启动时登记，输入 / 时列出）与 /help 共用

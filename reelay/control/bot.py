@@ -1,4 +1,4 @@
-"""控制 Bot —— 可观测与人工干预（评审 P0-03）。
+"""控制 Bot —— 可观测与人工干预。
 
 用你自己的 Telegram Bot（管理台「设置」中填写 Bot Token）作为控制入口，提供：
 
@@ -7,13 +7,13 @@
   ``/retry <task_id>``、``/help``；列表与修正识别见 ``control/manage.py``，不依赖 AI
 - 对话：不以 ``/`` 开头的文字交给对话助手（``control/assistant.py``），如「我有哪些 4K 日本动画」
   「把《X》这几集都批了，存到动漫」；写操作先回显要执行的动作，点「执行」后才执行
-- 卡片按钮回调（callback_data 只带短 id，评审 P0-01），见 ``callback``：审批 ``ok`` / ``no`` / ``dir``（换目录）/
+- 卡片按钮回调（按钮数据只带短 ID，用 ``messages.callback`` 拼接、``parse_callback`` 解析），见 ``callback``：审批 ``ok`` / ``no`` / ``dir``（换目录）/
   ``to``（存到某个目录）/ ``sub``（追剧）/ ``blk`` → ``bly``（不再接收，先确认再执行）/ ``back``；需要处理的任务 ``rc``（核验转存）/ ``ro``（重新整理）/ ``rt``（重试）/
   ``ap``（按已到的文件继续）/ ``cf`` → ``cy``（删除转存文件、覆盖保存、放弃并删除，先确认再执行）/ ``pb``；
   修正识别 ``fx``（发出提示，回复它写要改的项）/ ``rp``（重新识别）/ ``fxn``；列表 ``cd``（重新发出卡片）/ ``pl`` ``fl``（翻页）/
-  ``pa`` ``pr`` → ``pay`` ``pry``（全部批准、全部忽略）/ ``us`` → ``usy``（取消订阅）/ ``so``（继续订阅）/ ``ui``（恢复接收）；
-  订阅建议 ``ss``（订阅）/ ``sd``（不用了）；追更提醒 ``tm``（某部剧的选项）/ ``tmi``（现在缺的集不用等了）/ ``tmo``（不再提醒这部）/ ``tmu``（撤销）；
-  对话助手的确认按钮 ``do`` / ``cancel``
+  ``pa`` ``pr`` → ``pay`` ``pry``（全部批准、全部忽略：先列出计划，确认时只处理计划里的任务）/ ``us`` → ``usy``（取消订阅）/
+  ``so``（继续订阅）/ ``ui``（恢复接收）；订阅建议 ``ss``（订阅）/ ``sd``（不用了）；对话助手的确认按钮 ``do`` / ``cancel``；
+  其他前缀交给声明了 ``bot_action:<前缀>`` 能力的扩展（如缺集追更提醒上的按钮）
 - 对外暴露 ``send(...)``：给 NotifyProvider 用来推确认卡片（带按钮）与结果通知
 
 未配置 token（dry-run / 未接入）时，本模块不启动，通知走 ConsoleNotify 打印。
@@ -26,10 +26,10 @@ import logging
 import re
 import time
 
-from ..core import messages, paths, runtime, secret_store, subscriptions
+from ..core import messages, paths, secret_store, subscriptions
 from ..core.contracts import TaskState
+from ..core.messages import parse_callback, short_key
 from ..core.service import ConflictError, ManagementService, NotFoundError
-from ..plugins import episode_tracker
 from . import manage
 from .assistant import Assistant
 
@@ -122,7 +122,7 @@ class ControlBot:
             if str(e.sender_id) != str(self._owner):
                 return
             data = (e.data or b"").decode()
-            if data.startswith(("do:", "cancel:")):
+            if parse_callback(data)[0] in ("do", "cancel"):
                 await e.edit(await self.confirm(data))
                 return
             sent = await self.open(data, chat=str(e.chat_id))
@@ -155,12 +155,12 @@ class ControlBot:
 
         执行后正文原样保留、末尾加一行结果，按钮只留链接（如 TMDB 详情）。
         """
-        action, _, rest = data.partition(":")
-        listed = await self.manage(action, rest, original)
+        action, args = parse_callback(data)
+        listed = await self.manage(action, args, original)
         if listed is not None:
             return listed
-        task_id, _, arg = rest.partition(":")
-        ctx = self.service.store.get_task(task_id)
+        task_id, arg = (args + ["", ""])[:2]
+        ctx = self.service.store.get_task(task_id) if task_id else None
         links = messages.link_buttons(ctx) if ctx else []
         card = original or (messages.approval_card(ctx) if ctx else f"<code>{messages.esc(task_id)}</code>")
         pending = bool(ctx and ctx.state == TaskState.PENDING_APPROVAL)
@@ -203,7 +203,10 @@ class ControlBot:
                    else (lambda: self.service.requeue_organize(task_id, conflict=arg)),
                    f"{'♻️' if arg == 'replace' else '🗑'} 已排队{messages.CONFLICT_CHOICES.get(arg, ('',))[0]}，结果另行通知"),
         }
-        if action not in operations or (action == "cy" and arg not in messages.CONFLICT_CHOICES):
+        if action not in operations:
+            handled = await self._extension(action, args, original)
+            return handled if handled is not None else (None, links, "这个按钮已失效")
+        if action == "cy" and arg not in messages.CONFLICT_CHOICES:
             return None, links, "这个按钮已失效"
         run, done = operations[action]
         try:
@@ -218,15 +221,16 @@ class ControlBot:
     async def open(self, data: str, *, chat: str = "owner") -> tuple[str | None, list | None, str | None, str] | None:
         """要另发一条消息的按钮：``cd`` 重新发出任务卡片，``fx`` 发出修正提示。返回 (正文, 按钮, 配图, 顶部提示)；
         其余按钮返回 None，交给 callback 在原消息上改。"""
-        action, _, task_id = data.partition(":")
-        if action not in ("cd", "fx"):
+        action, args = parse_callback(data)
+        if action not in ("cd", "fx") or not args:
             return None
+        task_id = args[0]
         ctx = self.service.store.get_task(task_id)
         if not ctx:
             return None, None, None, "任务不存在"
         if action == "cd":
             text, buttons, photo = messages.task_card(
-                ctx, subscribed=subscriptions.subscribed(self.service.pipeline.cfg, ctx))
+                ctx, subscribed=subscriptions.subscribed(self.service.store.subscriptions(), ctx))
             return text, buttons, photo, ""
         if not messages.correctable(ctx):
             return None, None, None, f"现在不能修正（当前：{ctx.state.value}）"
@@ -234,11 +238,11 @@ class ControlBot:
         return messages.correction_prompt(ctx), messages.correction_buttons(task_id), None, "发一句要改的内容"
 
     def correction_target(self, chat: str, replied: str | None) -> str | None:
-        """这条消息是不是修正内容：回复了修正提示，或点「修正」后十分钟内发的第一条消息。"""
+        """这条消息是不是修正内容：回复了修正提示，或点「修正」后十分钟内发的第一条消息。用过一次就不再等修正。"""
+        task_id, expires = self._correcting.pop(chat, (None, 0))
         match = _CORRECTION_RE.search(replied or "")
         if match:
             return match.group(1)
-        task_id, expires = self._correcting.pop(chat, (None, 0))
         return task_id if task_id and expires > time.time() else None
 
     async def correct(self, task_id: str, text: str) -> tuple[str, list | None, str | None]:
@@ -261,62 +265,70 @@ class ControlBot:
         except (ConflictError, NotFoundError, ValueError) as exc:
             return f"ℹ️ 没有修改：{messages.esc(exc)}", None, None
         ctx = self.service.store.get_task(task_id)
-        text, buttons, photo = messages.task_card(ctx, subscribed=subscriptions.subscribed(self.service.pipeline.cfg, ctx))
+        text, buttons, photo = messages.task_card(ctx, subscribed=subscriptions.subscribed(self.service.store.subscriptions(), ctx))
         changes = messages.esc(manage.describe_changes(before, ctx.parsed))
         return messages.with_result(text, f"✏️ <b>已修正</b>：{changes}"), buttons, photo
 
-    async def manage(self, action: str, rest: str, original: str = "") -> tuple[str | None, list | None, str | None] | None:
-        """列表与追更提醒的按钮（不绑定单条任务）；不是这些按钮时返回 None。"""
+    async def manage(self, action: str, args: list[str], original: str = "") -> tuple[str | None, list | None, str | None] | None:
+        """列表、订阅与扩展的按钮（不绑定单条任务）；不是这些按钮时返回 None。"""
         service = self.service
+        first = args[0] if args else ""
         if action in ("pl", "fl"):
-            offset = int(rest) if rest.isdigit() else 0
+            offset = int(first) if first.isdigit() else 0
             text, buttons = (manage.pending_list if action == "pl" else manage.failed_list)(service, offset)
             return text, buttons, None
         if action in ("pa", "pr"):
             text, buttons = manage.bulk_confirm(service, action)
             return text, buttons, None
         if action in ("pay", "pry"):
-            return await manage.bulk_run(service, action), [[("📋 查看待处理", "pl:0")]], None
+            return await manage.bulk_run(service, first), [[("📋 查看待处理", messages.callback("pl", 0))]], None
         if action in ("us", "usy", "so"):
-            item = manage.find_subscription(service, rest)
+            item = manage.find_subscription(service, first)
             if not item:
                 return None, None, "这条订阅已经不在了"
             name = f"《{messages.esc(item['title'])}》第 {item['season']} 季"
             if action == "us":
                 return (f"⚠️ 取消订阅{name}？之后的新集不再自动转存，也不再巡检缺集。",
-                        [[("确认取消订阅", f"usy:{rest}"), ("↩ 返回", "sl")]], None)
+                        [[("确认取消订阅", messages.callback("usy", item["id"])), ("↩ 返回", messages.callback("sl"))]], None)
             try:
                 if action == "usy":
-                    await service.remove_subscription(item)
+                    await service.remove_subscription({"id": item["id"]})
                 else:
-                    service.reopen_subscription(item)
+                    service.reopen_subscription({"id": item["id"]})
             except (ConflictError, NotFoundError, ValueError) as exc:
                 return None, None, str(exc)[:190]
             text, buttons = manage.subs_list(service)
             done = f"🗑 已取消订阅{name}" if action == "usy" else f"▶️ 已继续订阅{name}，新集照常自动转存"
             return f"{done}\n\n{text}", buttons, None
         if action in ("ss", "sd"):
-            return await self._suggestion(action, rest, original)
+            return await self._suggestion(action, args, original)
         if action in ("sl", "st"):
             text, buttons = (manage.subs_list if action == "sl" else manage.status_view)(service)
             return text, buttons, None
         if action == "ui":
-            item = manage.find_ignored(service, rest)
+            item = manage.find_ignored(service, first)
             if not item:
                 return None, None, "这条记录已经不在了"
             try:
-                await service.unignore_work(item)
+                await service.unignore_work({"id": item["id"]})
             except (ConflictError, NotFoundError, ValueError) as exc:
                 return None, None, str(exc)[:190]
             text, buttons = manage.ignored_list(service)
             return f"↩️ 已恢复接收《{messages.esc(item['title'])}》\n\n{text}", buttons, None
-        if action in ("tm", "tmi", "tmo", "tmu", "tmb"):
-            return self._tracker(action, rest, original)
         return None
 
-    async def _suggestion(self, action: str, rest: str, original: str) -> tuple[str | None, list | None, str | None]:
-        """订阅建议的「订阅」「不用了」：推送来的建议在消息末尾写结果；/subs 列表里的（:l）处理后重新列出。"""
-        key, _, origin = rest.partition(":")
+    async def _extension(self, action: str, args: list[str], original: str):
+        """扩展声明的按钮（能力 ``bot_action:<前缀>``，如缺集追更提醒上的按钮）；没有扩展处理时返回 None。"""
+        pipeline = self.service.pipeline
+        handle = pipeline.reg.capability(f"bot_action:{action}", pipeline.cfg)
+        if not handle:
+            return None
+        with pipeline.scope():
+            return handle(action, args[0] if args else "", original)
+
+    async def _suggestion(self, action: str, args: list[str], original: str) -> tuple[str | None, list | None, str | None]:
+        """订阅建议的「订阅」「不用了」：推送来的建议在消息末尾写结果；/subs 列表里的（第二个参数 l）处理后重新列出。"""
+        key, origin = (args + ["", ""])[:2]
         item = manage.find_suggestion(self.service, key)
         if not item:
             return None, None, "这条建议已经处理过了"
@@ -340,37 +352,8 @@ class ControlBot:
             return f"{done}\n\n{text}", rows, None
         return (messages.with_result(original, done) if original else done), buttons, None
 
-    def _tracker(self, action: str, digest: str, original: str = "") -> tuple[str | None, list | None, str | None]:
-        """追更提醒上某部剧的按钮：选项只换按钮，执行后在提醒末尾加一行结果。"""
-        state = runtime.PluginState(self.service.store, episode_tracker.EpisodeTracker.name)
-        found = episode_tracker.find_series(state, digest)
-        if not found:
-            return None, None, "这条提醒已经过期，等明天的巡检"
-        key, info = found
-        title, _, season = key.rpartition("|")
-        if not info and action not in ("tmu", "tmb"):
-            return None, None, "这部剧已经不再提醒"
-        if action == "tmb":
-            return None, episode_tracker.buttons(state.get("last_report", {}).get("series") or {}), None
-        if action == "tm":
-            missing = episode_tracker.format_episodes(info["missing"], limit=3)
-            return None, [[(f"🙈 {missing} 不用等了"[:40], f"tmi:{digest}")],
-                          [(f"🔕 不再提醒 {title}"[:40], f"tmo:{digest}"), ("↩ 返回", f"tmb:{digest}")]], None
-        if action == "tmu":
-            episode_tracker.unmute(state, key)
-            text = messages.with_result(original, f"↩ 《{messages.esc(title)}》{season} 照常提醒") if original else None
-            return text, episode_tracker.buttons(state.get("last_report", {}).get("series") or {}), "已撤销"
-        if action == "tmi":
-            episode_tracker.mute(state, key, info["missing"])
-            done = f"🙈 《{title}》{season} 现在缺的 {episode_tracker.format_episodes(info['missing'])} 不再提醒，之后新缺的集照常提醒"
-        else:
-            episode_tracker.mute(state, key)
-            done = f"🔕 《{title}》{season} 不再提醒缺集（订阅的自动转存不受影响）"
-        undo = [[("↩ 撤销", f"tmu:{digest}")]]
-        return (messages.with_result(original, messages.esc(done)) if original else None), undo, done[:190]
-
     def _approval_buttons(self, ctx) -> list:
-        return messages.approval_buttons(ctx, subscribed=subscriptions.subscribed(self.service.pipeline.cfg, ctx))
+        return messages.approval_buttons(ctx, subscribed=subscriptions.subscribed(self.service.store.subscriptions(), ctx))
 
     async def _subscribe(self, task_id: str, card: str):
         """追剧：订阅这部剧这一季；这条仍等审批，按钮保留（去掉「追剧」）。"""
@@ -396,20 +379,19 @@ class ControlBot:
         return messages.with_result(card, text), links, None
 
     async def decide(self, data: str, card: str | None = None) -> str:
-        """审批：``ok`` 转存、``to:<task>:<序号>`` 存到某个保存目录、``no`` 忽略。
+        """审批：``ok`` 转存、``to:<task>:<目录别名的短键>`` 存到某个保存目录、``no`` 忽略。
 
         返回新的卡片内容：card（卡片原文，省略时按任务重新生成）末尾加一行结果。
         """
-        action, _, rest = data.partition(":")
-        task_id, _, index = rest.partition(":")
+        action, args = parse_callback(data)
+        task_id, key = (args + ["", ""])[:2]
         ctx = self.service.store.get_task(task_id)
         card = card or (messages.approval_card(ctx) if ctx else f"<code>{messages.esc(task_id)}</code>")
         target = None
         if action == "to":
-            aliases = list(self.service.pipeline.cfg["save_dirs"])
-            if not index.isdigit() or int(index) >= len(aliases):
+            target = next((alias for alias in self.service.pipeline.cfg["save_dirs"] if short_key(alias) == key), None)
+            if target is None:  # 目录改名或删掉了
                 return messages.approval_result(card, "stale")
-            target = aliases[int(index)]
         try:
             if action == "no":
                 await self.service.reject(task_id)
@@ -432,10 +414,12 @@ class ControlBot:
             return f"出错了（{type(exc).__name__}），请稍后再试或使用 /help 里的命令。", None
         if not reply.plan_id:
             return reply.text, None
-        return reply.text, [("✅ 执行", f"do:{reply.plan_id}"), ("取消", f"cancel:{reply.plan_id}")]
+        return reply.text, [("✅ 执行", messages.callback("do", reply.plan_id)),
+                            ("取消", messages.callback("cancel", reply.plan_id))]
 
     async def confirm(self, data: str) -> str:
-        action, _, plan_id = data.partition(":")
+        action, args = parse_callback(data)
+        plan_id = args[0] if args else ""
         if action == "cancel":
             self.assistant.cancel(plan_id)
             return "已取消，没有执行任何操作。"

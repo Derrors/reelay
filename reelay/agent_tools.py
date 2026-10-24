@@ -3,7 +3,7 @@
 - 每个工具的名称、说明、参数与读写属性只在 ``TOOLS`` 里写一次；MCP（``mcp_server``）与对话助手
   （``control/assistant``）都从这里生成各自的工具描述，参数校验与执行也走同一套代码；
 - 实现只调用 ManagementService，与协议无关，返回值均可 JSON 序列化；
-- 不对外暴露分享链接与访问码：文本里的 URL 一律隐藏，解析结果的 raw_fields 只放行白名单键；
+- 不对外暴露分享链接与访问码：文本里的 URL 一律隐藏，识别结果去掉分享码与访问码，raw_fields 只放行白名单键；
 - 写操作（批准、忽略、重试、订阅）怎么确认由接入方决定：MCP 直接执行，客户端按工具标注决定是否
   逐次询问；对话助手先列成待确认的操作，用户点「执行」后才调用 ``run``。
 """
@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .core.contracts import TaskState
+from .core.media import episode_list
 from .core.rules import MIN_RESOLUTIONS
 from .core.service import ConflictError, ManagementService, NotFoundError
 
@@ -29,7 +30,7 @@ _TRAIL_LINES = 15
 _SAFE_RAW_FIELDS = ("tmdbid", "parser_confidence")
 _HEALTH_FIELDS = ("status", "stale", "error", "config_error")
 _LIBRARY_FIELDS = ("title", "year", "media_type", "tmdbid", "resolution", "release", "seasons",
-                   "origin_country", "save_dir")
+                   "origin_country", "save_dir_alias")
 _URL_RE = re.compile(r"https?://\S+")
 
 
@@ -61,6 +62,7 @@ class Tool:
     write: bool = False
     destructive: bool = False  # 会发起真实 115 转存与整理（洗版时可能替换已有文件），无法从这里撤销
     open_world: bool = False  # 会访问外部服务（115、TMDB、AI 接口）
+    verb: str = ""  # 对话助手列出待确认操作时的动词，如「转存」；批量的任务操作才有
 
     def parameters(self) -> dict[str, Any]:
         """JSON Schema，对话助手直接作为 function 参数使用。"""
@@ -77,7 +79,7 @@ TOOLS: tuple[Tool, ...] = (
     Tool("status", "运行概况",
          "Reelay 运行概况：各状态任务数、待处理/执行中/失败/完成数、运行模式、通知投递与 worker/消息源/115 健康状态。\n"
          "Overview: task counts by state, pending/active/failed/done totals, run mode "
-         "(live / not_running / not_configured / simulation), delivery counts, and "
+         "(live / not_running / not_configured), delivery counts, and "
          "worker / source / 115 auth health (stale=true means no recent heartbeat)."),
     Tool("list_pending", "待处理任务",
          "列出需要人处理的任务：pending_approval（待审批，附建议动作与理由、同集多版本中的推荐版本、是否已订阅、"
@@ -136,17 +138,17 @@ TOOLS: tuple[Tool, ...] = (
          "transfer that the running Reelay worker executes; it cannot be undone from here. "
          "Returns {ok, results: [{task_id, ok, state | error}]}.",
          (_TASK_IDS, Param("save_dir_alias", str, "目录别名 / Save-dir alias")),
-         write=True, destructive=True, open_world=True),
+         write=True, destructive=True, open_world=True, verb="转存"),
     Tool("reject", "忽略",
          "忽略待审批任务：标记为 skipped，不会转存。\n"
          "Reject pending_approval tasks: they are marked skipped and nothing is transferred. "
          "Returns {ok, results: [{task_id, ok, state | error}]}.",
-         (_TASK_IDS,), write=True),
+         (_TASK_IDS,), write=True, verb="忽略"),
     Tool("retry", "重试",
          "重试失败（failed）任务：按记录的检查点重新排队，worker 会再次执行，可能再次发起真实 115 转存。\n"
          "Retry failed tasks from their recorded checkpoint. The running worker picks them up again and may "
          "perform a real 115 transfer. Returns {ok, results: [{task_id, ok, state | error}]}.",
-         (_TASK_IDS,), write=True, destructive=True, open_world=True),
+         (_TASK_IDS,), write=True, destructive=True, open_world=True, verb="重试"),
     Tool("subscribe", "订阅剧集",
          "订阅一部剧的某一季，后续新集自动转存；tmdbid 先用 find_show 确认。返回待审批里属于这一季的任务 ID，"
          "可以接着 approve。\n"
@@ -187,7 +189,7 @@ TOOLS += (
     Tool("reparse", "重新识别",
          "让系统重新识别这些任务的消息（不用缓存），待审批的识别完会重新推送卡片。已有转存检查点的任务不行。\n"
          "Re-run recognition for these tasks without the cache; pending ones get a fresh approval card. "
-         "Not allowed once a transfer checkpoint exists.", (_TASK_IDS,), write=True),
+         "Not allowed once a transfer checkpoint exists.", (_TASK_IDS,), write=True, verb="重新识别"),
 )
 TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
@@ -208,7 +210,7 @@ def _brief(item: dict[str, Any]) -> dict[str, Any]:
 def _safe_parsed(parsed: dict[str, Any] | None) -> dict[str, Any] | None:
     if not parsed:
         return None
-    parsed = dict(parsed)
+    parsed = {key: value for key, value in parsed.items() if key not in ("share_code", "receive_code")}
     raw = parsed.pop("raw_fields", None) or {}
     kept = {key: raw[key] for key in _SAFE_RAW_FIELDS if key in raw}
     if kept:
@@ -220,22 +222,6 @@ def _plan(context: dict[str, Any]) -> list[dict[str, Any]]:
     plan = ((context.get("meta") or {}).get("organize") or {}).get("plan") or []
     return [{"target_dir": item.get("target_dir"), "target_name": item.get("target_name")}
             for item in plan]
-
-
-def _episode_list(text: str) -> list[int]:
-    """「1-5,7」→ [1, 2, 3, 4, 5, 7]。"""
-    out: set[int] = set()
-    for part in re.split(r"[,，、\s]+", text.strip()):
-        match = re.fullmatch(r"[Ee]?(\d{1,4})(?:\s*[-~到至]\s*[Ee]?(\d{1,4}))?", part)
-        if not part:
-            continue
-        if not match:
-            raise ValueError(f"集号写法无效：{part}")
-        start, end = int(match.group(1)), int(match.group(2) or match.group(1))
-        if not 0 < start <= end <= 2000:
-            raise ValueError(f"集号无效：{part}")
-        out.update(range(start, end + 1))
-    return sorted(out)
 
 
 def _coerce(param: Param, value: Any) -> Any:
@@ -297,7 +283,7 @@ class AgentTools:
             out.pop("tmdbid")
         if name == "correct":
             if "episodes" in out:
-                _episode_list(out["episodes"])  # 提议时就报出写法错误，不等用户点「执行」
+                episode_list(out["episodes"])  # 提议时就报出写法错误，不等用户点「执行」
             if not self.store.get_task(out["task_id"]):
                 raise ValueError(f"任务不存在：{out['task_id']}")
             if set(out) == {"task_id"}:
@@ -402,13 +388,13 @@ class AgentTools:
 
     # -- 写操作 -------------------------------------------------------------- #
     async def approve(self, task_ids: list[str], save_dir_alias: str | None = None) -> dict[str, Any]:
-        return await self._each(task_ids, lambda task_id: self.service.approve(task_id, save_dir_alias=save_dir_alias))
+        return await self._each("approve", task_ids, save_dir_alias=save_dir_alias)
 
     async def reject(self, task_ids: list[str]) -> dict[str, Any]:
-        return await self._each(task_ids, self.service.reject)
+        return await self._each("reject", task_ids)
 
     async def retry(self, task_ids: list[str]) -> dict[str, Any]:
-        return await self._each(task_ids, self.service.retry)
+        return await self._each("retry", task_ids)
 
     async def subscribe(self, title: str, season: int, tmdbid: int | None = None) -> dict[str, Any]:
         result = await self.service.add_subscription({"title": title, "season": season, "tmdbid": tmdbid})
@@ -432,24 +418,17 @@ class AgentTools:
         patch = {key: value for key, value in (("title", title), ("year", year), ("media_type", media_type),
                                                ("season", season), ("resolution", resolution)) if value is not None}
         if episodes is not None:
-            patch["episodes"] = _episode_list(episodes)
+            patch["episodes"] = episode_list(episodes)
         if not patch:
             raise ValueError("没有要修改的字段")
         record = await self.service.correct_parsed(task_id, patch)
         return {"ok": True, "parsed": _safe_parsed((record.get("context") or {}).get("parsed"))}
 
     async def reparse(self, task_ids: list[str]) -> dict[str, Any]:
-        return await self._each(task_ids, self.service.reparse)
+        return await self._each("reparse", task_ids)
 
-    async def _each(self, task_ids: list[str], action) -> dict[str, Any]:
-        """逐条执行并逐条报告，一条失败不影响其余任务。"""
-        results = []
-        for task_id in task_ids:
-            try:
-                await action(task_id)
-            except Exception as exc:  # noqa: BLE001 - 逐条报告
-                results.append({"task_id": task_id, "ok": False, "error": scrub(str(exc))})
-                continue
-            ctx = self.store.get_task(task_id)
-            results.append({"task_id": task_id, "ok": True, "state": ctx.state.value if ctx else None})
+    async def _each(self, action: str, task_ids: list[str], **kwargs: Any) -> dict[str, Any]:
+        """逐条执行并逐条报告（见 ManagementService.bulk），一条失败不影响其余任务。"""
+        results = [{key: scrub(value) if key == "error" else value for key, value in item.items() if key != "stale"}
+                   for item in await self.service.bulk(action, task_ids, **kwargs)]
         return {"ok": all(item["ok"] for item in results), "results": results}

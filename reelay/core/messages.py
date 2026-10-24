@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from typing import Any
@@ -15,7 +16,7 @@ from typing import Any
 from . import release
 from .contracts import PipelineContext
 from .rules import COUNTRIES, GENRES
-from .media import pairs_label, planned_pairs, resolution_label
+from .media import format_episodes, pairs_label, planned_pairs, resolution_label
 
 # 识别不可靠的原因 → 提示（见 core/confidence.py）
 _CAPS = {
@@ -146,7 +147,6 @@ def _episodes(ctx: PipelineContext) -> str | None:
     seasons = {season for season, _ in pairs}
     if len(seasons) > 1:
         return pairs_label(pairs)
-    from ..plugins.episode_tracker import format_episodes
     return f"S{seasons.pop():02d} {format_episodes([ep for _, ep in pairs], limit=4)}"
 
 
@@ -327,8 +327,34 @@ def correction_prompt(ctx: PipelineContext) -> str:
 # 只带任务 ID 与短参数）。回调由控制 Bot 处理（control/bot.py）。
 # --------------------------------------------------------------------------- #
 Buttons = list[list[tuple[str, str]]]
+
+# --------------------------------------------------------------------------- #
+# 控制 Bot 的按钮数据：「动作:参数:参数」，Telegram 限 64 字节；拼接与解析都用这里的函数
+# --------------------------------------------------------------------------- #
+CALLBACK_LIMIT = 64
+
+
+def callback(action: str, *args: object) -> str:
+    """按钮数据。参数里不能有冒号；超过 64 字节时抛 ValueError（长内容用 short_key）。"""
+    parts = [action, *(str(arg) for arg in args)]
+    data = ":".join(parts)
+    if any(":" in part for part in parts) or len(data.encode("utf-8")) > CALLBACK_LIMIT:
+        raise ValueError(f"按钮数据无效或超过 {CALLBACK_LIMIT} 字节：{data[:80]}")
+    return data
+
+
+def parse_callback(data: str) -> tuple[str, list[str]]:
+    """按钮数据 →（动作, 参数列表）；参数缺省时为空列表。"""
+    action, *args = (data or "").split(":")
+    return action, args
+
+
+def short_key(text: str) -> str:
+    """按钮里指代一条较长内容（目录别名、订阅建议、一部剧一季）的 10 位短键，点的时候再按当前内容找回。"""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+
 # 审批汇总、补拉通知下方：打开待处理列表（control/manage.py 的 pending_list）
-PENDING_BUTTONS: Buttons = [[("📋 查看待审批", "pl:0")]]
+PENDING_BUTTONS: Buttons = [[("📋 查看待审批", callback("pl", 0))]]
 
 
 def link_buttons(ctx: PipelineContext) -> Buttons:
@@ -345,17 +371,18 @@ def approval_buttons(ctx: PipelineContext, *, subscribed: bool = False) -> Butto
     """转存、忽略、换目录、修正、追剧（可订阅且还没订阅的剧）、不再接收、TMDB 详情，两个一行。"""
     from .subscriptions import subscribable
     tid = ctx.task_id
-    items = [("✅ 转存", f"ok:{tid}"), ("🚫 忽略", f"no:{tid}"), ("📂 换目录", f"dir:{tid}"), ("✏️ 修正", f"fx:{tid}")]
+    items = [("✅ 转存", callback("ok", tid)), ("🚫 忽略", callback("no", tid)), ("📂 换目录", callback("dir", tid)),
+             ("✏️ 修正", callback("fx", tid))]
     if subscribable(ctx) and not subscribed:
-        items.append(("🔔 追剧", f"sub:{tid}"))
-    items.append(("⛔ 不再接收", f"blk:{tid}"))
+        items.append(("🔔 追剧", callback("sub", tid)))
+    items.append(("⛔ 不再接收", callback("blk", tid)))
     items += [button for row in link_buttons(ctx) for button in row]
     return [items[i:i + 2] for i in range(0, len(items), 2)]
 
 
 def block_confirm_buttons(ctx: PipelineContext) -> Buttons:
     """「不再接收」会影响之后的消息：先点一次出确认，再点才执行。"""
-    return [[("⚠️ 确认不再接收", f"bly:{ctx.task_id}"), ("↩ 返回", f"back:{ctx.task_id}")]]
+    return [[("⚠️ 确认不再接收", callback("bly", ctx.task_id)), ("↩ 返回", callback("back", ctx.task_id))]]
 
 
 def suggestion_message(item: dict) -> str:
@@ -365,21 +392,20 @@ def suggestion_message(item: dict) -> str:
 
 def suggestion_buttons(item: dict, *, in_list: bool = False) -> Buttons:
     """订阅建议的「订阅 / 不用了」；in_list 时是 /subs 列表里的按钮，处理后重新列出订阅。"""
-    from .subscriptions import button_key
-    tail = f"{button_key(item)}{':l' if in_list else ''}"
+    args = (short_key(item["key"]), *(["l"] if in_list else []))
     label = f"🔔 订阅 {item['title']} S{item['season']:02d}"[:40] if in_list else f"🔔 订阅第 {item['season']} 季"
-    return [[(label, f"ss:{tail}"), ("🙅 不用了", f"sd:{tail}")]]
+    return [[(label, callback("ss", *args)), ("🙅 不用了", callback("sd", *args))]]
 
 
 def correction_buttons(task_id: str) -> Buttons:
     """修正提示下方：让系统重新识别，或不改了。"""
-    return [[("🔄 重新识别", f"rp:{task_id}"), ("✖️ 不改了", f"fxn:{task_id}")]]
+    return [[("🔄 重新识别", callback("rp", task_id)), ("✖️ 不改了", callback("fxn", task_id))]]
 
 
 def directory_buttons(task_id: str, aliases: list[str]) -> Buttons:
-    """「换目录」展开后的保存目录（按序号回调，别名可能很长），两个一行，最后是返回。"""
-    items = [(f"📁 {alias}", f"to:{task_id}:{index}") for index, alias in enumerate(aliases)]
-    return [items[i:i + 2] for i in range(0, len(items), 2)] + [[("↩ 返回", f"back:{task_id}")]]
+    """「换目录」展开后的保存目录（按别名的短键回调：别名可能很长，目录增删后序号会变），两个一行，最后是返回。"""
+    items = [(f"📁 {alias}", callback("to", task_id, short_key(alias))) for alias in aliases]
+    return [items[i:i + 2] for i in range(0, len(items), 2)] + [[("↩ 返回", callback("back", task_id))]]
 
 
 def problem_buttons(ctx: PipelineContext) -> Buttons:
@@ -389,28 +415,29 @@ def problem_buttons(ctx: PipelineContext) -> Buttons:
     if storage.get("phase") == "receiving" and storage.get("manifest"):
         # 只到了一部分时可按已到的继续；也可以放弃（删除暂存目录）
         partial = storage.get("partial")
-        items = [*([(f"✅ 按已到的 {partial['landed']} 个继续", f"ap:{tid}")] if partial else []),
-                 ("🔍 核验转存", f"rc:{tid}"), ("🗑 放弃并删除", f"cf:{tid}:abandon")]
+        items = [*([(f"✅ 按已到的 {partial['landed']} 个继续", callback("ap", tid))] if partial else []),
+                 ("🔍 核验转存", callback("rc", tid)), ("🗑 放弃并删除", callback("cf", tid, "abandon"))]
     elif storage.get("landed"):
-        items = ([("🗑 删除转存文件", f"cf:{tid}:skip"), ("♻️ 覆盖保存", f"cf:{tid}:replace")]
-                 if (ctx.meta.get("organize") or {}).get("pending_conflict") else [("📂 重新整理", f"ro:{tid}")])
+        items = ([("🗑 删除转存文件", callback("cf", tid, "skip")), ("♻️ 覆盖保存", callback("cf", tid, "replace"))]
+                 if (ctx.meta.get("organize") or {}).get("pending_conflict") else [("📂 重新整理", callback("ro", tid))])
     elif ctx.state == TaskState.FAILED:
-        items = [("🔁 重试", f"rt:{tid}"), ("🙈 忽略", f"no:{tid}")]
+        items = [("🔁 重试", callback("rt", tid)), ("🙈 忽略", callback("no", tid))]
     else:
-        items = [("🙈 忽略", f"no:{tid}")] if ctx.state == TaskState.NEED_MANUAL else []
+        items = [("🙈 忽略", callback("no", tid))] if ctx.state == TaskState.NEED_MANUAL else []
     if correctable(ctx):
-        items.append(("✏️ 修正", f"fx:{tid}"))
+        items.append(("✏️ 修正", callback("fx", tid)))
     items += [button for row in link_buttons(ctx) for button in row]
     return [items[i:i + 2] for i in range(0, len(items), 2)]  # 与审批卡片一样两个一行
 
 
 CONFLICT_CHOICES = {
-    "skip": ("删除转存文件", "保留库里的文件，本次转存的这份移进 115 回收站"),
-    "replace": ("覆盖保存", "库里原有的文件移进 115 回收站，换成本次转存的这份"),
-    "abandon": ("放弃并删除", "暂存目录连同已到的文件移进 115 回收站，任务改为忽略"),
+    "skip": ("删除转存文件", "保留库里的文件，本次转存的这份移进回收站"),
+    "replace": ("覆盖保存", "库里原有的文件移进回收站，换成本次转存的这份"),
+    "abandon": ("放弃并删除", "暂存目录连同已到的文件移进回收站，任务改为忽略"),
 }
 
 
 def confirm_buttons(task_id: str, choice: str) -> Buttons:
     """删除转存文件 / 覆盖保存 / 放弃并删除会删文件：先点一次出确认，再点才执行。"""
-    return [[(f"⚠️ 确认{CONFLICT_CHOICES[choice][0]}", f"cy:{task_id}:{choice}"), ("↩ 返回", f"pb:{task_id}")]]
+    return [[(f"⚠️ 确认{CONFLICT_CHOICES[choice][0]}", callback("cy", task_id, choice)),
+             ("↩ 返回", callback("pb", task_id))]]
