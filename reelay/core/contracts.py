@@ -1,15 +1,14 @@
-"""内核契约层。
+"""内核契约层：整套系统的骨架，新功能往三类扩展点上填，不改内核。
 
-这里定义整套系统的"骨架契约"——一旦冻结，所有新功能都往三类扩展点上填，
-内核不再改动：
-
-- ``TaskState``        任务状态机（评审补丁：覆盖审批 / 整理 / 待人工）
-- ``ApprovalMode``     三种审批模式
+- ``TaskState``        任务状态机（接收 → 识别 → 审批 → 转存 → 整理，以及待人工、失败）
+- ``ApprovalMode``     两种确认方式：人工确认、AI 处理
 - ``PipelineContext``  贯穿全程的上下文，各阶段/插件读写它
 - ``SourceProvider`` / ``ParserProvider`` / ``DecisionProvider``
   ``StorageProvider`` / ``NotifyProvider``   —— A 类：能力槽（可替换）
 - ``Hook``             —— B 类：钩子（前后插入、可改数据、可拦截）
 - ``EventListener``    —— C 类：事件（旁路响应，失败不影响主流程）
+- 异常：``TransferUncertain`` / ``TransferRejected`` / ``NeedsManual`` / ``ShareUnavailable`` /
+  ``AlreadyStored`` / ``StorageBusy``，Provider 用它们告诉内核该怎么处理
 """
 
 from __future__ import annotations
@@ -27,11 +26,13 @@ from typing import Any, Protocol, runtime_checkable
 class TaskState(str, enum.Enum):
     """任务状态机。任何时刻任务状态都落在库里 —— 可查(可观测) / 可恢复(重启) / 可干预(人工)。
 
-    流转（详见 README 状态机图）::
+    流转（详见 docs/architecture.md 的状态机图）::
 
-        received → parsed → ┬ pending_approval ─(你确认)→ queued
+        received → parsed → ┬ pending_approval ─(批准)→ queued
+                            │                  └(忽略)→ skipped
                             ├ queued (auto：AI 处理，直接入队)
-                            └ rejected / skipped
+                            ├ rejected（广告 / 非影视）
+                            └ skipped（不收、去重命中、不再接收的作品）
         queued → saving → stored → organizing → done
                    └ need_manual    └ need_manual
                  (结果未知)          (整理失败)
@@ -43,7 +44,7 @@ class TaskState(str, enum.Enum):
     PENDING_APPROVAL = "pending_approval"    # 待人工确认（manual 模式；可跨重启）
     QUEUED = "queued"                        # 待转存
     REJECTED = "rejected"                    # 判为广告 / 非影视
-    SKIPPED = "skipped"                      # 你忽略 / 去重命中
+    SKIPPED = "skipped"                      # 你忽略 / 不收 / 去重命中
     SAVING = "saving"                        # 转存准备、发送与核验
     STORED = "stored"                        # 转存回执已落库，尚未完成整理
     ORGANIZING = "organizing"                # 整理计划已落库，执行或恢复整理
@@ -73,6 +74,21 @@ class Decision(str, enum.Enum):
     SAVE = "save"      # 直接转存
     ASK = "ask"        # 需人工确认
     SKIP = "skip"      # 忽略（含广告 / 去重命中）
+
+
+# 临时错误的自动退避重试次数；用尽后任务停在 failed，等人工处理
+MAX_AUTO_RETRIES = 3
+
+
+class StorageBusy(RuntimeError):
+    """存储服务暂时拒绝一切请求（如 115 触发风控后的冷却期），这次请求没有发出；until 之后再试。
+
+    不消耗自动重试次数：任务回到原阶段，到点后继续。
+    """
+
+    def __init__(self, reason: str, until: float) -> None:
+        super().__init__(reason)
+        self.until = until
 
 
 class TransferUncertain(RuntimeError):
@@ -229,7 +245,17 @@ class StorageProvider(Protocol):
         """只读核验中断或结果未知的转存，绝不能再次发送转存请求。"""
         ...
 
-    # 可选：``discard(ctx)`` 清理 prepare 建立、但因去重而未使用的空暂存目录。
+    async def abandon(self, ctx: PipelineContext) -> None:
+        """放弃结果不明的转存：删除暂存目录（连同已到的文件）并读回确认；可以重复执行。"""
+        ...
+
+    # 可选：
+    # - ``discard(ctx)``：清理 prepare 建立、但因去重而未使用的空暂存目录；
+    # - ``reconcile_partial(ctx)``：只读核验，按已经到了的文件出回执（人工选「按已到的文件继续」）；
+    # - ``ready() -> bool``：凭证是否就绪；``dir_path(cid)``：目录在网盘里的路径（管理台显示真实去向）；
+    # - ``library()``：整理用的网盘接口（iterdir / get_attr / mkdir / rename / move / delete，ID 为 int）；
+    # - ``inspect_share(parsed, describe=...)``：只读查询分享是否可用、有哪些季集（share_probe 用）；
+    # - ``browse(cid, offset, limit)``：列出子目录（管理台选目录用）。
 
 
 @runtime_checkable

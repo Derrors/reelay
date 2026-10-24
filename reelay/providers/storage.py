@@ -3,25 +3,28 @@
 prepare 只创建暂存目录并枚举分享；save 只发送一次转存请求；reconcile
 只读核验。调用方必须先持久化清单和 receiving 状态，才能调用 save。
 
+除转存外，存储 Provider 还给其他扩展提供：``library()`` 整理用的网盘接口（建目录、改名、移动、删除、
+读属性）、``inspect_share()`` 只读查询分享、``browse()`` 浏览目录（管理台选目录）、``ready()`` 凭证是否就绪。
+选集规则（``ShareStorage``）与 115 无关，模拟存储（``providers/dryrun.py``）共用它。
+
 鉴权分工（混合鉴权）：
 - 分享枚举（P115ShareFileSystem）与 share_receive 转存、列目录/读属性：cookie；
-- 建暂存目录：走凭证中心 ``CredentialStore.mkdir``（优先 OAuth open API，
-  失败回退 cookie webapi）。
+- 建目录、改名、移动、删除：走凭证中心（优先 OAuth open API，确定没有发出时回退 cookie webapi）。
 """
 from __future__ import annotations
 
-import os
 import re
 import time
 from typing import Any
+from urllib.error import HTTPError
 
 from ..core import ai, assist, runtime
-from ..core.auth115 import get_store
-from ..core.contracts import (AlreadyStored, NeedsManual, PipelineContext, ShareUnavailable, TransferRejected,
-                              TransferUncertain)
+from ..core.auth115 import AUTH_ERRNOS, OPEN_AUTH_CODES, get_store, is_auth_error
+from ..core.contracts import (AlreadyStored, NeedsManual, PipelineContext, ShareUnavailable, StorageBusy,
+                              TransferRejected, TransferUncertain)
 from ..core.io import run_blocking
 from ..core.registry import register
-from ..core.media import episode_of, is_extra, is_video, resolution_rank, summarize_pairs
+from ..core.media import episode_of, is_extra, is_video, resolution_label, resolution_rank, summarize_pairs
 
 
 # 电影分享中小于最大文件该比例的视频视为花絮/样片。
@@ -302,45 +305,8 @@ def _verified_files(expected: list[dict], actual: list[dict]) -> list[dict]:
     return [by_name[x['name']] for x in expected]
 
 
-@register(kind='provider', ptype='storage')
-class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
-    name = 'p115'
-
-    def __init__(self) -> None:
-        # 读写都经过凭证中心：分享枚举/转存只能走 cookie，建目录走混合鉴权。
-        # 测试替换 ``_auth`` 为伪凭证中心，与生产走同一条代码路径。
-        self._dry_run = os.getenv('REELAY_DRY_RUN', '').lower() in {'1', 'true', 'yes'}
-        self._auth = get_store()
-
-    def _cookie_client(self):
-        return None if self._dry_run else self._auth.cookie_client()
-
-    def dir_path(self, cid: str) -> str | None:
-        """目录在网盘中的完整路径（如 /测试/剧集），供管理台显示真实去向；模拟模式返回 None。"""
-        if self._dry_run:
-            return None
-        from p115client import P115FileSystem
-        return P115FileSystem(self._cookie_client()).get_path(int(cid))
-
-    def _require_client(self) -> None:
-        if self._cookie_client() is None:
-            raise RuntimeError('115 客户端不可用：分享枚举/转存需要配置 cookie（写操作可走 OAuth）')
-
-    async def prepare(self, ctx: PipelineContext) -> dict[str, Any]:
-        if self._dry_run:
-            p = ctx.parsed
-            episodic = p.media_type in ('tv', 'anime') or bool(p.episodes)
-            names = ([f'S{p.season if p.season is not None else 1:02d}E{ep:02d}.mp4' for ep in p.episodes or [1]]
-                     if episodic else ['movie.mp4'])
-            listing = [{'id': f'dry-{ctx.task_id}-{i}', 'name': name, 'size': 1, 'sha1': None, 'is_dir': False}
-                       for i, name in enumerate(names)]
-            selection = await self.select(ctx, listing)
-            return {'dry_run': True, 'to_cid': int(ctx.save_dir_cid),
-                    'staging_cid': f'dry-stage-{ctx.task_id}', **selection}
-        self._require_client()
-        listing = await run_blocking(self._list_share_sync, ctx)
-        selection = await self.select(ctx, listing)
-        return await run_blocking(self._stage_sync, ctx, selection)
+class ShareStorage(ai.UsesAI):  # 转人工前的 AI 兜底
+    """按分享清单选定转存文件（与具体网盘无关）：规则无法确定时先让 AI 给方案，方案经同一套规则校验。"""
 
     @staticmethod
     def _select(ctx: PipelineContext, listing: list[dict], hints: dict | None = None) -> dict:
@@ -376,10 +342,117 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
         ctx.log(f'规则无法确定转存文件（{problem}），AI 方案已通过校验：{proposal["reason"]}')
         return selection
 
+
+    @staticmethod
+    def _receipt(manifest: dict, landed: list[dict], **extra) -> dict[str, Any]:
+        return {'to_cid': manifest['to_cid'], 'staging_cid': manifest['staging_cid'],
+                'requested': len(manifest['files']), 'landed': landed,
+                'saved_files': [x['name'] for x in landed], 'verified': True,
+                'storage_verified': True, **extra}
+
+
+def drive_entry(item: dict) -> dict[str, Any]:
+    """网盘目录项 → 整理用的统一结构：id（int）、name、is_dir、size、sha1、parent_id。"""
+    return {'id': int(item['id']), 'name': item.get('name', ''),
+            'is_dir': bool(item.get('is_directory') or item.get('is_dir')), 'size': item.get('size'),
+            'sha1': item.get('sha1') or None, 'parent_id': int(item.get('parent_id') or 0)}
+
+
+class P115Drive:
+    """整理用的 115 网盘接口：读走 cookie 客户端，写走凭证中心的混合鉴权。所有 ID 都是 int。"""
+
+    def __init__(self, client, auth) -> None:
+        from p115client import P115FileSystem
+        self._fs = P115FileSystem(client)
+        self._auth = auth
+
+    def iterdir(self, cid: int) -> list[dict]:
+        return [drive_entry(x) for x in self._fs.iterdir(int(cid))]
+
+    def get_attr(self, fid: int) -> dict:
+        return drive_entry(self._fs.get_attr(int(fid), refresh=True))
+
+    def mkdir(self, parent: int, name: str) -> int:
+        return int(self._auth.mkdir(int(parent), name)['id'])
+
+    def rename(self, fid: int, name: str) -> None:
+        self._auth.rename(int(fid), name)
+
+    def move(self, fid: int, cid: int) -> None:
+        self._auth.move(int(fid), int(cid))
+
+    def delete(self, ids: list[int]) -> None:
+        self._auth.delete([int(x) for x in ids])
+
+
+class StorageBrowseError(RuntimeError):
+    """浏览目录失败：code 给管理台区分原因，status 是 HTTP 状态码。不把错误伪装成空目录。"""
+
+    def __init__(self, code: str, message: str, status: int = 503):
+        super().__init__(message)
+        self.code, self.status = code, status
+
+
+@register(kind='provider', ptype='storage')
+class P115Storage(ShareStorage):
+    name = 'p115'
+
+    def __init__(self) -> None:
+        # 读写都经过凭证中心：分享枚举/转存只能走 cookie，建目录走混合鉴权。
+        # 测试替换 ``_auth`` 为伪凭证中心，与生产走同一条代码路径。
+        self._auth = get_store()
+
+    def _cookie_client(self):
+        return self._auth.cookie_client()
+
+    def ready(self) -> bool:
+        """转存与读取分享需要的 cookie 已配置。"""
+        return self._auth.has_cookie
+
+    def dir_path(self, cid: str) -> str | None:
+        """目录在网盘中的完整路径（如 /测试/剧集），供管理台显示真实去向。"""
+        from p115client import P115FileSystem
+        return P115FileSystem(self._cookie_client()).get_path(int(cid))
+
+    def library(self) -> P115Drive:
+        """整理用的网盘接口；没有 cookie 时抛 RuntimeError（读核验需要 cookie，写操作可走 OAuth）。"""
+        client = self._cookie_client()
+        if client is None:
+            raise RuntimeError('整理需要 115 cookie：读核验走 cookie，写操作可走 OAuth')
+        return P115Drive(client, self._auth)
+
+    def inspect_share(self, parsed, *, describe: bool) -> dict[str, Any]:
+        """只读查询分享：是否过期、取消或违规；describe 时再列出分享，按文件名得到季、集与大小（见 describe_share）。"""
+        from p115client import P115ShareFileSystem
+        client = self._cookie_client()
+        problem, names = share_check(client, parsed.share_code, parsed.receive_code)
+        if problem:
+            return {'status': 'unavailable', 'note': f'分享无法访问：{problem}'}
+        # 消息没写分辨率时，卡片按分享根目录里视频的文件名补（同一次请求取到，不多调 115）
+        resolution = next(filter(None, (resolution_label(n) for n in names if is_video(n))), None)
+        extra = {'resolution': resolution} if resolution else {}
+        if not describe:
+            return {'status': 'available', **extra}
+        return {**describe_share(P115ShareFileSystem(client, parsed.share_code, parsed.receive_code), parsed), **extra}
+
+    def browse(self, cid: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        """管理台选目录：列出 cid 下的子目录（分页）与面包屑。"""
+        return browse_dirs(self._auth, cid, offset, limit)
+
+    def _require_client(self) -> None:
+        if self._cookie_client() is None:
+            raise RuntimeError('115 客户端不可用：分享枚举/转存需要配置 cookie（写操作可走 OAuth）')
+
+    async def prepare(self, ctx: PipelineContext) -> dict[str, Any]:
+        self._require_client()
+        listing = await run_blocking(self._list_share_sync, ctx)
+        selection = await self.select(ctx, listing)
+        return await run_blocking(self._stage_sync, ctx, selection)
+
     async def discard(self, ctx: PipelineContext) -> None:
         """去重跳过时删除尚未使用的空暂存目录；非空绝不删除。"""
         stage = (ctx.ns('storage').get('manifest') or {}).get('staging_cid')
-        if self._dry_run or not isinstance(stage, int):
+        if not isinstance(stage, int):
             return
         await run_blocking(self._discard_sync, stage)
 
@@ -392,8 +465,6 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
         """人工选了「按已到的文件继续」：只读核验，暂存目录里的文件都与清单对得上就按这些文件出回执，
         回执的 missing 是没到的文件名。不发任何写请求，没到的文件不会补转存。"""
         manifest = ctx.ns('storage')['manifest']
-        if self._dry_run:
-            return self._receipt(manifest, manifest['files'], dry_run=True, missing=[])
         self._require_client()
         return await run_blocking(self._reconcile_partial_sync, manifest)
 
@@ -411,8 +482,6 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
         """人工选了「放弃这次转存」：把独占暂存目录（连同已到的文件）移进 115 回收站，并读回确认已不在。
         删除可以重复执行：结果不明时再点一次即可。"""
         manifest = ctx.ns('storage')['manifest']
-        if self._dry_run:
-            return
         self._require_client()
         await run_blocking(self._abandon_sync, int(manifest['staging_cid']), int(manifest['to_cid']))
 
@@ -426,16 +495,10 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
             raise RuntimeError('删除暂存目录后读回仍在，请稍后再试')
 
     async def save(self, ctx: PipelineContext) -> dict[str, Any]:
-        manifest = ctx.ns('storage')['manifest']
-        if self._dry_run:
-            return self._receipt(manifest, manifest['files'], dry_run=True)
         self._require_client()
         return await run_blocking(self._receive_sync, ctx)
 
     async def reconcile(self, ctx: PipelineContext) -> dict[str, Any]:
-        manifest = ctx.ns('storage')['manifest']
-        if self._dry_run:
-            return self._receipt(manifest, manifest['files'], dry_run=True)
         self._require_client()
         return await run_blocking(self._verify_sync, ctx)
 
@@ -489,6 +552,8 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
         try:
             recv = share_fs.receive([x['id'] for x in manifest['files']],
                                     to_pid=manifest['staging_cid'])
+        except StorageBusy:
+            raise  # 风控冷却：请求没有发出
         except Exception as exc:
             reason = business_error(exc)
             # 115 明确拒绝且暂存目录仍为空：确定没有转存。其余情况（超时、已有文件落地）交给 reconcile 只读核验。
@@ -496,7 +561,11 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
                 raise
             problem = share_problem(client, p.share_code, p.receive_code)
             raise TransferRejected(problem or reason, permanent=bool(problem)) from None
-        receipt = _await_landing(lambda: self._reconcile_sync(manifest))
+        try:
+            receipt = _await_landing(lambda: self._reconcile_sync(manifest))
+        except StorageBusy as busy:
+            # 转存请求已经发出，只是核验被风控冷却挡住了：结果不明，之后只读核验
+            raise TransferUncertain(f'转存请求已发出，核验时 {busy}') from None
         receipt['received'] = recv
         return receipt
 
@@ -506,13 +575,6 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
         actual = [_file_record(x) for x in P115FileSystem(client).iterdir(manifest['staging_cid'])]
         landed = _verified_files(manifest['files'], actual)
         return self._receipt(manifest, landed)
-
-    @staticmethod
-    def _receipt(manifest: dict, landed: list[dict], **extra) -> dict[str, Any]:
-        return {'to_cid': manifest['to_cid'], 'staging_cid': manifest['staging_cid'],
-                'requested': len(manifest['files']), 'landed': landed,
-                'saved_files': [x['name'] for x in landed], 'verified': True,
-                'storage_verified': True, **extra}
 
     @staticmethod
     def _collect_share_videos(share_fs, root: int = 0, max_depth: int = 3) -> list[dict]:
@@ -527,3 +589,67 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
                     out.append(_file_record(item))
         walk(root, 0)
         return out
+
+
+def browse_dirs(credentials, cid: str, offset: int = 0, limit: int = 100) -> dict:
+    """只读列出 cid 下的子目录：保留长 ID、显式分页，错误不伪装成空目录。"""
+    from p115client import check_response
+    mode = 'oauth' if credentials.has_oauth else 'cookie'
+    try:
+        client = credentials.open_client() if mode == 'oauth' else credentials.cookie_client()
+        if client is None:
+            raise StorageBrowseError('credentials_missing', '尚未配置 115 凭证，请在「设置 → 115 网盘」扫码登录。', 409)
+        method = client.fs_files_open if mode == 'oauth' else client.fs_files
+        result = check_response(method({'cid': cid, 'offset': offset, 'limit': limit,
+                                        'cur': 1, 'show_dir': 1, 'record_open_time': 0}, timeout=15))
+        data = result.get('data')
+        if not isinstance(data, list):
+            raise StorageBrowseError('invalid_response', '115 返回的目录数据格式异常，请稍后重试。', 502)
+        path = result.get('path') or []
+        if path and str(path[-1].get('cid', path[-1].get('file_id', path[-1].get('id', cid)))) != cid:
+            raise StorageBrowseError('directory_missing', '目标目录不存在或无权访问，未回退到根目录。', 404)
+        breadcrumbs = []
+        for node in path:
+            node_id = node.get('cid', node.get('file_id', node.get('id')))
+            if node_id is None or not str(node_id).isascii() or not str(node_id).isdecimal():
+                continue
+            node_name = node.get('name', node.get('file_name', node.get('n')))
+            breadcrumbs.append({'id': str(node_id), 'name': str(node_name or ('根目录' if str(node_id) == '0' else ''))})
+        if cid == '0' and not breadcrumbs:
+            breadcrumbs = [{'id': '0', 'name': '根目录'}]
+        items = []
+        for item in data:
+            # web 列表：目录没有 fid，cid 是目录 ID。开放接口列表：fid / fn / fc（fc=0 是目录）；
+            # 另一种写法 file_id / file_name / file_category 也认。
+            if 'fc' in item:
+                is_dir = str(item['fc']) == '0'
+                fid, name = item.get('fid'), item.get('fn')
+                pid = item.get('pid', cid)
+            elif 'file_category' in item:
+                is_dir = str(item['file_category']) == '0'
+                fid, name = item.get('file_id'), item.get('file_name')
+                pid = item.get('parent_id', cid)
+            else:
+                is_dir = not item.get('fid')
+                fid, name = item.get('cid'), item.get('n')
+                pid = item.get('pid', cid)
+            if is_dir:
+                if fid is None or not str(fid).isascii() or not str(fid).isdecimal():
+                    raise StorageBrowseError('invalid_response', '115 返回了无效的目录 ID。', 502)
+                items.append({'id': str(fid), 'name': str(name or ''), 'pid': str(pid)})
+        total = int(result.get('count', offset + len(data)))
+        next_offset = offset + len(data) if offset + len(data) < total and data else None
+        return {'items': sorted(items, key=lambda x: x['name']), 'cid': cid, 'path': breadcrumbs,
+                'next_offset': next_offset, 'total_entries': total, 'via': mode}
+    except StorageBrowseError:
+        raise
+    except Exception as exc:
+        msg = str(exc)
+        status = getattr(exc, 'code', None) if isinstance(exc, HTTPError) else getattr(getattr(exc, 'response', None), 'status_code', None)
+        if is_auth_error(msg, AUTH_ERRNOS | OPEN_AUTH_CODES):
+            raise StorageBrowseError('credentials_expired', '115 登录已失效，请在「设置 → 115 网盘」重新扫码。', 409) from exc
+        if status in (403, 405, 429):
+            raise StorageBrowseError('upstream_restricted', f'115 拒绝了请求（HTTP {status}），不是空目录。请稍后重试，或在「设置 → 115 网盘」检查登录；不会自动重试绕过限制。') from exc
+        if isinstance(exc, TimeoutError) or 'timed out' in msg.lower():
+            raise StorageBrowseError('upstream_timeout', '115 目录查询超时，请稍后重试。', 504) from exc
+        raise StorageBrowseError('upstream_unavailable', '115 目录服务暂不可用，请检查网络与登录后重试。', 502) from exc

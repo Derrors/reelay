@@ -12,29 +12,33 @@
   重启不丢。OAuth 授权通过开放平台扫码（authDeviceCode 流程）在
   Web 控制台完成，无需命令行。
 
-混合写操作（``mkdir`` / ``rename`` / ``move`` / ``delete``）优先走 OAuth，
-失败时回退到 cookie 的 webapi 路径；无论走哪条路，调用方（storage/
-organizer）都会读回核验，不会因为回退产生"以为成功、实际没动"。
+混合写操作（``mkdir`` / ``rename`` / ``move`` / ``delete``）优先走 OAuth；只有确定请求没有发出
+（令牌失效、连不上）时才改走 cookie 的 webapi，结果不明（如超时）时直接报错，绝不换条路再发一次。
+调用方（storage / organizer）都会读回核验。
 
-凭证统一持久化在一个 JSON 文件（固定为 data/115_credentials.json），同时
-容纳 OAuth token 与（经 Web 录入的）cookie；不放进 config.yaml。
+请求治理：分级限流；触发风控后全部接口冷却 ``p115.risk_cooldown_sec`` 秒，冷却期间的请求不发出、
+立即抛 ``StorageBusy``（不在调用线程里干等），Worker 据此暂停转存与整理，到点自动继续。
+
+凭证统一持久化在一个 JSON 文件（固定为 data/115_credentials.json），同时容纳 OAuth token 与
+（经 Web 扫码或录入的）cookie；不放进 config.yaml。Web 与 Worker 两个进程都会写它：每次修改都在
+文件锁下「读取最新内容 → 修改 → 写临时文件并 fsync → 原子替换」，文件读不出来时不覆盖。
 """
 from __future__ import annotations
 
-import asyncio
-import inspect
 import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from . import paths, runtime
+from . import runtime
+from .contracts import StorageBusy
 
 log = logging.getLogger("reelay.115auth")
 
@@ -46,23 +50,20 @@ OPEN_AUTH_CODES = {401, 99, 40140125, 20004, 20005}
 # 开放平台扫码会话有效期（115 二维码约 5 分钟），本地稍短一点做兜底。
 QR_TTL = 240
 RISK_CODES = {429, 405, 990009}
-RISK_MARKERS = ("访问上限", "操作频繁", "请求过于频繁", "风控", "429 Too Many Requests")
+RISK_MARKERS = ("访问上限", "操作频繁", "操作太频繁", "请求过于频繁", "风控", "429 Too Many Requests")
 # Cookie 扫码绑定的设备：独立 TV 会话，降低与网页端/手机端既有会话互踢概率。
 COOKIE_QR_APP = "tv"
 # OAuth access_token 按 2 小时估算有效期，提前 15 分钟主动刷新。
 OAUTH_LIFETIME_SEC = 7200
 OAUTH_REFRESH_ADVANCE_SEC = 900
-# 限流与风控冷却的默认值；实际值取系统配置 p115（管理台「115 连接」可改，改了立即生效）
+# 限流与风控冷却的默认值；实际值取系统配置 p115（改了立即生效）
 QPS_DEFAULTS = {"open": 3.0, "cookie": 2.0, "share": 1.0}
+MIN_QPS = 0.1  # 与配置校验的下限一致
 RISK_COOLDOWN_SEC = 3600
 
 
-def default_cred_file() -> Path:
-    return paths.CREDENTIALS_115
-
-
 class _RateGate:
-    """线程安全的最小间隔限流器；同步/异步调用共享同一配额。"""
+    """线程安全的最小间隔限流器。"""
 
     def __init__(self, qps: float) -> None:
         self._lock = threading.Lock()
@@ -71,27 +72,15 @@ class _RateGate:
 
     def set_qps(self, qps: float) -> None:
         self.qps = qps
-        self.interval = 0.0 if qps <= 0 else 1.0 / qps
+        self.interval = 1.0 / max(qps, MIN_QPS)  # 不合理的 0 或负数按最慢处理，不当作不限速
 
     def acquire(self) -> None:
-        if self.interval <= 0:
-            return
         with self._lock:
             now = time.monotonic()
             wait = max(0.0, self._next - now)
             self._next = max(now, self._next) + self.interval
         if wait:
             time.sleep(wait)
-
-    async def acquire_async(self) -> None:
-        if self.interval <= 0:
-            return
-        with self._lock:
-            now = time.monotonic()
-            wait = max(0.0, self._next - now)
-            self._next = max(now, self._next) + self.interval
-        if wait:
-            await asyncio.sleep(wait)
 
 
 class AuthState:
@@ -101,7 +90,7 @@ class AuthState:
     ERROR = "error"          # 网络等临时错误（可重试）
 
 
-def _is_auth_error(msg: str, codes: set[int]) -> bool:
+def is_auth_error(msg: str, codes: set[int]) -> bool:
     text = msg or ""
     if any(f"[{n}]" in text or f"errno: {n}" in text or f"errno': {n}" in text
            or f"'code': {n}" in text or f'"code": {n}' in text for n in codes):
@@ -109,15 +98,41 @@ def _is_auth_error(msg: str, codes: set[int]) -> bool:
     return "请重新登录" in text
 
 
+def is_auth_failure(message: str | None) -> bool:
+    """任务的错误信息是不是 115 鉴权失效（cookie 过期或没有配置 cookie），而不是任务本身的问题。"""
+    text = message or ""
+    return is_auth_error(text, AUTH_ERRNOS) or "需要配置 cookie" in text
+
+
+# 连接没有建立就失败的异常（各 HTTP 库的类名）：这时请求确定没有发出
+_NOT_SENT = {"ConnectError", "ConnectTimeout", "ConnectionRefusedError", "NewConnectionError", "NameResolutionError",
+             "ProxyError", "gaierror"}
+
+
+def _not_sent(exc: BaseException) -> bool:
+    return isinstance(exc, StorageBusy) or any(type(e).__name__ in _NOT_SENT for e in (exc, exc.__cause__) if e)
+
+
+def _rejected(resp: Any) -> str | None:
+    """115 的业务拒绝（响应 state 为 false）返回原因；p115client 对这种响应不抛异常。"""
+    if isinstance(resp, dict) and resp.get("state") is False:
+        return str(resp.get("error") or resp.get("message") or resp.get("msg") or f"errno {resp.get('errno')}")[:200]
+    return None
+
+
 class CredentialStore:
-    """线程安全地持有并持久化 115 凭证（cookie + OAuth token）。"""
+    """线程安全地持有并持久化 115 凭证（cookie + OAuth token）。cred_file 为 None 时只在内存中保存（测试、模拟运行）。"""
 
     def __init__(self, cred_file: str | Path | None = None) -> None:
-        self.path = Path(cred_file or default_cred_file())
+        self.path = Path(cred_file) if cred_file is not None else None
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
-        self._data: dict[str, Any] = self._load()
-        self._file_mtime = self.path.stat().st_mtime if self.path.is_file() else 0.0
+        try:
+            self._data: dict[str, Any] = self._read_file()
+        except RuntimeError as exc:  # 文件坏了：先按未配置运行，修改时不覆盖它（见 _update）
+            log.warning("%s", exc)
+            self._data = {}
+        self._file_mtime = self.path.stat().st_mtime if self.path and self.path.is_file() else 0.0
         # MoviePilot 风格的请求治理：文件 API 与分享 API 分级限流，触发风控后全通道冷却。
         self._gates = {lane: _RateGate(self._qps(lane)) for lane in QPS_DEFAULTS}
         self._cooldown_lock = threading.Lock()
@@ -170,28 +185,32 @@ class CredentialStore:
 
     @staticmethod
     def _qps(lane: str) -> float:
-        return float(runtime.get(f"p115.{lane}_qps") or QPS_DEFAULTS[lane])
+        value = runtime.get(f"p115.{lane}_qps")
+        return float(QPS_DEFAULTS[lane] if value is None else value)
 
     @property
     def _cooldown_sec(self) -> int:
-        return max(1, int(runtime.get("p115.risk_cooldown_sec") or RISK_COOLDOWN_SEC))
+        value = runtime.get("p115.risk_cooldown_sec")
+        return max(1, int(RISK_COOLDOWN_SEC if value is None else value))
 
-    def _wait_for_request(self, lane: str, async_: bool = False):
-        gate = self._gates[lane]
-        if isinstance(gate, _RateGate) and gate.qps != self._qps(lane):
-            gate.set_qps(self._qps(lane))
+    def cooldown(self) -> tuple[float, str] | None:
+        """风控冷却中时返回（结束时间, 原因）；没有冷却时为 None。"""
         with self._cooldown_lock:
-            wait = max(0.0, self._cooldown_until - time.time())
-        if async_:
-            async def wait_async() -> None:
-                if wait:
-                    await asyncio.sleep(wait)
-                await self._gates[lane].acquire_async()
-            return wait_async()
-        if wait:
-            time.sleep(wait)
-        self._gates[lane].acquire()
+            if self._cooldown_until > time.time():
+                return self._cooldown_until, self._cooldown_reason
         return None
+
+    def _wait_for_request(self, lane: str) -> None:
+        """限流；风控冷却期间不发请求，立即抛 StorageBusy。"""
+        cooling = self.cooldown()
+        if cooling:
+            until, reason = cooling
+            minutes = max(1, round((until - time.time()) / 60))
+            raise StorageBusy(f"115 触发风控，冷却中，约 {minutes} 分钟后恢复（{reason[:60]}）", until)
+        gate = self._gates[lane]
+        if gate.qps != self._qps(lane):
+            gate.set_qps(self._qps(lane))
+        gate.acquire()
 
     def _enter_cooldown(self, reason: str) -> None:
         until = time.time() + self._cooldown_sec
@@ -203,6 +222,9 @@ class CredentialStore:
     @contextmanager
     def _refresh_file_lock(self):
         """跨进程互斥刷新，避免两个进程同时消费同一个 refresh_token。"""
+        if self.path is None:
+            yield
+            return
         lock_path = self.path.with_suffix(self.path.suffix + ".refresh.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+b") as fh:
@@ -231,23 +253,10 @@ class CredentialStore:
 
         class ManagedClient(base_cls):
             def request(self, /, url, method="GET", payload=None, *, async_=False, **kwargs):
-                lane = store._request_lane(url)
                 if async_:
-                    async def run():
-                        await store._wait_for_request(lane, True)
-                        try:
-                            result = super(ManagedClient, self).request(
-                                url, method, payload, async_=True, **kwargs)
-                            if inspect.isawaitable(result):
-                                result = await result
-                            return store._after_request(result)
-                        except Exception as exc:
-                            reason = store._risk_reason(exc)
-                            if reason:
-                                store._enter_cooldown(reason)
-                            raise
-                    return run()
-                store._wait_for_request(lane, False)
+                    raise NotImplementedError("Reelay 只使用同步的 115 客户端（在线程里调用）")
+                lane = store._request_lane(url)
+                store._wait_for_request(lane)
                 try:
                     return store._after_request(super().request(
                         url, method, payload, async_=False, **kwargs))
@@ -262,28 +271,65 @@ class CredentialStore:
     # ------------------------------------------------------------------ #
     # 持久化
     # ------------------------------------------------------------------ #
-    def _load(self) -> dict[str, Any]:
-        path = self.path
-        if not path.is_file():
+    def _read_file(self) -> dict[str, Any]:
+        """凭证文件的内容；不存在为空，读不出来（损坏）时抛 RuntimeError，调用方不能拿空内容覆盖它。"""
+        if self.path is None:
+            return dict(getattr(self, "_data", {}))
+        if not self.path.is_file():
             return {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception as exc:  # noqa: BLE001
-            log.warning("读取 115 凭证文件失败：%s", exc)
-            return {}
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"115 凭证文件 {self.path.name} 读取失败（{exc}），请检查或删除后重新扫码") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"115 凭证文件 {self.path.name} 格式无效，请检查或删除后重新扫码")
+        return data
 
-    def _save(self) -> None:
+    @contextmanager
+    def _file_lock(self):
+        """跨进程互斥修改凭证文件（Web 扫码与 Worker 刷新令牌可能同时写）。"""
+        if self.path is None:
+            yield
+            return
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as fh:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+    def _update(self, change: Callable[[dict[str, Any]], None]) -> None:
+        """在文件锁下读取最新内容、修改并原子写回；同时更新进程内的副本。"""
+        with self._lock, self._file_lock():
+            data = self._read_file()
+            change(data)
+            self._write_file(data)
+            self._data = data
+
+    def _write_file(self, data: dict[str, Any]) -> None:
+        """写临时文件（创建即为 600）、fsync 后原子替换，中断不会留下半个文件。"""
+        if self.path is None:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2),
-                       encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
+        fd, name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                json.dump(data, output, ensure_ascii=False, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            temporary.replace(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
         self._file_mtime = self.path.stat().st_mtime
 
     def reload_if_changed(self) -> bool:
         """跨进程热加载：Web 扫码落 token 后，Worker 无需重启即可采用。"""
+        if self.path is None:
+            return False
         try:
             mtime = self.path.stat().st_mtime
         except FileNotFoundError:
@@ -291,8 +337,10 @@ class CredentialStore:
         with self._lock:
             if mtime <= self._file_mtime:
                 return False
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
+            try:
+                data = self._read_file()
+            except RuntimeError as exc:
+                log.warning("%s；继续使用已加载的凭证", exc)
                 return False
             self._data = data
             self._file_mtime = mtime
@@ -313,21 +361,20 @@ class CredentialStore:
     def has_cookie(self) -> bool:
         return bool(self.cookies)
 
-    @property
-    def cookie_from_file(self) -> bool:
-        return bool(self._data.get("cookies"))
-
     def set_cookies(self, cookies: str) -> None:
-        """写入新的 cookie（Web 录入），持久化并热更新运行态。"""
+        """写入新的 cookie（扫码或录入），持久化并热更新运行态。"""
         cookies = (cookies or "").strip()
-        with self._lock:
+
+        def change(data: dict[str, Any]) -> None:
             if cookies:
-                self._data["cookies"] = cookies
-                self._data["cookie_updated_at"] = int(time.time())
+                data["cookies"] = cookies
+                data["cookie_updated_at"] = int(time.time())
             else:
-                self._data.pop("cookies", None)
-                self._data.pop("cookie_updated_at", None)
-            self._save()
+                data.pop("cookies", None)
+                data.pop("cookie_updated_at", None)
+
+        with self._lock:
+            self._update(change)
             self._cookie_client = None
             self.cookie_state, self.cookie_error, self.cookie_checked_at = (
                 AuthState.UNKNOWN, "", 0.0)
@@ -345,7 +392,7 @@ class CredentialStore:
             return self._cookie_client
 
     def ping_cookie(self, force: bool = False) -> str:
-        """用最轻量的只读 webapi 探活，更新并返回 cookie 鉴权状态。"""
+        """用最轻量的只读 webapi 探活，更新并返回 cookie 鉴权状态；风控冷却期间不探活，保持上次的结果。"""
         if not force and time.time() - self.cookie_checked_at < 600 \
                 and self.cookie_state != AuthState.UNKNOWN:
             return self.cookie_state
@@ -355,18 +402,29 @@ class CredentialStore:
             self.cookie_checked_at = 0.0
             return self.cookie_state
         try:
+            state, error = self._probe(client)
+        except StorageBusy:
+            return self.cookie_state
+        self.cookie_state, self.cookie_error, self.cookie_checked_at = state, error, time.time()
+        return self.cookie_state
+
+    def probe_cookies(self, cookies: str) -> tuple[str, str]:
+        """不保存，先用这组 cookie 探活一次：返回 (AuthState, 错误说明)。风控冷却中抛 StorageBusy。"""
+        from p115client import P115Client
+        return self._probe(self._managed_client_class(P115Client)(cookies))
+
+    @staticmethod
+    def _probe(client) -> tuple[str, str]:
+        try:
             resp = client.fs_files({"cid": 0, "limit": 1, "offset": 0})
             if isinstance(resp, dict) and resp.get("state", True) is False:
                 raise RuntimeError(str(resp))
-            self.cookie_state, self.cookie_error = AuthState.ACTIVE, ""
+            return AuthState.ACTIVE, ""
+        except StorageBusy:
+            raise
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            if _is_auth_error(msg, AUTH_ERRNOS):
-                self.cookie_state, self.cookie_error = AuthState.EXPIRED, msg[:200]
-            else:
-                self.cookie_state, self.cookie_error = AuthState.ERROR, msg[:200]
-        self.cookie_checked_at = time.time()
-        return self.cookie_state
+            return (AuthState.EXPIRED if is_auth_error(msg, AUTH_ERRNOS) else AuthState.ERROR), msg[:200]
 
     # ------------------------------------------------------------------ #
     # OAuth token
@@ -391,24 +449,26 @@ class CredentialStore:
 
     def save_tokens(self, access_token: str, refresh_token: str,
                     app_id: int | None = None) -> None:
-        with self._lock:
-            self._data["access_token"] = access_token
-            self._data["refresh_token"] = refresh_token
-            self._data["app_id"] = int(app_id or self.app_id)
+        app = int(app_id or self.app_id)
+
+        def change(data: dict[str, Any]) -> None:
             now = int(time.time())
-            self._data["oauth_updated_at"] = now
-            self._data["oauth_expires_at"] = now + OAUTH_LIFETIME_SEC
-            self._save()
+            data.update(access_token=access_token, refresh_token=refresh_token, app_id=app,
+                        oauth_updated_at=now, oauth_expires_at=now + OAUTH_LIFETIME_SEC)
+
+        with self._lock:
+            self._update(change)
             self._open_client = None
             self.oauth_state, self.oauth_error, self.oauth_checked_at = (
                 AuthState.UNKNOWN, "", 0.0)
 
     def clear_oauth(self) -> None:
+        def change(data: dict[str, Any]) -> None:
+            for key in ("access_token", "refresh_token", "app_id", "oauth_updated_at", "oauth_expires_at"):
+                data.pop(key, None)
+
         with self._lock:
-            for key in ("access_token", "refresh_token", "app_id", "oauth_updated_at",
-                        "oauth_expires_at"):
-                self._data.pop(key, None)
-            self._save()
+            self._update(change)
             self._open_client = None
             self.oauth_state, self.oauth_error, self.oauth_checked_at = (
                 AuthState.UNKNOWN, "", 0.0)
@@ -435,15 +495,7 @@ class CredentialStore:
             class _ManagedOpenClient(ManagedBase):
                 def refresh_access_token(self, /, async_=False, **kw):  # noqa: ANN001
                     if async_:
-                        async def refresh_async():
-                            data = super(_ManagedOpenClient, self).refresh_access_token(
-                                async_=True, **kw)
-                            if inspect.isawaitable(data):
-                                data = await data
-                            store.save_tokens(data["access_token"], data["refresh_token"])
-                            log.info("115 OAuth access_token 已自动续期并回写")
-                            return data
-                        return refresh_async()
+                        raise NotImplementedError("Reelay 只使用同步的 115 客户端（在线程里调用）")
                     with store._refresh_lock:
                         with store._refresh_file_lock():
                             store.reload_if_changed()
@@ -495,9 +547,11 @@ class CredentialStore:
             if isinstance(resp, dict) and resp.get("state", True) is False:
                 raise RuntimeError(str(resp))
             self.oauth_state, self.oauth_error = AuthState.ACTIVE, ""
+        except StorageBusy:
+            return self.oauth_state
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            if _is_auth_error(msg, OPEN_AUTH_CODES):
+            if is_auth_error(msg, OPEN_AUTH_CODES):
                 self.oauth_state, self.oauth_error = AuthState.EXPIRED, msg[:200]
             else:
                 self.oauth_state, self.oauth_error = AuthState.ERROR, msg[:200]
@@ -656,69 +710,69 @@ class CredentialStore:
             self._qr_pending.pop(uid, None)
 
     # ------------------------------------------------------------------ #
-    # 混合写操作：优先 OAuth open API，失败回退 cookie webapi
+    # 混合写操作：优先 OAuth open API；确定没有发出时才回退 cookie webapi
     # ------------------------------------------------------------------ #
+    def _open_write(self, what: str, call: Callable[[Any], Any]) -> tuple[bool, Any]:
+        """用 OAuth 发一次写请求，返回 (是否已执行, 响应)。
+
+        没有 OAuth、令牌失效或连接没建立（请求确定没有发出）时返回 (False, None)，调用方改走 cookie；
+        115 明确拒绝时抛出原因；结果不明（如超时）时原样抛出，由调用方读回核验后再决定，不能换条路再发一次。
+        """
+        client = self._try_open_client()
+        if client is None:
+            return False, None
+        try:
+            resp = call(client)
+        except StorageBusy:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if is_auth_error(str(exc), OPEN_AUTH_CODES) or _not_sent(exc):
+                log.warning("OAuth %s没有发出（%s），改走 cookie", what, type(exc).__name__)
+                return False, None
+            raise
+        reason = _rejected(resp)
+        if reason and is_auth_error(str(resp), OPEN_AUTH_CODES):
+            log.warning("OAuth 令牌失效，%s改走 cookie：%s", what, reason)
+            return False, None
+        if reason:
+            raise RuntimeError(f"115 拒绝{what}：{reason}")
+        return True, resp
+
+    def _cookie_write(self, what: str, call: Callable[[Any], Any]) -> Any:
+        client = self.cookie_client()
+        if client is None:
+            raise RuntimeError(f"{what}失败：OAuth 与 cookie 均不可用")
+        resp = call(client)
+        reason = _rejected(resp)
+        if reason:
+            raise RuntimeError(f"115 拒绝{what}：{reason}")
+        return resp
+
     def mkdir(self, parent: int, name: str) -> dict[str, Any]:
-        """在 parent 下建目录，返回 {"id": int, "name": str}。幂等由调用方保证。"""
-        open_client = self._try_open_client()
-        if open_client is not None:
-            try:
-                resp = open_client.fs_mkdir_open(
-                    {"file_name": name, "pid": int(parent)})
-                fid = self._extract_id(resp)
-                if fid:
-                    return {"id": int(fid), "name": name}
-                log.warning("OAuth 建目录未返回 id，回退 cookie：%s", resp)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("OAuth 建目录失败，回退 cookie：%s", exc)
+        """在 parent 下建目录，返回 {"id": int, "name": str}。幂等由调用方保证（先找同名目录）。"""
+        done, resp = self._open_write("建目录", lambda c: c.fs_mkdir_open({"file_name": name, "pid": int(parent)}))
+        if done:
+            fid = self._extract_id(resp)
+            if not fid:
+                raise RuntimeError(f"OAuth 建目录没有返回目录 ID：{str(resp)[:120]}")
+            return {"id": int(fid), "name": name}
         return self._cookie_mkdir(parent, name)
 
     def rename(self, fid: int, name: str) -> None:
-        open_client = self._try_open_client()
-        if open_client is not None:
-            try:
-                open_client.fs_rename_open({"file_id": int(fid), "file_name": name})
-                return
-            except Exception as exc:  # noqa: BLE001
-                log.warning("OAuth 重命名失败，回退 cookie：%s", exc)
-        client = self.cookie_client()
-        if client is None:
-            raise RuntimeError("重命名失败：OAuth 与 cookie 均不可用")
-        if hasattr(client, "fs_rename"):
-            client.fs_rename((int(fid), name))
-        else:
-            from p115client import P115FileSystem
-            P115FileSystem(client).rename(int(fid), name=name)
+        done, _ = self._open_write("重命名", lambda c: c.fs_rename_open({"file_id": int(fid), "file_name": name}))
+        if not done:
+            self._cookie_write("重命名", lambda c: c.fs_rename((int(fid), name)))
 
     def move(self, fid: int, pid: int) -> None:
-        open_client = self._try_open_client()
-        if open_client is not None:
-            try:
-                open_client.fs_move_open({"file_ids": int(fid), "to_cid": int(pid)})
-                return
-            except Exception as exc:  # noqa: BLE001
-                log.warning("OAuth 移动失败，回退 cookie：%s", exc)
-        client = self.cookie_client()
-        if client is None:
-            raise RuntimeError("移动失败：OAuth 与 cookie 均不可用")
-        if hasattr(client, "fs_move"):
-            client.fs_move(int(fid), pid=int(pid))
-        else:
-            from p115client import P115FileSystem
-            P115FileSystem(client).move(int(fid), to_dir=int(pid))
+        done, _ = self._open_write("移动", lambda c: c.fs_move_open({"file_ids": int(fid), "to_cid": int(pid)}))
+        if not done:
+            self._cookie_write("移动", lambda c: c.fs_move(int(fid), pid=int(pid)))
 
     def delete(self, fids: list[int]) -> None:
-        open_client = self._try_open_client()
-        if open_client is not None:
-            try:
-                open_client.fs_delete_open([int(x) for x in fids])
-                return
-            except Exception as exc:  # noqa: BLE001
-                log.warning("OAuth 删除失败，回退 cookie：%s", exc)
-        client = self.cookie_client()
-        if client is None:
-            raise RuntimeError("删除失败：OAuth 与 cookie 均不可用")
-        client.fs_delete([int(x) for x in fids])
+        ids = [int(x) for x in fids]
+        done, _ = self._open_write("删除", lambda c: c.fs_delete_open(ids))
+        if not done:
+            self._cookie_write("删除", lambda c: c.fs_delete(ids))
 
     def _try_open_client(self):
         """返回可用 open client；构造失败（如刷新失败）不致命，回退 cookie。"""
@@ -749,19 +803,21 @@ class CredentialStore:
         return None
 
     def _cookie_mkdir(self, parent: int, name: str) -> dict[str, Any]:
-        """cookie 建目录：先 webapi /files/add，失败回退 SDK app 路径。"""
+        """cookie 建目录：先 webapi /files/add；它明确拒绝或请求没发出时再用 SDK 的 app 接口，结果不明时直接报错。"""
         client = self.cookie_client()
         if client is None:
             raise RuntimeError("建目录失败：OAuth 与 cookie 均不可用")
         try:
             resp = client.fs_mkdir({"cname": name, "pid": int(parent)})
-            if isinstance(resp, dict) and resp.get("state", True) is not False:
-                fid = (resp.get("file_id") or resp.get("cid")
-                       or (resp.get("data") or {}).get("category_id"))
-                if fid:
-                    return {"id": int(fid), "name": name}
         except Exception as exc:  # noqa: BLE001
-            log.warning("webapi 建目录异常，回退 app 接口：%s", exc)
+            if not _not_sent(exc):
+                raise
+            log.warning("webapi 建目录没有发出（%s），改用 app 接口", type(exc).__name__)
+            resp = None
+        if isinstance(resp, dict) and resp.get("state", True) is not False:
+            fid = resp.get("file_id") or resp.get("cid") or (resp.get("data") or {}).get("category_id")
+            if fid:
+                return {"id": int(fid), "name": name}
         from p115client import P115FileSystem
         made = P115FileSystem(client).mkdir(int(parent), name=name)
         return {"id": int(made["id"] if isinstance(made, dict) else made),
@@ -773,7 +829,6 @@ class CredentialStore:
             "cookie": {
                 "state": self.cookie_state,
                 "configured": self.has_cookie,
-                "source": "file" if self.cookie_from_file else "none",
                 "error": self.cookie_error,
                 "checked_at": self.cookie_checked_at or None,
             },
@@ -810,11 +865,13 @@ _store_lock = threading.Lock()
 
 
 def get_store() -> CredentialStore:
+    """进程当前使用的凭证中心。入口程序用 ``paths.use_data_dir`` 指向 data/115_credentials.json；
+    没有指定时只在内存中保存、一律视为未登录，测试与模拟运行不会读到本机的真实凭证。"""
     global _store
     if _store is None:
         with _store_lock:
             if _store is None:
-                _store = CredentialStore()
+                _store = CredentialStore(None)
     return _store
 
 

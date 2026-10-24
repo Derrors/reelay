@@ -6,6 +6,7 @@
 - 自动重试写入 ``not_before``，到期后才会被领取，退避期间不占用并发槽；
 - 115 cookie 失效或缺失时暂停转存/整理的领取（解析照常），只告警一次；
   凭证恢复后自动继续并发送恢复通知。任务不会因鉴权失效耗尽重试次数；
+- 115 触发风控冷却时同样暂停转存/整理，冷却结束自动继续；冷却期间被拒的请求没有发出，任务回到原阶段等待；
 - 转存请求已发出、暂存目录还没到齐而转为待人工的任务，后台按退避间隔自动只读核验（见 ``recheck_transfers``）：
   115 在后台落地文件有时要十几分钟，到齐后自动入库，并释放它占着的集，排在后面的任务随之继续。
 """
@@ -17,17 +18,18 @@ import logging
 import os
 import time
 
-from .contracts import TaskState
+from .auth115 import is_auth_failure
+from .contracts import MAX_AUTO_RETRIES, StorageBusy, TaskState
 from .pipeline import Pipeline
 from .store import Store
 
 log = logging.getLogger("reelay.worker")
 
-MAX_RETRIES = 3
 POLL_INTERVAL = 1.0
 # 需要 115 凭证的阶段；鉴权不可用时暂停领取。
 STORAGE_STATES = (TaskState.QUEUED, TaskState.STORED)
 AUTH_ALERT = "p115_auth"
+COOLDOWN_ALERT = "p115_cooldown"
 # 115 凭证探活间隔（秒）；凭证失效暂停转存期间固定 30 秒探活，恢复后自动继续
 AUTH_CHECK_SEC = 300
 # 转存结果待核验的任务：首次在转为待人工 5 分钟后自动复查，之后间隔翻倍（最长 1 小时），持续 24 小时
@@ -39,12 +41,6 @@ RECHECK_STABLE_TIMES = 3
 RECHECK_SCAN_SEC = 60
 
 
-def is_auth_failure(message: str | None) -> bool:
-    from .auth115 import AUTH_ERRNOS, _is_auth_error
-    text = message or ""
-    return _is_auth_error(text, AUTH_ERRNOS) or "需要配置 cookie" in text
-
-
 class Worker:
     def __init__(self, pipeline: Pipeline, store: Store, concurrency: int = 3):
         self.pipeline = pipeline
@@ -54,12 +50,17 @@ class Worker:
         self._queue: asyncio.Queue[tuple[str, TaskState]] = asyncio.Queue()
         self._seen_inflight: set[str] = set()
         self._stop = asyncio.Event()
-        # 非空表示转存/整理暂停及原因；只有 _monitor 和鉴权失败会修改它。
-        self.storage_paused: str | None = None
+        # 转存/整理暂停的原因：auth（115 凭证失效）、cooldown（115 风控冷却）；只有 _monitor 与鉴权失败会修改。
+        self._paused: dict[str, str] = {}
         self._next_auth_check = 0.0
         self._dir_paths_revision: str | None = None  # 已记录目录路径的配置版本
         self._next_dir_paths = 0.0
         self._next_recheck = 0.0
+
+    @property
+    def storage_paused(self) -> str | None:
+        """转存与整理暂停时的原因（多个原因用分号连接）；没有暂停时为 None。"""
+        return "；".join(self._paused.values()) or None
 
     async def run(self, *, drain: bool = False) -> None:
         self.store.acquire_worker()
@@ -139,7 +140,8 @@ class Worker:
                                  config_error=self.pipeline.config_error,
                                  inflight=len(self._seen_inflight), concurrency=self.concurrency,
                                  paused=self.storage_paused)
-            if time.time() >= self._next_auth_check:
+            self.check_cooldown()
+            if time.time() >= self._next_auth_check and "cooldown" not in self._paused:
                 await self.check_auth()
             if self._dir_paths_revision != self.pipeline.revision and time.time() >= self._next_dir_paths:
                 await self.record_dir_paths()
@@ -187,10 +189,7 @@ class Worker:
                 continue
             landed = (ns.get("partial") or {}).get("landed")
             if landed and not record.get("notified"):
-                if "landed" not in record:
-                    stable = max(record.get("count", 0), 1)  # 改版前开始复查的任务没记到达数：按已复查的次数算
-                else:
-                    stable = record.get("stable", 0) + 1 if record["landed"] == landed else 1
+                stable = record.get("stable", 0) + 1 if record.get("landed") == landed else 1
                 record = {**record, "since": since, "landed": landed, "stable": stable}
                 ns["auto_recheck"] = record
             if landed and not record.get("notified") and record.get("stable", 0) >= RECHECK_STABLE_TIMES:
@@ -236,10 +235,10 @@ class Worker:
         self.store.heartbeat("p115_oauth", status=oauth_state, error=auth.oauth_error,
                              configured=auth.has_oauth)
         if self.pipeline.cfg["defaults"].get("storage", "p115") == "p115" and not auth.has_cookie:
-            self.pause_storage("未配置 115 cookie，转存与整理已暂停；请在管理台「连接状态」扫码获取 Cookie")
+            self.pause_storage("未配置 115 cookie，转存与整理已暂停；请在管理台「设置 → 115 网盘」扫码登录")
         elif cookie_state == AuthState.EXPIRED:
             self.pause_storage(f"115 cookie 已失效（{auth.cookie_error or '需要重新登录'}），转存与整理已暂停；"
-                               "请在管理台「连接状态」重新扫码，恢复后自动继续")
+                               "请在管理台「设置 → 115 网盘」重新扫码，恢复后自动继续")
         elif cookie_state == AuthState.ACTIVE:
             self.resume_storage()
         interval = 30 if self.storage_paused else AUTH_CHECK_SEC
@@ -247,17 +246,28 @@ class Worker:
         # 探活按间隔进行，带上间隔供管理台判断这条观察是否过期
         self.store.heartbeat("p115_cookie", status=cookie_state, error=auth.cookie_error, check_interval=interval)
 
-    def pause_storage(self, reason: str) -> None:
-        if not self.storage_paused:
+    def pause_storage(self, reason: str, kind: str = "auth") -> None:
+        if kind not in self._paused:
             log.warning("暂停转存/整理：%s", reason)
-        self.storage_paused = reason
-        self.store.raise_alert(AUTH_ALERT, reason, self.pipeline.notify_targets())
+        self._paused[kind] = reason
+        self.store.raise_alert(AUTH_ALERT if kind == "auth" else COOLDOWN_ALERT, reason, self.pipeline.notify_targets())
 
-    def resume_storage(self) -> None:
-        if self.storage_paused:
-            log.info("115 凭证已恢复，继续转存/整理")
-        self.storage_paused = None
-        self.store.clear_alert(AUTH_ALERT, "115 凭证已恢复，转存与整理继续执行", self.pipeline.notify_targets())
+    def resume_storage(self, kind: str = "auth") -> None:
+        if self._paused.pop(kind, None):
+            log.info("%s，继续转存/整理", "115 凭证已恢复" if kind == "auth" else "115 风控冷却结束")
+        text = "115 凭证已恢复，转存与整理继续执行" if kind == "auth" else "115 风控冷却结束，转存与整理继续执行"
+        self.store.clear_alert(AUTH_ALERT if kind == "auth" else COOLDOWN_ALERT, text, self.pipeline.notify_targets())
+
+    def check_cooldown(self) -> None:
+        """115 风控冷却期间暂停转存与整理（请求本来也会被拒），结束后自动继续。"""
+        from .auth115 import get_store
+        cooling = get_store().cooldown()
+        if cooling:
+            until, reason = cooling
+            self.pause_storage(f"115 触发风控（{reason[:60]}），转存与整理暂停到 {time.strftime('%H:%M', time.localtime(until))}，"
+                               "之后自动继续", kind="cooldown")
+        elif "cooldown" in self._paused:
+            self.resume_storage("cooldown")
 
     def stop(self) -> None:
         self._stop.set()
@@ -308,13 +318,17 @@ class Worker:
                 await self.pipeline.process_received(ctx)
             else:
                 await self.pipeline.execute_save(ctx)
+        except StorageBusy as busy:
+            # 网盘暂时拒绝一切请求，这次请求没有发出：回到原阶段，到点再领取，不算失败
+            self.pipeline.defer(ctx, busy)
+            return
         except Exception as exc:
             log.warning("任务执行异常 %s: %s", task_id, exc)
             ctx.state = TaskState.FAILED
             ctx.ns("task").setdefault("retry_from", expected_state.value)
             ctx.log(f"任务执行异常：{exc}")
-            await self.pipeline._emit("on_failed", ctx, persist=False)
-            await self.pipeline._notify_all(ctx, "failed", persist=False)
+            await self.pipeline.emit("on_failed", ctx, persist=False)
+            await self.pipeline.notify_all(ctx, "failed", persist=False)
             self.store.save_task(ctx, error=str(exc))
         self._schedule_retry(task_id, expected_state)
 
@@ -331,7 +345,7 @@ class Worker:
         if retry_from in STORAGE_STATES and is_auth_failure(error):
             # 鉴权失效不是任务本身的问题：回到原阶段等待恢复，不消耗重试次数。
             self.pause_storage("115 返回鉴权失败（需要重新登录），转存与整理已暂停；"
-                               "请在管理台「连接状态」重新扫码，恢复后自动继续")
+                               "请在管理台「设置 → 115 网盘」重新扫码，恢复后自动继续")
             self._next_auth_check = 0.0
             self.store.set_state(task_id, retry_from, expected=TaskState.FAILED, error=error)
             return
@@ -339,7 +353,7 @@ class Worker:
             log.info("任务 %s 需人工修正，不自动重试", task_id)
             return
         count = self.store.bump_retry(task_id)
-        if count <= MAX_RETRIES:
+        if count <= MAX_AUTO_RETRIES:
             delay = 2 ** count
             log.info("任务 %s 失败，第 %d 次退避重试（%ss 后）", task_id, count, delay)
             self.store.set_state(task_id, retry_from, expected=TaskState.FAILED,
