@@ -36,6 +36,15 @@ class TestSubscriptionDecision(Base):
         self.assertEqual(ctx.meta["subscription"]["tmdbid"], 100)
         self.assertTrue(any("新集自动放行" in line for line in ctx.trail))
 
+    async def test_finished_subscription_no_longer_auto_releases_and_can_be_reopened(self):
+        self.store.state_set(*subscriptions.FINISHED, {"tmdb:100:S1": {"date": "2026-10-01", "episodes": 30}})
+        self.assertEqual(await self.decide(tv_ctx()), Decision.ASK)
+        service = self.service
+        listed = {i["title"]: i for i in service.list_subscriptions()["items"]}
+        self.assertEqual((listed["剧"]["finished"]["episodes"], listed["剧"]["category"]), (30, "电视剧"))
+        service.reopen_subscription({"title": "剧", "season": 1, "tmdbid": 100})
+        self.assertEqual(await self.decide(tv_ctx(msg_id="2")), Decision.SAVE)
+
     async def test_gates_still_apply(self):
         cases = {
             "其他季": tv_ctx(season=2),
@@ -120,6 +129,10 @@ class TestSubscriptionService(Base):
     async def test_rule_only_sources_are_reported_as_inactive(self):
         self.configure({**self.CFG, "sources": [{"bot": "@strict", "decision": "default"}]})
         self.assertEqual(self.service.list_subscriptions()["inactive"], ["@strict"])
+        # defaults 只是来源没写时的兜底：来源都写了订阅放行就不提示
+        self.configure({**self.CFG, "defaults": {**self.CFG["defaults"], "decision": "default"},
+                        "sources": [{"bot": "@a", "decision": "subscription"}]})
+        self.assertEqual(self.service.list_subscriptions()["inactive"], [])
 
     async def test_suggestions_come_from_repeated_approvals(self):
         for i in range(1, 4):

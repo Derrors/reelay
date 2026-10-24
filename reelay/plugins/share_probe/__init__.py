@@ -18,7 +18,7 @@ import time
 
 from ...core.auth115 import get_store
 from ...core.contracts import PipelineContext, TaskState
-from ...core.media import pairs_label
+from ...core.media import is_video, pairs_label, resolution_label
 from ...core.registry import register
 from ..episode_tracker import format_episodes
 
@@ -96,14 +96,17 @@ class ShareProbe:
     @staticmethod
     def _probe(parsed, describe: bool) -> dict:
         from p115client import P115ShareFileSystem
-        from ...providers.storage import describe_share, share_problem
+        from ...providers.storage import describe_share, share_check
         client = get_store().cookie_client()
-        problem = share_problem(client, parsed.share_code, parsed.receive_code)
+        problem, names = share_check(client, parsed.share_code, parsed.receive_code)
         if problem:
             return {"status": "unavailable", "note": f"分享无法访问：{problem}"}
+        # 消息没写分辨率时，卡片按分享根目录里视频的文件名补（同一次请求取到，不多调 115）
+        resolution = next(filter(None, (resolution_label(n) for n in names if is_video(n))), None)
+        extra = {"resolution": resolution} if resolution else {}
         if not describe:
-            return {"status": "available"}
-        return describe_share(P115ShareFileSystem(client, parsed.share_code, parsed.receive_code), parsed)
+            return {"status": "available", **extra}
+        return {**describe_share(P115ShareFileSystem(client, parsed.share_code, parsed.receive_code), parsed), **extra}
 
     @staticmethod
     def _summary(result: dict) -> str:

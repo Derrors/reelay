@@ -83,7 +83,7 @@ def score(samples: list[dict], outputs: dict[str, Any]) -> dict:
 
 async def run(samples: list[dict], *, client, model: str, examples: int = 3, concurrency: int = 4) -> dict:
     """逐条调用解析器（不经过预过滤与缓存）；示例取同一来源其他样本中的修正，与线上一致。"""
-    from .providers.parser import LLMParser
+    from .providers.parser import LLMParser, rule_hint
     parser = LLMParser()
     parser._client, parser._model = client, model
     semaphore = asyncio.Semaphore(concurrency)
@@ -98,7 +98,7 @@ async def run(samples: list[dict], *, client, model: str, examples: int = 3, con
         ctx = PipelineContext(RawMessage(sample["source"] or "eval", sample["id"], sample["text"], []))
         async with semaphore:
             try:
-                outputs[sample["id"]] = await parser._complete(ctx, list(reversed(shots)))
+                outputs[sample["id"]] = await parser._complete(ctx, list(reversed(shots)), rule_hint(ctx))
             except ai.AIError as exc:
                 outputs[sample["id"]] = exc.category
 

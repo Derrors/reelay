@@ -197,6 +197,22 @@ class TelegramUserbotSource:
         return total
 
 
+    async def recent(self, target: str, limit: int = 10) -> list[dict]:
+        """来源最近的消息（新的在前，跳过服务消息与空消息），供管理台生成识别规则。"""
+        if not (self._client and self._authorized):
+            raise RuntimeError("监听会话还没有连上 Telegram")
+        target = target.strip()
+        entity = await self._client.get_entity(int(target) if target.lstrip("-").isdigit() else target)
+        out = []
+        async for msg in self._client.iter_messages(entity, limit=limit * 3):
+            if getattr(msg, "action", None) or not (msg.raw_text or "").strip():
+                continue
+            out.append({"text": msg.raw_text, "urls": _extract_urls(msg)})
+            if len(out) >= limit:
+                break
+        return out
+
+
 def _entity_name(entity: Any) -> str:
     """与实时事件的来源标识一致：有用户名用 @username，否则用数字 ID。"""
     uname = getattr(entity, "username", None)

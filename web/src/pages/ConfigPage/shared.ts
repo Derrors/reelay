@@ -19,18 +19,22 @@ export function setPath(root: Obj, path: string, value: unknown): Obj {
   return { ...root, [first]: rest.length ? setPath(obj(root[first]), rest.join('.'), value) : value };
 }
 
-export const APPROVAL_OPTIONS = ['manual', 'auto', 'default_pass'];
+export const APPROVAL_OPTIONS = ['manual', 'auto'];
 export const APPROVAL_HINTS: Record<string, string> = {
-  manual: '最稳妥：每条资源先推送给你确认，再决定是否转存。',
-  auto: '适合信任的来源：自动转存，完成后通知你。',
-  default_pass: '完全自动处理，不再发确认或通知。',
+  manual: '默认：每条符合要求的资源都等你确认后再转存。',
+  auto: '适合信任的来源：AI 识别、规则都通过就直接转存；拿不准的仍交给你确认。',
 };
+/** 来源单独设置「Bot 通知」：开 / 关（未设置时跟随默认）。 */
+export const NOTIFY_OPTIONS = [{ value: 'on', label: '开' }, { value: 'off', label: '关' }];
+export const notifyValue = (v: unknown) => (v === undefined || v === null ? '' : v ? 'on' : 'off');
 
 /** 能力槽位 → 中文名 */
 export const SLOT_LABELS: Record<string, string> = {
-  source: '消息接入方式', parser: '识别方式', decision: '转存判断方式', storage: '网盘', notify: '通知渠道',
+  source: '消息接入方式', parser: '识别方式', decision: '转存方式', storage: '网盘', notify: '通知渠道',
 };
 export const SLOT_ORDER = ['source', 'parser', 'decision', 'storage'];
+/** 只在来源卡片上设置的能力；defaults 里的值只是来源没写时的兜底。 */
+export const PER_SOURCE_SLOTS = ['parser', 'decision'];
 
 
 /** 能力实现的内部名 → 中文名；未知实现回退到目录里的 label，再回退到内部名。 */
@@ -49,7 +53,7 @@ const PROVIDER_HINTS: Record<string, Record<string, string>> = {
   },
   parser: {
     llm: '用大模型理解消息，识别片名、季集、清晰度，准确率更高。',
-    regex: '按固定规则提取信息，不调用 AI，适合格式规整的来源。',
+    regex: '按规则提取信息，不调用 AI，适合格式规整的来源；每个来源可以在来源设置里写自己的识别规则。',
   },
   source: {
     telegram: '用你自己的 Telegram 账号监听资源 Bot 与频道。',
@@ -120,7 +124,7 @@ export const CONNECTION_TONE: Record<string, Tone> = {
 /** 设置页各分区：用于未保存提示与页签上的小圆点。 */
 export const CONFIG_SECTIONS = [
   { label: '保存目录', tab: 'common', paths: ['save_dirs'] },
-  { label: '默认处理方式', tab: 'common', paths: ['defaults.approval_mode', 'defaults.save_to', 'defaults.preferences'] },
+  { label: '默认处理方式', tab: 'common', paths: ['defaults.approval_mode', 'defaults.bot_notify', 'defaults.save_to', 'defaults.preferences'] },
   { label: '识别后转发', tab: 'common', paths: ['forward'] },
   { label: '监听来源', tab: 'sources', paths: ['sources'] },
   { label: '识别准确度', tab: 'advanced', paths: ['defaults.confidence_threshold', 'defaults.llm_response_format'] },

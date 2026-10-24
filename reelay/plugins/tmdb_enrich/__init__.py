@@ -113,15 +113,25 @@ class TmdbEnrich:
                     + ("，转存时以分享里的文件为准" if hit["_kind"] == "tv" else ""))
         p.raw_fields["tmdbid"] = hit.get("id")
         if hit.get("poster_path"):
-            p.raw_fields["poster_path"] = hit["poster_path"]  # 管理台卡片与通知展示海报
-        # 通知里展示：原名、简介与评分（评分人数太少时不显示）
+            p.raw_fields["poster_path"] = hit["poster_path"]  # 管理台卡片展示海报
+        if hit.get("backdrop_path"):
+            p.raw_fields["backdrop_path"] = hit["backdrop_path"]  # Telegram 通知用横图，卡片宽度一致
+        # 通知里展示：原名、简介、评分、语言与主演
         original = hit.get("original_title") or hit.get("original_name")
         if original and original != canonical:
             p.raw_fields["original_title"] = original
         if (hit.get("overview") or "").strip():
             p.raw_fields["overview"] = hit["overview"].strip()[:500]
-        if type(hit.get("vote_average")) in (int, float) and (hit.get("vote_count") or 0) >= 10:
+        if type(hit.get("vote_average")) in (int, float) and hit["vote_average"] > 0:
             p.raw_fields["rating"] = round(float(hit["vote_average"]), 1)
+        try:
+            extra = await asyncio.to_thread(tmdb.details, hit["_kind"], hit["id"], language=language, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - 语言与主演只用于展示，拿不到不影响识别
+            log.warning("TMDB 条目详情查询失败：%s", exc)
+            extra = {}
+        for key in ("languages", "cast", "rating"):
+            if extra.get(key):
+                p.raw_fields[key] = extra[key]
         p.raw_fields.setdefault("genre", "")
         p.genre_ids = [int(value) for value in hit.get("genre_ids") or []
                        if type(value) is int and value > 0]

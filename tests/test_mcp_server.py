@@ -27,8 +27,9 @@ from tests.test_ai_operations import done_task
 HAS_MCP = importlib.util.find_spec("mcp") is not None
 HAS_WEB = importlib.util.find_spec("fastapi") is not None
 READ_TOOLS = {"status", "list_pending", "list_tasks", "get_task", "list_save_dirs", "search_library",
-              "missing_episodes", "list_subscriptions", "find_show"}
-WRITE_TOOLS = {"approve", "reject", "retry", "subscribe"}
+              "missing_episodes", "list_subscriptions", "list_ignored", "find_show"}
+WRITE_TOOLS = {"approve", "reject", "retry", "subscribe", "unsubscribe", "resume_subscription", "unignore",
+               "correct", "reparse"}
 SHARE_URL = "https://115.com/s/swabc123?password=abcd"
 
 

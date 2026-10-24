@@ -4,7 +4,9 @@ import { Panel } from '@/components/app/Panel';
 import type { IExtension } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { LAYOUT_LABELS } from '@/plugins/organizer/layouts';
-import { STAGE_LABELS, isEnabled, obj, providerLabel, stageNames, strings, text, type Catalog, type Obj } from './shared';
+import {
+  PER_SOURCE_SLOTS, STAGE_LABELS, isEnabled, obj, providerLabel, rows, stageNames, strings, text, type Catalog, type Obj,
+} from './shared';
 
 interface FlowOverviewProps {
   catalog: Catalog;
@@ -93,7 +95,15 @@ export function FlowOverview({ catalog, hooks, events, config }: FlowOverviewPro
   const plugins = obj(config.plugins);
   const providers = obj(config.providers);
   const defaults = obj(config.defaults);
-  const core = (slot: string) => providerLabel(slot, text(slot === 'source' ? providers.source : defaults[slot]), catalog);
+  const sources = rows(config.sources);
+  const core = (slot: string) => {
+    if (!PER_SOURCE_SLOTS.includes(slot) || !sources.length) {
+      return providerLabel(slot, text(slot === 'source' ? providers.source : defaults[slot]), catalog);
+    }
+    // 识别与判断按来源设置：各来源一致时写出来，不一致时提示按来源
+    const used = new Set(sources.map(s => text(s[slot] || defaults[slot])));
+    return used.size === 1 ? providerLabel(slot, [...used][0], catalog) : '按来源设置';
+  };
   const notify = strings(providers.notify).map(n => providerLabel('notify', n, catalog));
 
   const at = (stage: string) => hooks.filter(x => slotsOf(x).includes(stage));
@@ -155,7 +165,7 @@ export function FlowOverview({ catalog, hooks, events, config }: FlowOverviewPro
       ) : null}
 
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-primary/30 bg-primary/8" />核心能力（在下方「核心能力」里选择）</span>
+        <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-primary/30 bg-primary/8" />核心能力（识别与判断在来源卡片上选，其余在下方「核心能力」）</span>
         <span className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-success" />插件已开启</span>
         <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-[3px] border border-dashed border-muted-foreground/50" />插件已关闭</span>
       </div>

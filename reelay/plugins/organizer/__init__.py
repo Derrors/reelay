@@ -238,15 +238,30 @@ class _MediaLibrary:
         return {"media": describe(categories())}
 
     def preview_plan(self, payload: dict) -> dict:
-        """「工具 → 整理预览」：按当前命名模板，算出一组文件名整理后的位置（不碰网盘）。"""
+        """整理效果预览：算出一组文件名整理后的位置（不碰网盘）。
+
+        naming 是设置页里还没保存的命名模板（{movie, tv}），省略时用已保存的。
+        """
         landed = payload.get("landed", [])
         if not isinstance(landed, list) or any(not isinstance(f, dict) for f in landed):
             raise ValueError("landed 必须是文件对象数组")
         resource = ParsedResource(**validate_resource(payload.get("parsed")))
-        return {"items": build_plan(resource, landed)}
+        naming = payload.get("naming")
+        if naming is None:
+            return {"items": build_plan(resource, landed)}
+        if not isinstance(naming, dict) or set(naming) - {"movie", "tv"}:
+            raise ValueError("naming 只能包含 movie 与 tv 模板")
+        for kind, template in naming.items():
+            validate_template(template, f"{kind}命名模板")
+        cfg = runtime.get_config()
+        draft = {**cfg, "plugins": {**cfg.get("plugins", {}), "organizer": {
+            **(cfg.get("plugins", {}).get("organizer") or {}),
+            "naming": {**(runtime.get("plugins.organizer.naming", {}) or {}), **naming}}}}
+        with runtime.scope(draft):
+            return {"items": build_plan(resource, landed)}
 
     async def parse_names(self, payload: dict) -> dict:
-        """「工具 → 命名预览」：从贴进来的文件名识别片名、年份、季与集，用来预填表单。
+        """「预览整理效果」：从贴进来的文件名识别片名、年份、季与集，用来预填表单。
 
         和真实整理一样以 TMDB 为准：配了 TMDB key 时用文件名里的片名（中文名、英文名依次）去搜，
         可信匹配时换成规范片名、年份与 tmdbid；tmdb 字段说明结果来源。

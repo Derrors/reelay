@@ -15,18 +15,13 @@ export const modeLabels: Record<string, string> = {
   not_running: '后台未启动',
 };
 
-// 审批模式：manual / auto / default_pass
+// 确认方式：manual / auto；是否发 Bot 通知是另一个开关（bot_notify）
 export const approvalLabels: Record<string, string> = {
-  manual: '每条都需我确认',
-  auto: '自动通过并通知我',
-  default_pass: '全自动，无需打扰我',
+  manual: '人工确认',
+  auto: 'AI 处理',
 };
 
-export const approvalShortLabels: Record<string, string> = {
-  manual: '人工确认',
-  auto: '自动通过',
-  default_pass: '静默通过',
-};
+export const approvalShortLabels: Record<string, string> = approvalLabels;
 
 // 审批超时动作：remind / skip
 export const timeoutActionLabels: Record<string, string> = {

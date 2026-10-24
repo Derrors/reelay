@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, Plus, Radio, SlidersHorizontal, Sparkles, Trash2, TrendingUp } from 'lucide-react';
-import { ai, percent, type ISourceInsight } from '@/api/ai';
+import { ChevronDown, Plus, Radio, Regex, ScanSearch, SlidersHorizontal, Sparkles, Trash2, TrendingUp } from 'lucide-react';
+import { ai, PARSE_RULE_FIELDS, PARSE_RULE_LABELS, percent, type ISourceInsight } from '@/api/ai';
 import { EmptyState } from '@/components/app/EmptyState';
 import { Panel } from '@/components/app/Panel';
 import { Select, type SelectOption } from '@/components/app/Select';
@@ -10,12 +10,18 @@ import { Textarea } from '@/components/ui/textarea';
 import { approvalLabels, approvalShortLabels } from '@/lib/status';
 import { cn } from '@/lib/utils';
 import { Field, LinesField, Notice } from './fields';
+import { ParseRulesDialog } from './ParseRulesDialog';
+import { ParseTestDialog } from './ParseTestDialog';
 import { SourceWizard } from './SourceWizard';
 import {
-  APPROVAL_OPTIONS, SLOT_LABELS, obj, providerLabel, prune, rows, strings, text, type Catalog, type Obj,
+  APPROVAL_OPTIONS, NOTIFY_OPTIONS, SLOT_LABELS, notifyValue, obj, providerLabel, prune, rows, strings, text, type Catalog,
+  type Obj,
 } from './shared';
 
-const ENGINE_SLOTS = ['parser', 'decision', 'storage'];
+/** 识别方式与转存方式只在来源上设置（defaults 里的值只是没写时的兜底）；网盘有多个可选时才出现在高级设置里。 */
+const MAIN_SLOTS = ['parser', 'decision'];
+const ADVANCED_SLOTS = ['storage'];
+const multiple = (catalog: Catalog | null, slot: string) => (catalog?.providers[slot]?.length ?? 0) > 1;
 
 /** 当前值不在可选项里（目录被删、扩展被卸载）时补一项，避免下拉框悄悄显示成别的值。 */
 function withCurrent(options: SelectOption[], value: string): SelectOption[] {
@@ -40,8 +46,15 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
   const name = text(source.bot).trim();
   const filters = obj(source.filters);
   const mode = text(source.approval_mode || defaults.approval_mode);
+  const notify = (source.bot_notify ?? defaults.bot_notify) !== false;
   const saveTo = text(source.save_to || defaults.save_to);
-  const overrides = ENGINE_SLOTS.filter(k => source[k] !== undefined).length
+  const parser = text(source.parser || defaults.parser);
+  const parseRules = obj(source.parse_rules);
+  const ruleFields = PARSE_RULE_FIELDS.filter(f => text(parseRules[f]).trim());
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const advancedSlots = ADVANCED_SLOTS.filter(k => multiple(catalog, k) || source[k] !== undefined);
+  const overrides = advancedSlots.filter(k => source[k] !== undefined).length
     + Number(strings(filters.must_have).length > 0) + Number(strings(filters.block_keywords).length > 0)
     + Number(Boolean(text(source.preferences)));
   const setFilter = (key: string, list: string[]) => {
@@ -57,7 +70,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
     <Panel
       icon={Radio}
       title={name || <span className="text-muted-foreground">未命名来源</span>}
-      description={`${approvalShortLabels[mode] ?? '确认方式未设置'} · 保存到「${saveTo || '未设置'}」`}
+      description={`${approvalShortLabels[mode] ?? '确认方式未设置'} · ${notify ? 'Bot 通知' : '不发 Bot 通知'} · 保存到「${saveTo || '未设置'}」`}
       actions={(
         <Button
           variant="ghost" size="icon" className="size-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
@@ -69,12 +82,12 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
       bodyClassName="p-4 sm:p-5"
     >
       {insight?.suggest_auto && mode === 'manual' ? (
-        <Notice tone="success" icon={TrendingUp} title="可以考虑改为自动转存" className="mb-4"
-          action={<Button size="sm" variant="outline" className="bg-card" onClick={() => onChange({ approval_mode: 'auto' })}>改为自动转存</Button>}>
+        <Notice tone="success" icon={TrendingUp} title="可以考虑改为 AI 处理" className="mb-4"
+          action={<Button size="sm" variant="outline" className="bg-card" onClick={() => onChange({ approval_mode: 'auto' })}>改为 AI 处理</Button>}>
           {insight.reason}。切换后仍要通过过滤规则、置信度、TMDB 匹配与分享清单校验，拿不准的照样交给你。
         </Notice>
       ) : null}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Field label="Bot 或频道">
           <Input
             id={`source-${index}`} className="bg-card" placeholder="@resource_bot"
@@ -89,6 +102,23 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
             options={APPROVAL_OPTIONS.map(v => ({ value: v, label: approvalLabels[v] }))}
           />
         </Field>
+        {MAIN_SLOTS.map(slot => (
+          <Field key={slot} label={SLOT_LABELS[slot]}>
+            <Select
+              value={text(source[slot] || defaults[slot])}
+              onValueChange={v => onChange({ [slot]: v || undefined })}
+              options={withCurrent(providerOptions(slot), text(source[slot] || defaults[slot]))}
+            />
+          </Field>
+        ))}
+        <Field label="Bot 通知">
+          <Select
+            value={notifyValue(source.bot_notify)}
+            onValueChange={v => onChange({ bot_notify: v ? v === 'on' : undefined })}
+            placeholder="未设置" fallback={{ value: defaults.bot_notify === false ? 'off' : 'on' }}
+            options={NOTIFY_OPTIONS}
+          />
+        </Field>
         <Field label="保存到">
           <Select
             value={text(source.save_to)}
@@ -98,6 +128,35 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
           />
         </Field>
       </div>
+
+      <div className="mt-4 flex flex-col gap-2 rounded-lg border border-border/70 bg-background/60 px-3.5 py-2.5 sm:flex-row sm:items-center">
+        <Regex className="hidden size-4 shrink-0 text-primary sm:block" />
+        <div className="min-w-0 flex-1 text-[13px] leading-5">
+          <span className="font-medium">识别规则</span>
+          <span className="text-muted-foreground">
+            {ruleFields.length
+              ? `：已为${ruleFields.map(f => PARSE_RULE_LABELS[f]).join('、')}单独写了规则`
+              : '：未设置，用通用规则'}
+            {parser === 'regex' ? '' : '（AI 识别时作参考，AI 不可用时兜底）'}
+          </span>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button size="sm" variant="outline" className="bg-card" onClick={() => setRulesOpen(true)}>
+            {ruleFields.length ? '查看与修改' : '设置识别规则'}
+          </Button>
+          <Button size="sm" variant="outline" className="bg-card" onClick={() => setTesting(true)}
+            title="按这个来源当前的设置（含未保存的修改）完整识别一条消息">
+            <ScanSearch />测试识别
+          </Button>
+        </div>
+      </div>
+      {testing ? <ParseTestDialog open onOpenChange={setTesting} source={source} /> : null}
+      {rulesOpen ? (
+        <ParseRulesDialog
+          open onOpenChange={setRulesOpen} bot={name} parser={parser} rules={parseRules}
+          onSave={rules => onChange({ parse_rules: rules })}
+        />
+      ) : null}
 
       {insight?.decisions ? (
         <p className="mt-3 text-xs text-muted-foreground">
@@ -113,14 +172,15 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
           <SlidersHorizontal className="size-4 shrink-0 text-primary" />
           <span className="shrink-0">高级设置</span>
           <span className="min-w-0 truncate text-xs font-normal text-muted-foreground">
-            {overrides ? `已单独设置 ${overrides} 项` : '识别方式、关键词过滤、收藏偏好'}
+            {overrides ? `已单独设置 ${overrides} 项` : `${advancedSlots.length ? '网盘、' : ''}关键词过滤、收藏偏好`}
           </span>
           <ChevronDown className={cn('ml-auto size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
         </button>
         {open ? (
           <div className="mt-3 space-y-4">
+            {advancedSlots.length ? (
             <div className="grid gap-4 md:grid-cols-3">
-              {ENGINE_SLOTS.map(slot => (
+              {advancedSlots.map(slot => (
                 <Field key={slot} label={SLOT_LABELS[slot]}>
                   <Select
                     value={text(source[slot])}
@@ -131,6 +191,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
                 </Field>
               ))}
             </div>
+            ) : null}
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="消息必须包含" hint="每行一个词；消息或链接里至少包含其中一个才会处理。">
                 <LinesField value={strings(filters.must_have)} onChange={list => setFilter('must_have', list)} placeholder="如：115" />
@@ -139,7 +200,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
                 <LinesField value={strings(filters.block_keywords)} onChange={list => setFilter('block_keywords', list)} placeholder="如：广告" />
               </Field>
             </div>
-            <Field label="收藏偏好" hint="留空则沿用默认偏好；只在转存判断方式为「AI 按偏好判断」时生效。">
+            <Field label="收藏偏好" hint="留空则沿用默认偏好；只在转存方式为「AI 按偏好判断」时生效。">
               <Textarea
                 className="min-h-20 bg-card"
                 value={text(source.preferences)}
@@ -174,16 +235,18 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
       .catch(() => undefined);  // 只影响提示
     return () => { active = false; };
   }, []);
+  // 新来源直接写明识别方式与转存方式（取推荐值），卡片上看到的就是它实际用的
+  const engines = { parser: text(defaults.parser) || 'llm', decision: text(defaults.decision) || 'subscription' };
   const addDraft = (draft: Obj) => {
     const name = text(draft.bot).trim().toLowerCase();
     const kept = sources.filter((s) => text(s.bot).trim().toLowerCase() !== name);
-    update('sources', [...kept, draft]);
+    update('sources', [...kept, { ...engines, ...draft }]);
   };
   const wizardDialog = <SourceWizard open={wizard} onOpenChange={setWizard} onAdd={addDraft} />;
 
   const add = () => {
     const index = sources.length;
-    update('sources', [...sources, { bot: '', save_to: defaults.save_to, approval_mode: 'manual' }]);
+    update('sources', [...sources, { bot: '', save_to: defaults.save_to, approval_mode: 'manual', ...engines }]);
     requestAnimationFrame(() => {
       const input = document.getElementById(`source-${index}`);
       input?.scrollIntoView({ behavior: 'smooth', block: 'center' });

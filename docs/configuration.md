@@ -47,9 +47,11 @@ plugins:
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `approval_mode` | `manual` | `manual` 人工确认；`auto` 自动转存并通知；`default_pass` 自动转存且不发成功通知 |
+| `approval_mode` | `manual` | 确认方式：`manual` 人工确认，每条符合要求的资源都等你确认；`auto` AI 处理，识别与规则都通过就直接转存，低置信度、TMDB 未匹配、LLM 降级等拿不准的仍转人工 |
+| `bot_notify` | `true` | Bot 通知，与确认方式无关：推送审批卡片（可在 Telegram 直接确认）与入库通知；关闭后在管理台「待审批」处理，转存或整理出问题的提醒照常发送 |
 | `save_to` | `默认` | 默认保存到的目录别名 |
-| `parser` | `llm` | `llm` 或 `regex`。LLM 不可用、超时重试后仍失败或输出非法时降级 regex 并强制人工确认 |
+| `parser` | `llm` | `llm` 或 `regex`。`llm` 会把规则识别的结果作为参考一起交给 AI；LLM 不可用、超时重试后仍失败或输出非法时降级 regex 并强制人工确认 |
+| `parse_rules` | 无 | 来源自己的识别规则，按字段写 Python 正则（多行模式）：`title`、`year`、`season`、`episodes`、`resolution`、`size`，取第一个捕获组；`episodes` 逐处匹配后合并，单集用一个捕获组，区间用命名组 `start` 与 `end`，只有 `end` 时表示第 1 集到 end。没写或没匹配到的字段用通用规则。管理台来源卡片的「识别规则」可读取频道最近的消息，由 AI 起草并试跑 |
 | `llm_response_format` | `json_schema` | 不支持结构化输出的兼容接口改为 `json_object`（仍做本地严格校验） |
 | `decision` | `subscription` | `default` 只按规则；`subscription` 在规则之上让订阅剧集的新集自动放行；`llm` 再按 `preferences` 的自然语言偏好（并参考该来源近期的批准与忽略）决定是否收藏及目录，选出的目录不会被二级分类覆盖 |
 | `preferences` | `""` | 例："只要 4K 或 1080p 的国产剧和日本动画，综艺不要"。想让它变成确定性规则，用管理台「用一句话生成规则」 |
@@ -109,6 +111,7 @@ plugins:
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `subscriptions` | `[]` | 剧集订阅 `{title, season?, total?, tmdbid?, auto?}`：缺集巡检从第 1 集开始检查；`auto`（默认 `true`）时，`decision` 为 `subscription` 或 `llm` 的来源里同一 tmdbid（没有时按 TMDB 规范片名）、同一季的新集直接转存。仍要求 TMDB 匹配、置信度达标、过滤规则无疑问、消息里的集未全部入库；消息没写季集时以读取分享（`share_probe`）的结果确认季，跨多季的合集不放行，消息没写季号时转存只取订阅的那一季。管理台「追剧订阅」与待审批「追这部剧」会写入这里 |
+| `ignored_works` | `[]` | 不再接收的作品 `{title, tmdbid?, kind?}`（`kind` 为 `movie` / `tv`）：识别后同一 tmdbid 与类型（没有 tmdbid 时按 TMDB 规范片名）的消息直接忽略。Telegram 审批卡片「不再接收」会写入，「追剧订阅」页可恢复 |
 
 ### AI 服务与 TMDB（`llm` / `tmdb`）
 

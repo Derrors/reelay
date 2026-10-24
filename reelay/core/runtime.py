@@ -49,10 +49,10 @@ class Services:
         self.store = store
         self._targets = notify_targets
 
-    def notify(self, text: str, *, key: str = "plugin") -> None:
+    def notify(self, text: str, *, key: str = "plugin", html: bool = False, buttons: list | None = None) -> None:
         targets = self._targets()
         if targets:
-            self.store.stage_notice(key, text, targets)
+            self.store.stage_notice(key, text, targets, html=html, buttons=buttons)
 
     def state(self, plugin: str) -> PluginState:
         return PluginState(self.store, plugin)

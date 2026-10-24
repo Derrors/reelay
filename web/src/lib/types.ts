@@ -152,6 +152,8 @@ export interface IInboxItem {
   organize_error: string | null;
   /** 整理时库里已有同一集 / 同一部的文件，等人选择删除转存文件或覆盖保存。 */
   organize_conflict: IOrganizeConflict | null;
+  /** 转存只到了一部分（到的都对得上清单）：已到几个、缺哪些文件。 */
+  transfer_partial: ITransferPartial | null;
   /** 以下只在待确认（pending_approval）里返回。 */
   release?: IRelease;
   /** 版本信息的中文标签，如 ["简体中字", "内封字幕", "杜比视界"]。 */
@@ -275,4 +277,10 @@ export interface IOrganizeConflict {
   target_name: string;
   existing: IConflictFile;
   incoming: IConflictFile;
+}
+
+export interface ITransferPartial {
+  landed: number;
+  expected: number;
+  missing: string[];
 }

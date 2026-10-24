@@ -35,12 +35,15 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "save_dirs": {"电影": "0", "剧集": "0", "动漫": "0", "默认": "0"},
     "forward": {"enabled": False, "target": "", "template": "{title} ({year}) {resolution}\n{link}"},
     "providers": {"source": "telegram", "notify": ["console"]},
-    "defaults": {"approval_mode": "manual", "parser": "llm", "decision": "subscription",
+    # approval_mode：manual 人工确认 / auto AI 处理；bot_notify：是否推送审批卡片与入库通知（与确认方式无关）
+    "defaults": {"approval_mode": "manual", "bot_notify": True, "parser": "llm", "decision": "subscription",
                  "storage": "p115", "save_to": "默认", "confidence_threshold": 0.5,
                  "llm_response_format": "json_schema", "episodes_from": "share"},
     "sources": [],
     # 剧集订阅：订阅放行与缺集追更共用（每项 title/season/total/tmdbid/auto，见 core/subscriptions.py）
     "subscriptions": [],
+    # 不再接收的作品：同一部作品之后的消息直接忽略（每项 title/tmdbid/kind，见 core/ignored.py）
+    "ignored_works": [],
     "approval": {"timeout_hours": 24, "on_timeout": "remind", "reminder": "digest", "max_reminders": 3},
     "schedule": {"daily_hour": 9},
     # AI 能力：人工裁决回流、转人工前的方案兜底、收件箱建议与自动审批建议
@@ -170,7 +173,7 @@ def normalize_config(data: Any) -> dict[str, Any]:
     if any(not re.fullmatch(r'[0-9]+', str(cid)) for cid in dirs.values()):
         raise ValueError("save_dirs CID 必须是十进制非负整数字符串")
     cfg["save_dirs"] = {alias: str(cid) for alias, cid in dirs.items()}
-    for key in ("sources", "subscriptions"):
+    for key in ("sources", "subscriptions", "ignored_works"):
         if not isinstance(cfg[key], list):
             raise ValueError(f"{key} 必须是数组")
     _normalize_plugins(cfg["plugins"])
@@ -215,6 +218,8 @@ def normalize_config(data: Any) -> dict[str, Any]:
     validate_preferences(cfg["release"])
     from .subscriptions import validate as validate_subscriptions
     validate_subscriptions(cfg)
+    from .ignored import validate as validate_ignored
+    validate_ignored(cfg)
     _validate_services(cfg)
     try:
         json.dumps(cfg, sort_keys=True, allow_nan=False)
@@ -292,8 +297,10 @@ def _validate_services(cfg: dict) -> None:
 
 
 def _validate_rule(rule: dict, dirs: dict, label: str) -> None:
-    if type(rule.get("approval_mode")) is not str or rule["approval_mode"] not in {"manual", "auto", "default_pass"}:
-        raise ValueError(f"{label}.approval_mode 无效")
+    if type(rule.get("approval_mode")) is not str or rule["approval_mode"] not in {"manual", "auto"}:
+        raise ValueError(f"{label}.approval_mode 只能是 manual（人工确认）或 auto（AI 处理）")
+    if type(rule.get("bot_notify")) is not bool:
+        raise ValueError(f"{label}.bot_notify 必须是 true 或 false")
     if type(rule.get("save_to")) is not str or rule["save_to"] not in dirs:
         raise ValueError(f"{label}.save_to 引用了不存在的目录")
     for key in ("parser", "decision", "storage"):
@@ -311,6 +318,9 @@ def _validate_rule(rule: dict, dirs: dict, label: str) -> None:
         raise ValueError(f"{label}.preferences 必须是长度不超过 10000 的字符串")
     from .rules import validate_filters
     validate_filters(rule.get("filters", {}), f"{label}.filters")
+    if "parse_rules" in rule:
+        from .parse_rules import validate as validate_parse_rules
+        validate_parse_rules(rule["parse_rules"], f"{label}.parse_rules")
 
 
 def _validate_ai(section: dict) -> None:

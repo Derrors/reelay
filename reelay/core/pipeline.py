@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import inspect
 from pathlib import Path
 import logging
 from typing import Any
@@ -34,7 +35,7 @@ from .registry import Registry
 from .store import Store, _load_ctx
 from .config import config_revision, load_config, merge_config, normalize_config
 from .media import pairs_label, summarize_pairs
-from . import confidence, runtime
+from . import confidence, ignored, messages, runtime
 
 log = logging.getLogger("reelay.pipeline")
 
@@ -134,9 +135,10 @@ class Pipeline:
             fresh.ns("library")["preview"] = self.display_target(self.target_preview(fresh))
             ctx = fresh
         else:
-            poster = fresh.parsed.raw_fields.get("poster_path")
-            if poster and fresh.parsed.title == ctx.parsed.title:
-                ctx.parsed.raw_fields["poster_path"] = poster
+            if fresh.parsed.title == ctx.parsed.title:
+                for key in ("poster_path", "backdrop_path"):
+                    if fresh.parsed.raw_fields.get(key):
+                        ctx.parsed.raw_fields[key] = fresh.parsed.raw_fields[key]
             ctx.meta, ctx.trail = fresh.meta, fresh.trail
         return self.store.refresh_snapshot(ctx, updated_at=updated_at)
 
@@ -233,7 +235,15 @@ class Pipeline:
                     if not hasattr(obj, "notice"):
                         self.store.finish_delivery(row["id"], skipped=True)
                         return
-                    callback = obj.notice(json.loads(row["snapshot"])["text"])
+                    notice = json.loads(row["snapshot"])
+                    accepts = inspect.signature(obj.notice).parameters
+                    extra = {"buttons": notice["buttons"]} if notice.get("buttons") and "buttons" in accepts else {}
+                    if not notice.get("html"):
+                        callback = obj.notice(notice["text"], **extra)
+                    elif "html" in accepts:
+                        callback = obj.notice(notice["text"], html=True, **extra)
+                    else:  # 渠道只收纯文字
+                        callback = obj.notice(messages.plain(notice["text"]), **extra)
                     cfg = self.cfg
                 else:
                     ctx = _load_ctx(json.loads(row["snapshot"]))
@@ -330,9 +340,15 @@ class Pipeline:
 
         # 决策只看确定性信号算出的置信度；TMDB 等补全 Hook 已在上面跑完。
         confidence.apply(ctx)
-        decider = self.reg.get_provider("decision", ctx.source_rule.get("decision", self.cfg["defaults"]["decision"]))
-        with self._scope(ctx):
-            ctx.decision = await decider.decide(ctx)
+        blocked = ignored.match(ignored.items(self.cfg), ctx.parsed, ctx.meta.get("tmdb", {}))
+        if blocked:
+            ctx.decision = Decision.SKIP
+            ctx.log(f"你已设置不再接收《{blocked['title']}》，直接忽略")
+        else:
+            decider = self.reg.get_provider("decision",
+                                            ctx.source_rule.get("decision", self.cfg["defaults"]["decision"]))
+            with self._scope(ctx):
+                ctx.decision = await decider.decide(ctx)
         if ctx.decision == Decision.SAVE and ctx.meta.get("parse", {}).get("fallback"):
             ctx.decision = Decision.ASK
         ctx.log(f"决策 = {ctx.decision.value}")
@@ -410,6 +426,9 @@ class Pipeline:
         provider_name = ns.get("provider") or ctx.source_rule.get("storage", self.cfg["defaults"]["storage"])
         storage = self.reg.get_provider("storage", provider_name)
         ns["provider"] = provider_name
+        if ns.get("abandon") and ns.get("phase") == "receiving":
+            await self._abandon(ctx, storage)
+            return
         if not ns.get("manifest"):
             if not await self._run_hooks("before_save", ctx):
                 ctx.state = TaskState.SKIPPED
@@ -505,6 +524,10 @@ class Pipeline:
                     ctx.log(f"转存请求没有确认结果（{type(error).__name__}），改为只读核验，不重发")
                     with self._scope(ctx):
                         receipt = await storage.reconcile(ctx)
+            elif ns["phase"] == "receiving" and ns.get("accept_partial") and hasattr(storage, "reconcile_partial"):
+                with self._scope(ctx):
+                    receipt = await storage.reconcile_partial(ctx)
+                self._accept_partial(ctx, receipt)
             elif ns["phase"] == "receiving":
                 with self._scope(ctx):
                     receipt = await storage.reconcile(ctx)
@@ -517,6 +540,12 @@ class Pipeline:
             return
         except Exception as exc:
             ctx.state = TaskState.NEED_MANUAL
+            # 只到了一部分（到的都对得上）：记下进度，管理台可选「按已到的文件继续」
+            partial = getattr(exc, "partial", None)
+            if partial:
+                ns["partial"] = partial
+            else:
+                ns.pop("partial", None)
             ctx.log(f"转存结果待核验，不自动重发：{exc}")
             if not self.auto_rechecks(ctx):
                 await self.notify_uncertain(ctx)
@@ -537,6 +566,50 @@ class Pipeline:
         ctx.log("全部转存文件已核验，回执持久化后进入整理")
         self.store.finish_transfer(ctx)
         await self._organize(ctx)
+
+    def _accept_partial(self, ctx: PipelineContext, receipt: dict) -> None:
+        """按已到的文件继续：清单只留到了的文件，集数、去重身份随之缩小，没到的集不记为已入库。"""
+        ns = ctx.ns("storage")
+        missing = receipt.get("missing") or []
+        ns.pop("accept_partial", None)
+        ns.pop("partial", None)
+        if not missing:
+            return
+        manifest = ns["manifest"]
+        arrived = {x["name"] for x in receipt["landed"]}
+        manifest["missing"] = missing
+        manifest["files"] = [f for f in manifest["files"] if f["name"] in arrived]
+        if manifest.get("episodes"):
+            pairs = sorted({(f.get("season"), f["episode"]) for f in manifest["files"] if type(f.get("episode")) is int})
+            seasons = {season for season, _ in pairs}
+            manifest["episodes"] = sorted({ep for _, ep in pairs})
+            manifest["season"] = seasons.pop() if len(seasons) == 1 else None
+            if manifest.get("pairs") and manifest["season"] is None:
+                manifest["pairs"] = [list(pair) for pair in pairs]  # 仍跨多季
+            elif manifest.pop("pairs", None) is not None:
+                ns.get("identity", {}).pop("pairs", None)  # 只剩一季：按季与集数记录
+            self._adopt_manifest(ctx, manifest)
+        ctx.log(f"按已到的 {len(arrived)} 个文件继续；没到的 {len(missing)} 个不转存、不记为已入库："
+                f"{'、'.join(missing[:3])}{' 等' if len(missing) > 3 else ''}")
+
+    async def _abandon(self, ctx: PipelineContext, storage) -> None:
+        """放弃这次转存：删除暂存目录（进 115 回收站）并读回确认，然后忽略任务、释放占位。"""
+        ns = ctx.ns("storage")
+        try:
+            with self._scope(ctx):
+                await storage.abandon(ctx)
+        except Exception as exc:  # noqa: BLE001 - 删除结果不明：保留决定，再点一次会先读回再删
+            ctx.state = TaskState.NEED_MANUAL
+            ctx.log(f"删除暂存目录没有完成：{exc}")
+            self.store.save_task(ctx, error=f"删除暂存目录没有完成：{exc}")
+            return
+        for key in ("abandon", "partial", "accept_partial", "auto_recheck"):
+            ns.pop(key, None)
+        ns["phase"] = "abandoned"
+        ctx.state = TaskState.SKIPPED
+        ctx.log("已放弃这次转存：暂存目录连同已到的文件移进 115 回收站，不再处理")
+        self.store.save_task(ctx)
+        self.store.release_resource(ctx.task_id)
 
     async def _organize(self, ctx: PipelineContext) -> None:
         cid = ctx.save_dir_cid
@@ -672,8 +745,8 @@ class Pipeline:
     # 工具
     # ------------------------------------------------------------------ #
     async def _notify_all(self, ctx: PipelineContext, event: str, *, persist: bool = True) -> None:
-        # 静默模式只抑制常规成功通知；低置信度审批和故障仍可干预。
-        if event == "saved" and ctx.source_rule.get("approval_mode") == "default_pass":
+        # 「Bot 通知」关闭时不推送审批卡片与入库通知（在管理台处理）；需要处理的提醒照常发送。
+        if event in ("pending_approval", "saved") and not ctx.source_rule.get("bot_notify", True):
             return
         names = self.task_config(ctx).get("providers", {}).get("notify", ["console"])
         for name in names:
@@ -736,7 +809,7 @@ class Pipeline:
             handled += 1
         if style == "digest" and reminded:
             self.store.stage_notice("approval_digest", self._approval_digest(reminded, exhausted, now),
-                                    self.notify_targets(), event="digest")
+                                    self.notify_targets(), event="digest", buttons=messages.PENDING_BUTTONS)
         return handled
 
     @staticmethod
@@ -756,7 +829,7 @@ class Pipeline:
             lines.append(f"… 另有 {len(ordered) - 15} 部")
         if exhausted:
             lines.append(f"另有 {exhausted} 条已达提醒上限，不再提醒")
-        lines.append("请在管理台「任务」中批量批准或忽略，或用 /pending 查看。")
+        lines.append("点下方按钮逐条查看，或一键全部批准、忽略。")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #

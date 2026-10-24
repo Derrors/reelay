@@ -1,11 +1,10 @@
-import { CircleAlert, FilePlay, FolderOpen, FolderRoot, FolderTree, LoaderCircle, Play, WandSparkles } from 'lucide-react';
+import { CircleAlert, FilePlay, FolderOpen, FolderRoot, FolderTree, LoaderCircle, Play } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import { api } from '@/api/client';
 import { EmptyState } from '@/components/app/EmptyState';
-import { Page } from '@/components/app/Page';
-import { Panel } from '@/components/app/Panel';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
@@ -139,9 +138,18 @@ function PlanTree({ items }: { items: IOrganizePreviewItem[] }) {
   );
 }
 
-/* ---------------- 页面 ---------------- */
+/* ---------------- 弹窗 ---------------- */
 
-export default function OrganizePage() {
+interface OrganizePreviewDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** 设置里正在编辑的命名模板（可能还没保存）。 */
+  naming: { movie?: string; tv?: string };
+}
+
+/** 媒体库整理设置里的「预览整理效果」：贴入转存后的文件名，按正在编辑的命名模板看整理成什么样，不碰网盘。
+ *  打开时才挂载（见 OrganizerEditor），每次打开都是空白的。 */
+export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePreviewDialogProps) {
   const [kind, setKind] = useState<Kind>('tv');
   const [title, setTitle] = useState('');
   const [year, setYear] = useState('');
@@ -221,8 +229,8 @@ export default function OrganizePage() {
         episodes: tv ? numbers(episodes) : [],
         raw_fields: tmdbid ? { tmdbid } : {},
       };
-      // 媒体库整理插件的动作 preview_plan：按当前命名模板算出整理后的位置，不碰网盘
-      const result = await api.extensionAction<{ items: IOrganizePreviewItem[] }>('organizer', 'preview_plan', { parsed, landed });
+      // 媒体库整理插件的动作 preview_plan：按正在编辑的命名模板算出整理后的位置，不碰网盘
+      const result = await api.extensionAction<{ items: IOrganizePreviewItem[] }>('organizer', 'preview_plan', { parsed, landed, naming });
       setItems(result.items);
       // 窄屏下结果在表单下方，生成后自动滚过去。
       if (window.matchMedia('(max-width: 1023px)').matches) {
@@ -245,12 +253,15 @@ export default function OrganizePage() {
   }, [autoRun]);
 
   return (
-    <Page
-      title="命名预览"
-      description="贴入转存后的文件名，看看按当前命名规则会整理成什么样。只是预览，不会改动网盘。"
-    >
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
-        <Panel title="资源信息" icon={WandSparkles} description="填得越准确，预览越接近真实整理效果">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="space-y-1 px-5 pb-3 pr-12 pt-5 text-left">
+          <DialogTitle className="text-base">预览整理效果</DialogTitle>
+          <DialogDescription className="text-xs leading-5">
+            贴入转存后的文件名，看按正在编辑的命名模板（包括还没保存的修改）会整理成什么样。只是预览，不会改动网盘。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid min-h-0 flex-1 grid-cols-1 items-start gap-5 overflow-y-auto px-5 pb-5 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void preview(); }}>
             <Field
               label="转存后的文件名"
@@ -320,29 +331,31 @@ export default function OrganizePage() {
             </Button>
             {missing ? <p className="-mt-1 text-center text-xs text-muted-foreground">{missing}，即可生成预览</p> : null}
           </form>
-        </Panel>
 
-        <div ref={resultRef} className="scroll-mt-20">
-          <Panel title="整理后的结构" icon={FolderTree} description="使用当前命名规则，符合 Jellyfin / Emby 刮削规范">
+          <div ref={resultRef} className="scroll-mt-4 rounded-xl border border-border bg-card p-4">
+            <div className="mb-3">
+              <h3 className="text-[13px] font-medium">整理后的结构</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">按正在编辑的命名模板，符合 Jellyfin / Emby 刮削规范</p>
+            </div>
             {error ? (
-              <EmptyState icon={CircleAlert} title="无法生成整理方案" description={error} className="border-none py-16" />
+              <EmptyState icon={CircleAlert} title="无法生成整理方案" description={error} className="border-none py-12" />
             ) : items === null ? (
               <EmptyState
                 icon={FolderTree}
                 title="填好资源信息后生成预览"
                 description="会列出整理后的文件夹层级和每个文件的新名字；不会执行任何转存、移动或改名。"
-                className="border-none py-16"
+                className="border-none py-12"
               />
             ) : items.length === 0 ? (
-              <EmptyState icon={FolderTree} title="没有需要整理的文件" description="命名规则没有为这些文件生成新位置，请检查文件名或资源类型。" className="border-none py-16" />
+              <EmptyState icon={FolderTree} title="没有需要整理的文件" description="命名规则没有为这些文件生成新位置，请检查文件名或资源类型。" className="border-none py-12" />
             ) : (
               <div className={cn('transition-opacity', busy && 'opacity-50')}>
                 <PlanTree items={items} />
               </div>
             )}
-          </Panel>
+          </div>
         </div>
-      </div>
-    </Page>
+      </DialogContent>
+    </Dialog>
   );
 }

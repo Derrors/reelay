@@ -1,10 +1,10 @@
 """每日日报 —— on_daily 事件监听（Event 旁路示例）。
 
 内核每天在 schedule.daily_hour 发一次 on_daily，事件快照带过去 24 小时的汇总；
-这里只负责排版并通过 ``runtime.services().notify`` 推给所有通知渠道。没有新消息也没有
+这里只负责排版（Telegram HTML）并通过 ``runtime.services().notify`` 推给所有通知渠道。没有新消息也没有
 积压的日子不发送，避免无意义打扰。
 
-配置了 AI 且 ``plugins.daily_report.narrative`` 未关闭时，开头加一段 AI 按事实写的话（如「本周新收 3 部剧，
+配置了 AI 且 ``plugins.daily_report.narrative`` 未关闭时，标题下用引用块加一段 AI 按事实写的话（如「本周新收 3 部剧，
 《X》E07 已经播出 3 天还没出现，可能需要换个来源」），下面仍附原来的数字；事实全部由代码统计，
 AI 调用失败时只发数字版。
 """
@@ -15,6 +15,9 @@ import json
 import time
 
 from ...core import ai, runtime
+from ...core.media import pairs_label
+from ...core.messages import esc, type_icon
+from ..episode_tracker import format_episodes
 from ...core.contracts import PipelineContext
 from ...core.registry import register
 
@@ -29,7 +32,8 @@ _PROMPT = (
 )
 
 
-def render(summary: dict, date: str) -> str | None:
+def render(summary: dict, date: str, story: str | None = None) -> str | None:
+    """日报正文（Telegram HTML）：标题、AI 提醒（引用块）、24 小时数字、入库片名、积压，各段之间空一行。"""
     received = summary.get("received", 0)
     backlog = {
         "待审批": summary.get("pending_approval", 0),
@@ -40,15 +44,38 @@ def render(summary: dict, date: str) -> str | None:
         return None
     by_state = summary.get("received_by_state", {})
     filtered = by_state.get("rejected", 0) + by_state.get("skipped", 0)
-    lines = [f"📊 Reelay 日报 {date}",
-             f"过去 24 小时新收 {received} 条，入库 {summary.get('done_count', 0)} 条，过滤 {filtered} 条"]
-    for item in summary.get("done", [])[:10]:
-        lines.append(f"  ✅ {item.get('title') or item.get('task_id')}")
-    if summary.get("done_count", 0) > 10:
-        lines.append(f"  … 共 {summary['done_count']} 条")
+    done_count = summary.get("done_count", 0)
+    blocks = [f"📊 <b>Reelay 日报</b> · {esc(date)}"]
+    if story:
+        blocks.append(f"<blockquote>{esc(story)}</blockquote>")
+    blocks.append(f"📥 <b>过去 24 小时</b>\n新收 {received} 条 · 入库 {done_count} 条 · 过滤 {filtered} 条")
+    # 同一部剧常有好几条，按片名合并，列出这次入库的集
+    titles: dict[str, dict] = {}
+    for item in summary.get("done", []):
+        group = titles.setdefault(item.get("title") or item.get("task_id"),
+                                  {"media_type": item.get("media_type"), "pairs": set(), "count": 0})
+        group["pairs"].update(tuple(pair) for pair in item.get("pairs") or [])
+        group["count"] += 1
+    if titles:
+        lines = [_done_line(title, group) for title, group in list(titles.items())[:10]]
+        if len(titles) > 10 or done_count > sum(group["count"] for group in titles.values()):
+            lines.append(f"… 共 {done_count} 条")
+        blocks.append("✅ <b>已入库</b>\n" + "\n".join(lines))
     if any(backlog.values()):
-        lines.append("积压：" + " · ".join(f"{label} {count}" for label, count in backlog.items()))
-    return "\n".join(lines)
+        blocks.append("📌 <b>待处理</b>\n" + " · ".join(f"{label} {count}" for label, count in backlog.items() if count))
+    return "\n\n".join(blocks)
+
+
+def _done_line(title: str, group: dict) -> str:
+    """「📺 小城良方 · S01 E09-E10」「🎬 空枪 ×2」；跨多季时写「S01–S03 共 30 集」。"""
+    pairs = sorted(group["pairs"])
+    line = f"{type_icon(group['media_type'], bool(pairs))} {esc(title)}"
+    seasons = {season for season, _ in pairs}
+    if len(seasons) == 1:
+        return f"{line} · S{seasons.pop():02d} {format_episodes([ep for _, ep in pairs], limit=4)}"
+    if seasons:
+        return f"{line} · {pairs_label(pairs)}"
+    return line + (f" ×{group['count']}" if group["count"] > 1 else "")
 
 
 def facts(summary: dict, week: list[dict], tracker: dict) -> dict:
@@ -80,15 +107,13 @@ class DailyReport(ai.UsesAI):
     async def handle(self, ctx: PipelineContext) -> None:
         system = ctx.meta.get("system", {})
         summary = system.get("summary") or {}
-        text = render(summary, system.get("date", ""))
-        if not text:
+        date = system.get("date", "")
+        if not render(summary, date):
             return
+        story = None
         if self._client is not None and runtime.plugin_config(self.name).get("narrative", True):
-            story = await self._narrate(summary, system.get("date", ""))
-            if story:
-                head, _, rest = text.partition("\n")
-                text = f"{head}\n{story}\n\n{rest}"
-        runtime.services().notify(text, key="daily_report")
+            story = await self._narrate(summary, date)
+        runtime.services().notify(render(summary, date, story), key="daily_report", html=True)
 
     async def _narrate(self, summary: dict, date: str) -> str | None:
         store = runtime.services().store

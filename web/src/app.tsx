@@ -13,8 +13,6 @@ import { onUnauthorized } from '@/api/client';
 // 常用页面直接打包；统计页（echarts）、设置与工具页按需加载，控制首屏体积。
 const StatsPage = lazy(() => import('@/pages/StatsPage/StatsPage'));
 const ConfigPage = lazy(() => import('@/pages/ConfigPage/ConfigPage'));
-const SourcesPage = lazy(() => import('@/pages/SourcesPage/SourcesPage'));
-const OrganizePage = lazy(() => import('@/plugins/organizer/OrganizePage'));
 const StoragePage = lazy(() => import('@/pages/StoragePage/StoragePage'));
 const LogsPage = lazy(() => import('@/pages/LogsPage/LogsPage'));
 const SubscriptionsPage = lazy(() => import('@/pages/SubscriptionsPage/SubscriptionsPage'));
@@ -49,10 +47,11 @@ export default function App() {
         <Route path="tasks" element={<TasksPage />} />
         <Route path="config" element={<ConfigPage />} />
         <Route path="extensions" element={<ConfigPage key="extensions" initialTab="extensions" />} />
-        <Route path="organize" element={<OrganizePage />} />
+        {/* 命名预览与识别测试已并入对应的设置：旧地址跳过去 */}
+        <Route path="organize" element={<Navigate to="/extensions" replace />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="storage" element={<StoragePage />} />
-        <Route path="sources" element={<SourcesPage />} />
+        <Route path="sources" element={<Navigate to="/config?tab=sources" replace />} />
         <Route path="stats" element={<StatsPage />} />
         <Route path="library" element={<LibraryPage />} />
         <Route path="subscriptions" element={<SubscriptionsPage />} />

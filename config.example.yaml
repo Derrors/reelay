@@ -20,7 +20,8 @@ system:
 
   # 监听多个 bot，各挂各的规则（先设全局默认，再按 bot 覆盖）
   defaults:
-    approval_mode: manual      # manual | auto | default_pass
+    approval_mode: manual      # manual（人工确认）| auto（AI 处理：规则都通过就直接转存，拿不准的仍交给你）
+    bot_notify: true           # Bot 通知：推送审批卡片与入库通知；关闭后在管理台处理，出问题的提醒照常发送
     parser: llm                # llm | regex；LLM 异常/非法输出降级后必须人工确认
     llm_response_format: json_schema # 不支持 schema 的兼容接口可显式用 json_object，仍严格本地校验
     decision: subscription     # default（只按规则）| subscription（规则 + 订阅放行）| llm（再加自然语言偏好）
@@ -34,6 +35,11 @@ system:
     - bot: "@example_movie_bot"
       approval_mode: manual
       save_to: 电影
+      # 来源自己的识别规则（逐字段正则，没写的字段用通用规则）：规则识别直接使用，
+      # AI 识别时作为参考，AI 不可用时兜底。管理台来源卡片的「识别规则」可让 AI 按最近的消息起草
+      # parse_rules:
+      #   title: '^名称：(.+?)\s*\(\d{4}\)'
+      #   episodes: 'E(\d+)'
       filters:
         must_have: ["115.com", "115.cn"]
         block_keywords: ["广告", "招商", "投稿", "频道"]
@@ -42,7 +48,7 @@ system:
         # deny: [{genre_ids: "10764,10767"}]        # 真人秀、脱口秀不收
         # min_resolution: 1080p                     # 清晰度未知时转人工
 
-    # 高度信任的源：自动审批 + 自然语言偏好；低置信度、TMDB 未匹配和 LLM 降级仍会转人工
+    # 高度信任的源：AI 处理 + 自然语言偏好；低置信度、TMDB 未匹配和 LLM 降级仍会转人工
     - bot: "@example_tv_bot"
       approval_mode: auto
       decision: llm
@@ -54,6 +60,8 @@ system:
   # 剧集订阅：订阅的剧从第 1 集开始检查缺集；auto 为 true（默认）时新集自动转存
   # （decision 为 subscription 或 llm 的来源生效）。管理台「追剧订阅」与待审批「追这部剧」会写入这里。
   subscriptions: []
+  # 不再接收的作品（Telegram 审批卡片点「不再接收」写入，「追剧订阅」页可恢复）：之后的消息识别完直接忽略
+  ignored_works: []
   # - {title: 一瓯春, season: 1, total: 36, tmdbid: 12345}
   # - {title: 只想提醒缺集的剧, season: 2, auto: false}
 

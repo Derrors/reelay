@@ -28,6 +28,30 @@ COUNTRIES = {
     "CN": "中国大陆", "HK": "香港", "TW": "台湾", "JP": "日本", "KR": "韩国", "KP": "朝鲜", "TH": "泰国",
     "IN": "印度", "SG": "新加坡", "US": "美国", "GB": "英国", "UK": "英国", "FR": "法国", "DE": "德国",
     "ES": "西班牙", "IT": "意大利", "NL": "荷兰", "PT": "葡萄牙", "RU": "俄罗斯",
+    "CA": "加拿大", "AU": "澳大利亚", "NZ": "新西兰", "IE": "爱尔兰", "BE": "比利时", "SE": "瑞典", "DK": "丹麦",
+    "NO": "挪威", "FI": "芬兰", "PL": "波兰", "MX": "墨西哥", "BR": "巴西", "AR": "阿根廷", "TR": "土耳其",
+    "MY": "马来西亚", "PH": "菲律宾", "VN": "越南", "ID": "印度尼西亚",
+}
+
+def tv_category(genre_ids: list[int] | None, media_type: str | None = None) -> str:
+    """剧集类条目的细分：动漫、综艺、纪录片、少儿，其余为电视剧（按 TMDB 题材 ID）。"""
+    genres = set(genre_ids or [])
+    if media_type == "anime" or 16 in genres:
+        return "动漫"
+    if genres & {10764, 10767}:
+        return "综艺"
+    if 99 in genres:
+        return "纪录片"
+    if 10762 in genres:
+        return "少儿"
+    return "电视剧"
+
+
+# TMDB 语言代码（ISO 639-1；cn 是 TMDB 对粤语的写法）→ 中文名
+LANGUAGES = {
+    "zh": "国语", "cn": "粤语", "en": "英语", "ja": "日语", "ko": "韩语", "th": "泰语", "fr": "法语", "de": "德语",
+    "es": "西班牙语", "it": "意大利语", "ru": "俄语", "pt": "葡萄牙语", "hi": "印地语", "ar": "阿拉伯语",
+    "tr": "土耳其语", "vi": "越南语", "id": "印尼语", "ms": "马来语", "nl": "荷兰语", "sv": "瑞典语",
 }
 
 CONDITION_FIELDS = ("media_type", "genre_ids", "origin_country")

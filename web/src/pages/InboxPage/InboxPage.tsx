@@ -1,10 +1,10 @@
 import {
-  AlertTriangle, BellPlus, Check, CheckCheck, FolderTree, Inbox, Lightbulb, Search, ShieldCheck, Sparkles, Wand2, X,
+  AlertTriangle, BellPlus, Check, CheckCheck, FolderTree, Inbox, Lightbulb, Search, ShieldCheck, Sparkles, Trash2, Wand2, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ai } from '@/api/ai';
-import { api } from '@/api/client';
+import { api, type TaskAction } from '@/api/client';
 import { extras } from '@/api/extras';
 import { EmptyState } from '@/components/app/EmptyState';
 import { MediaCover } from '@/components/app/MediaCover';
@@ -17,7 +17,7 @@ import { TaskDetailSheet } from '@/components/TaskDetailSheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { CONFLICT_DONE, type ConflictChoice } from '@/lib/conflict';
+import { CONFLICT_DONE, confirmAbandon, type ConflictChoice } from '@/lib/conflict';
 import { fullTime, relativeTime } from '@/lib/format';
 import { Realtime } from '@/lib/realtime';
 import { CONFIDENCE_CAP_LABELS, TONE_CLASS, type Tone } from '@/lib/status';
@@ -93,6 +93,8 @@ function shareBadge(share: IShareProbe | null): { tone: Tone; label: string; tit
   }
 }
 
+type InboxAction = Extract<TaskAction, 'approve' | 'reject' | 'reconcile' | 'reorganize' | 'accept-partial' | 'abandon'>;
+
 interface CardProps {
   item: IInboxItem;
   dirs: string[];
@@ -102,7 +104,7 @@ interface CardProps {
   busy: boolean;
   onToggle: () => void;
   onOpen: () => void;
-  onAct: (action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string, conflict?: ConflictChoice) => void;
+  onAct: (action: InboxAction, dir?: string, conflict?: ConflictChoice) => void;
   onSubscribe: () => void;
 }
 
@@ -218,7 +220,18 @@ function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOpen, onA
             <>
               <Button size="sm" variant="ghost" onClick={onOpen}>详情</Button>
               {item.storage_phase === 'receiving' ? (
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct('reconcile')}><ShieldCheck />核验转存</Button>
+                <>
+                  <Button size="sm" variant="ghost" disabled={busy} className="px-2 text-muted-foreground hover:text-destructive sm:px-3"
+                    onClick={() => void confirmAbandon(item.title, item.transfer_partial).then((ok) => { if (ok) onAct('abandon'); })}>
+                    <Trash2 />放弃
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct('reconcile')}><ShieldCheck />核验转存</Button>
+                  {item.transfer_partial ? (
+                    <Button size="sm" disabled={busy} onClick={() => onAct('accept-partial')}>
+                      <Check />按已到的 {item.transfer_partial.landed} 个继续
+                    </Button>
+                  ) : null}
+                </>
               ) : null}
               {!item.has_landed && item.storage_phase !== 'receiving' ? (
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAct('reject')}
@@ -301,7 +314,7 @@ export default function InboxPage() {
     setSelected((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
   };
 
-  const act = async (item: IInboxItem, action: 'approve' | 'reject' | 'reconcile' | 'reorganize', dir?: string,
+  const act = async (item: IInboxItem, action: InboxAction, dir?: string,
     conflict?: ConflictChoice) => {
     setBusy((prev) => new Set(prev).add(item.task_id));
     try {
@@ -309,7 +322,8 @@ export default function InboxPage() {
       await api.action(item.task_id, action, body);
       remove([item.task_id]);
       toast.success(conflict ? CONFLICT_DONE[conflict]
-        : { approve: `已转存「${item.title ?? '资源'}」`, reject: '已忽略', reconcile: '已排队核验', reorganize: '已排队重新整理' }[action]);
+        : { approve: `已转存「${item.title ?? '资源'}」`, reject: '已忽略', reconcile: '已排队核验', reorganize: '已排队重新整理',
+          'accept-partial': '已排队：按已到的文件继续整理', abandon: '已排队：放弃并删除暂存目录' }[action]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '操作失败');
     } finally {

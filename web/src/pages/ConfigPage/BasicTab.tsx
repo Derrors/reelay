@@ -83,7 +83,8 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
     setField('forward', 'template', current.slice(0, start) + token + current.slice(end));
     requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(start + token.length, start + token.length); });
   };
-  const preferencesActive = text(defaults.decision) === 'llm';
+  // 默认偏好给转存方式为「AI 按偏好判断」、没写自己偏好的来源用
+  const preferencesActive = sources.some(s => text(s.decision || defaults.decision) === 'llm');
 
   return (
     <div className="space-y-5">
@@ -177,8 +178,16 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
                 onChange={v => setField('defaults', 'approval_mode', v)}
                 options={APPROVAL_OPTIONS.map(v => ({ value: v, label: approvalLabels[v], hint: APPROVAL_HINTS[v] }))}
               />
-              <p className="text-xs leading-5 text-muted-foreground">即使选了自动，AI 没把握时仍会转给你确认。</p>
+              <p className="text-xs leading-5 text-muted-foreground">即使选了 AI 处理，AI 没把握时仍会转给你确认。</p>
             </div>
+            <SwitchRow
+              title="Bot 通知"
+              description={defaults.bot_notify === false
+                ? '不推送审批卡片与入库通知，在管理台「待审批」处理；转存或整理出问题时仍会提醒'
+                : '通过控制 Bot 推送审批卡片（可直接在 Telegram 确认）与入库通知'}
+              checked={defaults.bot_notify !== false}
+              onCheckedChange={v => setField('defaults', 'bot_notify', v)}
+            />
             <Field label="默认保存到">
               <Select
                 value={text(defaults.save_to)}
@@ -191,7 +200,7 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
               label="收藏偏好"
               hint={preferencesActive
                 ? '用大白话告诉 AI 你想要什么，它会据此辅助判断是否转存。'
-                : <>只在转存判断方式为「AI 按偏好判断」时生效；当前默认为「{providerLabel('decision', text(defaults.decision), catalog)}」，可在 <Link to="/extensions" className="text-primary hover:underline">插件 → 核心能力</Link> 中切换。</>}
+                : <>只对转存方式为「{providerLabel('decision', 'llm', catalog)}」的来源生效，目前没有这样的来源；可在 <Link to="/config?tab=sources" className="text-primary hover:underline">监听来源</Link> 的来源卡片上切换。</>}
             >
               <Textarea
                 className="min-h-20 bg-card"

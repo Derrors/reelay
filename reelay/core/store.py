@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import PipelineContext, RawMessage, ParsedResource, TaskState
-from .media import multi_season
+from .media import multi_season, planned_pairs
 
 
 # 三层去重的 kind
@@ -129,6 +129,16 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_source ON feedback(source, kind, id);
+CREATE TABLE IF NOT EXISTS source_fetches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, -- 管理台请主进程读取来源最近的消息（监听会话只在主进程里）
+    bot TEXT NOT NULL,
+    max_count INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | running | done | failed
+    result TEXT,                         -- 消息列表（JSON）
+    error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 # 系统通知（告警、审批汇总、日报）没有对应任务，投递行使用固定的伪任务 ID。
@@ -684,11 +694,33 @@ class Store:
             (TaskState.DONE.value,)) if r[0] is not None}
 
     @_locked
+    def title_media_types(self) -> dict[str, str]:
+        """已入库片名 → 识别出的媒体类型（追更提醒显示类型图标用）。"""
+        return {r["title"]: r["media_type"] for r in self._conn.execute(
+            "SELECT title, json_extract(snapshot,'$.parsed.media_type') media_type FROM tasks "
+            "WHERE state=? AND title IS NOT NULL AND media_type IS NOT NULL ORDER BY updated_at",
+            (TaskState.DONE.value,))}
+
+    @_locked
     def library_titles(self, media_type: str) -> list[str]:
         """已入库任务的片名（按识别出的媒体类型）。"""
         return [r["title"] for r in self._conn.execute(
             "SELECT DISTINCT title FROM tasks WHERE state=? AND title IS NOT NULL "
             "AND json_extract(snapshot,'$.parsed.media_type')=?", (TaskState.DONE.value, media_type))]
+
+    @_locked
+    def work_genres(self, tmdbid: int | None, titles: list[str]) -> tuple[list[int], str | None] | None:
+        """最近一条属于这部作品（同一 tmdbid，没有时同片名）的任务记下的（TMDB 题材 ID, 媒体类型）。"""
+        if tmdbid:
+            where, args = "json_extract(snapshot,'$.parsed.raw_fields.tmdbid')=?", [int(tmdbid)]
+        elif titles:
+            where, args = f"title IN ({','.join('?' * len(titles))})", list(titles)
+        else:
+            return None
+        row = self._conn.execute(
+            f"SELECT json_extract(snapshot,'$.parsed.genre_ids') g, json_extract(snapshot,'$.parsed.media_type') m "
+            f"FROM tasks WHERE {where} ORDER BY updated_at DESC LIMIT 1", args).fetchone()
+        return (json.loads(row["g"] or "[]"), row["m"]) if row else None
 
     @_locked
     def titles_for_tmdbid(self, tmdbid: int) -> list[str]:
@@ -707,13 +739,67 @@ class Store:
         return int(row["m"]) if row and row["m"] is not None else None
 
     @_locked
+    def source_messages(self, source: str, limit: int) -> list[dict[str, Any]]:
+        """某来源最近收到的消息（正文去重，新的在前），读取不到频道时给识别规则当样例。"""
+        out, seen = [], set()
+        for r in self._conn.execute("SELECT snapshot FROM tasks WHERE lower(source)=lower(?) "
+                                    "ORDER BY created_at DESC LIMIT ?", (source, limit * 5)):
+            raw = json.loads(r["snapshot"]).get("raw") or {}
+            text = (raw.get("text") or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append({"text": text, "urls": raw.get("urls") or []})
+            if len(out) >= limit:
+                break
+        return out
+
+    def request_source_fetch(self, bot: str, count: int) -> int:
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM source_fetches WHERE created_at<?", (now - 3600,))
+            return self._conn.execute(
+                "INSERT INTO source_fetches (bot, max_count, created_at, updated_at) VALUES (?,?,?,?)",
+                (bot, count, now, now)).lastrowid
+
+    def claim_source_fetches(self) -> list[dict[str, Any]]:
+        """主进程领取待处理的读取请求；一分钟前的请求管理台早已放弃等待，不再处理。"""
+        now = time.time()
+        with self._lock, self._conn:
+            rows = [dict(r) for r in self._conn.execute(
+                "SELECT id, bot, max_count FROM source_fetches WHERE status='pending' AND created_at>=?", (now - 60,))]
+            self._conn.executemany("UPDATE source_fetches SET status='running', updated_at=? WHERE id=?",
+                                   [(now, r["id"]) for r in rows])
+            return rows
+
+    def finish_source_fetch(self, fetch_id: int, *, messages: list[dict] | None = None,
+                            error: str | None = None) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE source_fetches SET status=?, result=?, error=?, updated_at=? WHERE id=?",
+                ("failed" if error else "done", None if error else json.dumps(messages or [], ensure_ascii=False),
+                 error, time.time(), fetch_id))
+
+    @_locked
+    def source_fetch(self, fetch_id: int) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT status, result, error FROM source_fetches WHERE id=?", (fetch_id,)).fetchone()
+        if not row:
+            return None
+        return {"status": row["status"], "error": row["error"],
+                "messages": json.loads(row["result"]) if row["result"] else []}
+
+    @_locked
     def summary_since(self, since: float) -> dict[str, Any]:
         """日报数据：时间窗口内新收与完成的任务，以及当前待处理积压。"""
         received = {r["state"]: r["c"] for r in self._conn.execute(
             "SELECT state, COUNT(*) c FROM tasks WHERE created_at>=? GROUP BY state", (since,))}
-        done = [dict(r) for r in self._conn.execute(
-            "SELECT task_id, title, source FROM tasks WHERE state=? AND updated_at>=? "
-            "ORDER BY updated_at DESC LIMIT 20", (TaskState.DONE.value, since))]
+        done = []
+        for r in self._conn.execute(
+                "SELECT task_id, title, source, snapshot FROM tasks WHERE state=? AND updated_at>=? "
+                "ORDER BY updated_at DESC LIMIT 20", (TaskState.DONE.value, since)):
+            ctx = _load_ctx(json.loads(r["snapshot"]))
+            done.append({"task_id": r["task_id"], "title": r["title"], "source": r["source"],
+                         "media_type": ctx.parsed.media_type if ctx.parsed else None,
+                         "pairs": [list(pair) for pair in planned_pairs(ctx)]})
         current = self.counts_by_state()
         return {
             "since": since,
@@ -731,9 +817,11 @@ class Store:
     # ------------------------------------------------------------------ #
     # 系统通知与告警（与任务状态同样走 Outbox，进程退出也不会丢）
     # ------------------------------------------------------------------ #
-    def _stage_notice(self, key: str, text: str, targets: list[str], event: str) -> None:
+    def _stage_notice(self, key: str, text: str, targets: list[str], event: str, html: bool = False,
+                      buttons: list | None = None) -> None:
         now = time.time()
-        snapshot = json.dumps({"key": key, "text": text}, ensure_ascii=False)
+        snapshot = json.dumps({"key": key, "text": text, **({"html": True} if html else {}),
+                               **({"buttons": buttons} if buttons else {})}, ensure_ascii=False)
         for target in targets:
             self._conn.execute(
                 """INSERT INTO outbox (delivery_key, task_id, kind, event, target, snapshot, created_at, updated_at)
@@ -742,9 +830,12 @@ class Store:
                  target, snapshot, now, now),
             )
 
-    def stage_notice(self, key: str, text: str, targets: list[str], *, event: str = "notice") -> None:
+    def stage_notice(self, key: str, text: str, targets: list[str], *, event: str = "notice",
+                     html: bool = False, buttons: list | None = None) -> None:
+        """html=True 时 text 是 Telegram HTML（见 core/messages.py），不支持 HTML 的渠道收到去掉标签的文字。
+        buttons 是控制 Bot 的按钮行（见 core/messages.py 的 Buttons），不支持按钮的渠道只收到正文。"""
         with self._lock, self._conn:
-            self._stage_notice(key, text, targets, event)
+            self._stage_notice(key, text, targets, event, html, buttons)
 
     def raise_alert(self, key: str, text: str, targets: list[str]) -> bool:
         """告警只在状态由正常变为异常时通知一次；持续异常只更新文案。"""

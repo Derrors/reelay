@@ -661,7 +661,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.cloud.receive_mode['c'] = 'partial'
         manual = await self.execute(self.task('c', title='剧集c', episodes=(1, 2)))
         self.assertEqual(manual.state, TaskState.NEED_MANUAL)
-        self.assertIn('暂存目录有 1 项，与转存清单的 2 个文件不一致', manual.trail[-1])
+        self.assertIn('暂存目录已到 1/2 个文件，还差 1 个：S01E02.mkv', manual.trail[-1])
 
     async def test_partial_transfer_retains_claim_and_manual_recheck_never_resends(self):
         self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
@@ -683,6 +683,107 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         await self.service.reconcile_transfer(ctx.task_id)
         self.assertEqual((await self.execute(ctx)).state, TaskState.DONE)
         self.assertEqual((await self.execute(other)).state, TaskState.SKIPPED)
+        self.assertEqual(len(self.cloud.receives()), 1)
+
+    async def partial_task(self):
+        """分享两集，转存只到了第 1 集：转人工并记下进度。"""
+        self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
+        self.cloud.receive_mode['share'] = 'partial'
+        ctx = self.task(episodes=(1, 2))
+        manual = await self.execute(ctx)
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        self.assertEqual(manual.ns('storage')['partial'], {'landed': 1, 'expected': 2, 'missing': ['S01E02.mkv']})
+        return ctx, manual.ns('storage')['manifest']['staging_cid']
+
+    async def test_accept_partial_organizes_what_arrived_and_leaves_the_rest_storable(self):
+        ctx, _ = await self.partial_task()
+        await self.service.accept_partial_transfer(ctx.task_id)
+        done = await self.execute(ctx)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual([x['name'] for x in done.ns('storage')['landed']], ['S01E01.mkv'])
+        self.assertEqual((done.parsed.episodes, done.ns('storage')['manifest']['missing']), ([1], ['S01E02.mkv']))
+        self.assertTrue(any('按已到的 1 个文件继续' in line for line in done.trail))
+        self.assertFalse({'partial', 'accept_partial'} & set(done.ns('storage')))
+        self.assertEqual(len(self.cloud.receives()), 1)  # 没到的那集不补转存
+        # 没到的第 2 集没有记为已入库：以后别的分享还能转存
+        self.cloud.add_share('b', 'Show.S01E02.mkv')
+        later = await self.execute(self.task('b', episodes=(2,)))
+        self.assertEqual(later.state, TaskState.DONE)
+        self.assertEqual(self.claims(), 0)
+
+    async def test_accept_partial_needs_files_that_match_the_manifest(self):
+        self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
+        self.cloud.receive_mode['share'] = 'lost'  # 一个也没到
+        ctx = self.task(episodes=(1, 2))
+        self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)
+        with self.assertRaises(ConflictError):
+            await self.service.accept_partial_transfer(ctx.task_id)
+
+    async def test_abandon_deletes_the_staging_folder_and_ignores_the_task(self):
+        ctx, stage = await self.partial_task()
+        await self.service.abandon_transfer(ctx.task_id)
+        skipped = await self.execute(ctx)
+        self.assertEqual(skipped.state, TaskState.SKIPPED)
+        self.assertNotIn(stage, self.cloud.items)
+        self.assertEqual(self.cloud.calls.count(('delete', [stage])), 1)
+        self.assertEqual((len(self.cloud.receives()), self.claims()), (1, 0))
+        self.assertIn('已放弃这次转存', skipped.trail[-1])
+
+    async def test_abandon_is_verified_and_safe_to_retry(self):
+        ctx, stage = await self.partial_task()
+        await self.service.abandon_transfer(ctx.task_id)
+        self.cloud.fail_delete = 'ignore'  # 返回成功却没删：读回发现
+        manual = await self.execute(ctx)
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        self.assertIn('读回仍在', self.store.get_task_record(ctx.task_id)['error'])
+        self.assertIn(stage, self.cloud.items)
+        await self.service.abandon_transfer(ctx.task_id)
+        self.cloud.fail_delete = 'after'  # 已删除但响应中断
+        self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)
+        self.assertNotIn(stage, self.cloud.items)
+        await self.service.abandon_transfer(ctx.task_id)
+        self.assertEqual((await self.execute(ctx)).state, TaskState.SKIPPED)  # 读回已不在，不再删除
+        self.assertEqual(self.cloud.calls.count(('delete', [stage])), 2)
+        self.assertEqual(len(self.cloud.receives()), 1)
+
+    async def test_partial_transfer_that_stops_changing_is_notified_early(self):
+        import time
+        from reelay.core.worker import RECHECK_STABLE_TIMES, RECHECK_WINDOW_SEC
+        sent = []
+
+        async def sender(**kwargs):
+            sent.append(kwargs)
+
+        from reelay.providers.notify import ConsoleNotify
+        notify = ConsoleNotify()
+        notify.configure(sender=sender)
+        self.reg.add_provider('notify', notify)
+        self.cfg = {**self.cfg, 'providers': {'notify': ['console']}}
+        self.pipeline = Pipeline(self.reg, self.store, self.cfg)
+        ctx, _ = await self.partial_task()
+        worker, now = Worker(self.pipeline, self.store), time.time()
+
+        def notices():
+            return self.store._conn.execute("SELECT COUNT(*) FROM outbox WHERE task_id=? AND event='transfer_uncertain'",
+                                            (ctx.task_id,)).fetchone()[0]
+        for _ in range(RECHECK_STABLE_TIMES - 1):  # 前几次到达数没变化也先不打扰
+            now += 3600
+            self.assertEqual(await worker.recheck_transfers(now), 1)
+            self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)
+            self.assertEqual(notices(), 0)
+        now += 3600
+        self.assertEqual(await worker.recheck_transfers(now), 0)  # 第 3 次仍是 1/2：提前提醒，这一轮不复查
+        manual = self.store.get_task(ctx.task_id)
+        self.assertEqual((manual.state, manual.ns('storage')['auto_recheck']['notified']), (TaskState.NEED_MANUAL, True))
+        self.assertEqual(notices(), 1)
+        await self.pipeline.dispatch_deliveries()
+        self.assertIn('需要处理</b>：转存只到了 1/2 个文件，多次复查都没有变化\n<blockquote>缺 1 个文件：\nS01E02.mkv</blockquote>',
+                      sent[-1]['text'])
+        self.assertIn(('✅ 按已到的 1 个继续', f'ap:{ctx.task_id}'), sent[-1]['buttons'][0])
+        self.assertEqual(await worker.recheck_transfers(now + 1), 1)  # 后台继续复查
+        await self.execute(ctx)
+        self.assertEqual(await worker.recheck_transfers(now + RECHECK_WINDOW_SEC * 2), 0)  # 24 小时到了也不再提醒
+        self.assertEqual(notices(), 1)
         self.assertEqual(len(self.cloud.receives()), 1)
 
     async def test_late_landing_is_rechecked_automatically_and_only_notified_when_giving_up(self):

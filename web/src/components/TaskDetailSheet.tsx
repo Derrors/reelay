@@ -1,7 +1,7 @@
-import { AlertTriangle, Check, FolderTree, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, Check, FolderTree, RefreshCw, RotateCcw, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { api } from '@/api/client';
+import { api, type TaskAction } from '@/api/client';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
 import { OrganizeConflict } from '@/components/OrganizeConflict';
@@ -12,16 +12,17 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
-import { CONFLICT_DONE, type ConflictChoice } from '@/lib/conflict';
+import { CONFLICT_DONE, confirmAbandon, type ConflictChoice } from '@/lib/conflict';
 import { fullTime, relativeTime } from '@/lib/format';
 import { CONFIDENCE_CAP_LABELS } from '@/lib/status';
-import type { IOrganizeConflict, IParsedResource, ITaskDetail } from '@/lib/types';
+import type { IOrganizeConflict, IParsedResource, ITaskDetail, ITransferPartial } from '@/lib/types';
 
-type Action = 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile';
+type Action = TaskAction;
 
 const ACTION_DONE: Record<Action, string> = {
   approve: '已确认，开始转存', reject: '已忽略这条资源', retry: '已重新排队',
   reparse: '已回到识别队列', reorganize: '已回到整理队列', reconcile: '已排队核验转存',
+  'accept-partial': '已排队：按已到的文件继续整理', abandon: '已排队：放弃并删除暂存目录',
 };
 
 let saveDirsCache: Promise<string[]> | null = null;
@@ -156,6 +157,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
   const confidence = meta.confidence as { score?: number; caps?: string[] } | undefined;
   const plan = ((meta.organize as { plan?: Array<{ target_dir: string; target_name: string }> } | undefined)?.plan) ?? [];
   const organizeError = (meta.organize as { error?: string } | undefined)?.error;
+  const partial = (meta.storage as { partial?: ITransferPartial } | undefined)?.partial;
   const conflict = can.reorganize ? (meta.organize as { pending_conflict?: IOrganizeConflict } | undefined)?.pending_conflict : undefined;
 
   const hasActions = can.editable || can.reparse || can.retry || can.reconcile || can.reorganize || can.approve || can.reject;
@@ -166,6 +168,15 @@ export function TaskDetailSheet({ taskId, onClose, onChanged }: TaskDetailSheetP
         {can.reparse ? <Button variant="outline" size="sm" disabled={busy} onClick={() => void run('reparse')}><RotateCcw />重新识别</Button> : null}
         {can.retry ? <Button variant="outline" size="sm" disabled={busy} onClick={() => void run('retry')}><RefreshCw />重试</Button> : null}
         {can.reconcile ? <Button variant="outline" size="sm" disabled={busy} onClick={() => void run('reconcile')}><ShieldCheck />核验转存</Button> : null}
+        {can.reconcile && partial ? (
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void run('accept-partial')}><Check />按已到的 {partial.landed} 个继续</Button>
+        ) : null}
+        {can.reconcile ? (
+          <Button variant="outline" size="sm" disabled={busy} className="text-destructive"
+            onClick={() => void confirmAbandon(parsed?.title, partial).then((ok) => { if (ok) void run('abandon'); })}>
+            <Trash2 />放弃并删除
+          </Button>
+        ) : null}
         {can.reorganize ? <Button variant="outline" size="sm" disabled={busy} onClick={() => void run('reorganize')}><FolderTree />重新整理</Button> : null}
       </div>
       <div className="flex gap-2">

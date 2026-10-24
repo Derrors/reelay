@@ -1,14 +1,20 @@
+import { FolderTree } from 'lucide-react';
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { EditorHeading } from '../EditorHeading';
-import { text, type PluginEditorProps } from '../types';
+import { obj, text, type PluginEditorProps } from '../types';
 import { CategoryList } from './CategoryList';
 import { LAYOUTS } from './layouts';
 import { NamingEditor } from './NamingEditor';
+import { OrganizePreviewDialog } from './OrganizePreviewDialog';
 import { TypeDirsFlow } from './TypeDirsFlow';
 
 /** 媒体库整理（organizer）的设置：目录方式、按媒体类型的文件夹名、命名模板。 */
 export function OrganizerEditor({ section, setSection }: PluginEditorProps) {
   const layout = text(section.layout) || 'category';
+  const [previewing, setPreviewing] = useState(false);
+  const naming = obj(section.naming);
   return (
     <div className="space-y-6">
       <div className="space-y-4">
@@ -45,6 +51,18 @@ export function OrganizerEditor({ section, setSection }: PluginEditorProps) {
       </div>
       <div className="border-t border-border/70 pt-5">
         <NamingEditor section={section} setSection={setSection} />
+        <div className="mt-4 flex flex-col gap-2 rounded-lg border border-border/70 bg-background/60 px-3.5 py-2.5 sm:flex-row sm:items-center">
+          <p className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
+            贴几个转存后的文件名，看按上面的模板（包括还没保存的修改）会整理成什么样。
+          </p>
+          <Button size="sm" variant="outline" className="shrink-0 self-start bg-card sm:self-auto" onClick={() => setPreviewing(true)}>
+            <FolderTree />预览整理效果
+          </Button>
+        </div>
+        {previewing ? (
+          <OrganizePreviewDialog open onOpenChange={setPreviewing}
+            naming={{ movie: text(naming.movie) || undefined, tv: text(naming.tv) || undefined }} />
+        ) : null}
       </div>
     </div>
   );

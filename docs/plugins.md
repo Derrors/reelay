@@ -290,7 +290,7 @@ class MyHook:
 - 插件不需要依赖 FastAPI。方法在 Web 进程的事件循环里执行，要快；耗时的写成 `async def`。
 - 插件目录里会列出每个插件的 `actions`。
 
-内置插件可以有专用的界面，放在前端的 `web/src/plugins/<插件名>/`：设置编辑器由后端声明 `ui_config_type`，并登记到 `web/src/plugins/index.ts` 的 `PLUGIN_EDITORS`；只服务于这个插件的页面（如媒体库整理的「整理预览」）也放在这里，由路由引用；组件需要后端数据时调用 `api.extensionAction(插件名, 动作名, payload)`。前端是整体构建后发布的，外部插件没有专用编辑器，用 `ui_fields` 生成表单。
+内置插件可以有专用的界面，放在前端的 `web/src/plugins/<插件名>/`：设置编辑器由后端声明 `ui_config_type`，并登记到 `web/src/plugins/index.ts` 的 `PLUGIN_EDITORS`；只服务于这个插件的界面（如媒体库整理设置里的「预览整理效果」弹窗）也放在这里；组件需要后端数据时调用 `api.extensionAction(插件名, 动作名, payload)`。前端是整体构建后发布的，外部插件没有专用编辑器，用 `ui_fields` 生成表单。
 
 ## 测试
 

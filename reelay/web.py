@@ -242,6 +242,22 @@ def create_app(
         except Exception as exc:
             raise _error(exc) from exc
 
+    @app.post("/api/tasks/{task_id}/accept-partial")
+    async def accept_partial(task_id: str):
+        try:
+            await service.accept_partial_transfer(task_id)
+            return {"ok": True}
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @app.post("/api/tasks/{task_id}/abandon")
+    async def abandon(task_id: str):
+        try:
+            await service.abandon_transfer(task_id)
+            return {"ok": True}
+        except Exception as exc:
+            raise _error(exc) from exc
+
     @app.post("/api/tasks/{task_id}/reconcile")
     async def reconcile(task_id: str):
         try:

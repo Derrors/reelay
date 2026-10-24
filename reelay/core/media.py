@@ -70,6 +70,14 @@ def is_extra(filename: str) -> bool:
 _RESOLUTIONS = ((r'2160[pi]|4k|uhd', 4), (r'1080[pi]', 3), (r'720p', 2), (r'480p|576p', 1))
 
 
+RESOLUTION_LABELS = {4: "2160p", 3: "1080p", 2: "720p", 1: "标清"}
+
+
+def resolution_label(text: str | None) -> str | None:
+    """从文件名或消息里认出分辨率，如「2160p」；认不出为 None。"""
+    return RESOLUTION_LABELS.get(resolution_rank(text))
+
+
 def resolution_rank(text: str | None) -> int:
     """画质等级：4=2160p/4K，3=1080p，2=720p，1=标清，0=未知。"""
     value = (text or '').lower()

@@ -3,7 +3,8 @@
 - ``identified`` 事件：识别成功后，若配置开启 forward，立即按模板转发到目标；
 - ``pending_approval`` 事件：推确认卡片；callback_data 只带 task_id；
 - ``saved`` 事件：发送转存完成通知，不重复执行资源转发；
-- ``notice(text)``：系统通知（故障告警与恢复、审批汇总、日报），不绑定任务。
+- ``notice(text, html=False, buttons=None)``：系统通知（故障告警与恢复、审批汇总、日报），不绑定任务；日报与追更是 HTML，
+  审批汇总、追更等带控制 Bot 的按钮。
 
 未配置真实发送器时写日志，便于 dry-run 与测试观察。
 """
@@ -13,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..core import messages, runtime
+from ..core import messages, runtime, subscriptions
 from ..core.contracts import PipelineContext
 from ..core.registry import register
 
@@ -53,31 +54,26 @@ class ConsoleNotify:
 
         elif event == "pending_approval":
             # 关键：按钮 callback_data 只带 task_id
-            buttons = [("✅ 转存", f"ok:{ctx.task_id}"), ("🚫 忽略", f"no:{ctx.task_id}")]
-            await self._send(messages.approval_card(ctx), buttons, photo=messages.poster_url(ctx))
+            subscribed = subscriptions.subscribed({"subscriptions": runtime.get("subscriptions", []) or []}, ctx)
+            await self._send(messages.approval_card(ctx), messages.approval_buttons(ctx, subscribed=subscribed),
+                             photo=messages.card_image_url(ctx))
 
         elif event == "saved":
-            if ctx.source_rule.get("approval_mode") == "default_pass":
-                return
-            await self._send(messages.saved_message(ctx, _drive_path(ctx)), photo=messages.poster_url(ctx))
+            await self._send(messages.saved_message(ctx, _drive_path(ctx)), messages.link_buttons(ctx),
+                             photo=messages.card_image_url(ctx))
 
         elif event in ("transfer_uncertain", "organize_failed", "failed"):
-            reason = {
-                "transfer_uncertain": "转存请求发出后没有确认结果，系统不会自动重发。请在管理台「待人工」点「核验转存」。",
-                "organize_failed": "文件已经转存，整理没有完成。请在管理台修正后点「重新整理」。",
-                "failed": "任务执行失败，请在管理台查看任务轨迹与重试状态。",
-            }[event]
-            if event == "transfer_uncertain" and (ctx.ns("storage").get("auto_recheck") or {}).get("gave_up"):
-                reason = "转存请求发出后一直没有核验通过，后台 24 小时的自动复查已停止，系统不会自动重发。" \
-                         "请到网盘确认后，在管理台「待人工」点「核验转存」。"
-            await self._send(messages.problem_message(ctx, reason))
+            # 处理办法放在按钮上（核验转存、按已到的继续、重新整理、删除转存文件 / 覆盖保存、重试）
+            reason, details, hint = messages.problem_reason(ctx, event)
+            await self._send(messages.problem_message(ctx, reason, details=details, hint=hint),
+                             messages.problem_buttons(ctx), photo=messages.card_image_url(ctx))
 
 
-    async def notice(self, text: str) -> None:
+    async def notice(self, text: str, html: bool = False, buttons: list | None = None) -> None:
         if self._sender:
-            await self._sender(text=text)
+            await self._sender(text=text, **({"html": True} if html else {}), **({"buttons": buttons} if buttons else {}))
         else:
-            log.info("[系统通知] %s", text.replace("\n", " / "))
+            log.info("[系统通知] %s", (messages.plain(text) if html else text).replace("\n", " / "))
 
 
 def _drive_path(ctx: PipelineContext) -> str:

@@ -157,7 +157,7 @@ export function RecognitionTab({ config, setField }: {
               description="每条待审批附上建议（批准 / 忽略 / 需要你看一下）与理由；建议由规则决定，AI 只负责把理由写通顺。"
               checked={aiSection.advice !== false} onCheckedChange={v => setField('ai', 'advice', v)} />
             <div>
-              <p className="mb-1.5 text-[13px] font-medium">建议改为自动转存的门槛</p>
+              <p className="mb-1.5 text-[13px] font-medium">建议改为 AI 处理的门槛</p>
               <div className="grid gap-3 sm:grid-cols-3">
                 <Field label="至少确认过（次）">
                   <Input type="number" min={5} max={500} className="bg-card tabular-nums" value={text(suggest.min_decisions)}

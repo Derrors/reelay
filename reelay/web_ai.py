@@ -44,6 +44,12 @@ class SubscriptionPayload(BaseModel):
     auto: bool = True
 
 
+class IgnoredWorkPayload(BaseModel):
+    title: str
+    tmdbid: int | None = None
+    kind: str | None = None
+
+
 class TaskIdsPayload(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
 
@@ -58,6 +64,12 @@ class LlmPayload(BaseModel):
 class DraftPayload(BaseModel):
     bot: str
     samples: list[str] = Field(default_factory=list)
+
+
+class ParseRulesPayload(BaseModel):
+    bot: str = ""
+    samples: list[str] = Field(default_factory=list)
+    rules: dict[str, str] = Field(default_factory=dict)
 
 
 def register_ai(app, *, service) -> None:
@@ -122,9 +134,33 @@ def register_ai(app, *, service) -> None:
     async def subscribe_from_task(task_id: str):
         return await call(service.subscribe_from_task, task_id)
 
+    @app.post("/api/subscriptions/reopen")
+    async def reopen_subscription(payload: SubscriptionPayload):
+        await call(service.reopen_subscription, payload.model_dump())
+        return {"ok": True}
+
+    @app.post("/api/subscriptions/suggestions/dismiss")
+    async def dismiss_suggestion(payload: SubscriptionPayload):
+        await call(service.dismiss_suggestion, payload.model_dump())
+        return {"ok": True}
+
     @app.post("/api/subscriptions/remove")
     async def remove_subscription(payload: SubscriptionPayload):
         await call(service.remove_subscription, payload.model_dump())
+        return {"ok": True}
+
+    # 不再接收的作品
+    @app.get("/api/ignored-works")
+    async def ignored_works():
+        return await call(service.list_ignored_works)
+
+    @app.post("/api/ignored-works/from-task/{task_id}")
+    async def ignore_work(task_id: str):
+        return await call(service.ignore_work, task_id)
+
+    @app.post("/api/ignored-works/remove")
+    async def unignore_work(payload: IgnoredWorkPayload):
+        await call(service.unignore_work, payload.model_dump())
         return {"ok": True}
 
     # 收件箱建议：先返回规则写的理由，前端再请求 AI 措辞（按事实指纹缓存）
@@ -136,6 +172,19 @@ def register_ai(app, *, service) -> None:
     @app.post("/api/sources/draft")
     async def draft_source(payload: DraftPayload):
         return await call(service.draft_source, payload.bot, payload.samples)
+
+    # 来源的识别规则：取最近消息作样例、AI 起草、按规则试跑（都不写配置，由用户在来源设置里保存）
+    @app.get("/api/sources/messages")
+    async def source_messages(bot: str, limit: int = Query(default=10, ge=1, le=20)):
+        return await call(service.source_messages, bot, limit)
+
+    @app.post("/api/sources/parse-rules/draft")
+    async def draft_parse_rules(payload: ParseRulesPayload):
+        return await call(service.draft_parse_rules, payload.bot, payload.samples)
+
+    @app.post("/api/sources/parse-rules/preview")
+    async def preview_parse_rules(payload: ParseRulesPayload):
+        return await call(service.preview_parse_rules, payload.rules, payload.samples)
 
     # 来源质量：规则统计 + AI 调整建议（建议的规则改动需用户确认后经配置接口写入）
     @app.get("/api/sources/quality")

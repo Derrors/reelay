@@ -118,6 +118,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool("list_subscriptions", "追剧订阅",
          "已订阅的剧（新集自动转存）及从批准记录发现的订阅建议。\n"
          "Subscribed shows (new episodes are transferred automatically) and suggestions derived from approvals."),
+    Tool("list_ignored", "不再接收的作品",
+         "「不再接收」的作品：之后的消息识别完直接忽略。unignore 的参数取这里的 title / tmdbid / kind。\n"
+         "Works the user chose to stop receiving; later messages for them are skipped. Use an item's "
+         "title / tmdbid / kind as unignore's arguments."),
     Tool("find_show", "查找剧集",
          "把剧名或一句话对应到 TMDB 条目与季，订阅前先用它确认 tmdbid。\n"
          "Resolve a show name or sentence to TMDB candidates with their seasons; use it to get the tmdbid "
@@ -153,6 +157,38 @@ TOOLS: tuple[Tool, ...] = (
           Param("tmdbid", int, "TMDB 剧集 ID / TMDB tv id")),
          write=True),
 )
+_SUB = (Param("title", str, "片名，取 list_subscriptions 里的写法 / Title as in list_subscriptions", required=True),
+        Param("season", int, "季号 0-99 / Season number 0-99", required=True),
+        Param("tmdbid", int, "TMDB 剧集 ID / TMDB tv id"))
+TOOLS += (
+    Tool("unsubscribe", "取消订阅",
+         "取消某部剧某一季的订阅：之后的新集不再自动转存，也不再巡检缺集。参数取 list_subscriptions 里的值。\n"
+         "Unsubscribe from one season: new episodes are no longer transferred automatically or checked for gaps. "
+         "Use the values from list_subscriptions.", _SUB, write=True),
+    Tool("resume_subscription", "继续订阅",
+         "已完结（一季播完且全部入库后自动结束）的订阅继续订阅，如出了特别篇或补了集。参数取 list_subscriptions 里的值。\n"
+         "Resume a subscription that ended automatically when the season finished (e.g. a special was added). "
+         "Use the values from list_subscriptions.", _SUB, write=True),
+    Tool("unignore", "恢复接收",
+         "恢复接收一部「不再接收」的作品，参数取 list_ignored 里的值。\n"
+         "Start receiving a work again; use the values from list_ignored.",
+         (Param("title", str, "片名 / Title", required=True), Param("tmdbid", int, "TMDB ID"),
+          Param("kind", str, "TMDB 类型 / TMDB kind", enum=("movie", "tv"))), write=True),
+    Tool("correct", "修正识别结果",
+         "修正一条待审批、待人工或失败任务的识别结果，只传要改的字段；待审批的随后按新片名重新核对 TMDB。"
+         "失败任务改完后通常还要 retry。\n"
+         "Correct the parsed result of a pending_approval, need_manual or failed task; pass only fields to change. "
+         "Pending tasks are re-matched against TMDB afterwards; failed tasks usually need retry next.",
+         (_TASK_ID, Param("title", str, "片名 / Title"), Param("year", int, "年份 / Year"),
+          Param("media_type", str, "类型 / Media type", enum=("movie", "tv", "anime")),
+          Param("season", int, "季号 0-99 / Season number 0-99"),
+          Param("episodes", str, "集号，如 1-5,7 / Episodes, e.g. 1-5,7"),
+          Param("resolution", str, "分辨率，如 1080p / Resolution, e.g. 1080p")), write=True),
+    Tool("reparse", "重新识别",
+         "让系统重新识别这些任务的消息（不用缓存），待审批的识别完会重新推送卡片。已有转存检查点的任务不行。\n"
+         "Re-run recognition for these tasks without the cache; pending ones get a fresh approval card. "
+         "Not allowed once a transfer checkpoint exists.", (_TASK_IDS,), write=True),
+)
 TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
 
@@ -184,6 +220,22 @@ def _plan(context: dict[str, Any]) -> list[dict[str, Any]]:
     plan = ((context.get("meta") or {}).get("organize") or {}).get("plan") or []
     return [{"target_dir": item.get("target_dir"), "target_name": item.get("target_name")}
             for item in plan]
+
+
+def _episode_list(text: str) -> list[int]:
+    """「1-5,7」→ [1, 2, 3, 4, 5, 7]。"""
+    out: set[int] = set()
+    for part in re.split(r"[,，、\s]+", text.strip()):
+        match = re.fullmatch(r"[Ee]?(\d{1,4})(?:\s*[-~到至]\s*[Ee]?(\d{1,4}))?", part)
+        if not part:
+            continue
+        if not match:
+            raise ValueError(f"集号写法无效：{part}")
+        start, end = int(match.group(1)), int(match.group(2) or match.group(1))
+        if not 0 < start <= end <= 2000:
+            raise ValueError(f"集号无效：{part}")
+        out.update(range(start, end + 1))
+    return sorted(out)
 
 
 def _coerce(param: Param, value: Any) -> Any:
@@ -243,6 +295,13 @@ class AgentTools:
             raise ValueError("季号必须在 0 到 99 之间")
         if out.get("tmdbid") is not None and out["tmdbid"] <= 0:
             out.pop("tmdbid")
+        if name == "correct":
+            if "episodes" in out:
+                _episode_list(out["episodes"])  # 提议时就报出写法错误，不等用户点「执行」
+            if not self.store.get_task(out["task_id"]):
+                raise ValueError(f"任务不存在：{out['task_id']}")
+            if set(out) == {"task_id"}:
+                raise ValueError("没有要修改的字段")
         return out
 
     async def run(self, name: str, kwargs: dict[str, Any]) -> Any:
@@ -332,8 +391,11 @@ class AgentTools:
     def list_subscriptions(self) -> dict[str, Any]:
         data = self.service.list_subscriptions()
         return {"items": [{key: item[key] for key in ("title", "season", "tmdbid", "auto", "missing")}
-                          | {"have": len(item["have"])} for item in data["items"]],
+                          | {"have": len(item["have"]), "finished": bool(item.get("finished"))} for item in data["items"]],
                 "suggestions": [item["text"] for item in data["suggestions"]], "inactive": data["inactive"]}
+
+    def list_ignored(self) -> dict[str, Any]:
+        return self.service.list_ignored_works()
 
     async def find_show(self, text: str) -> dict[str, Any]:
         return await self.service.resolve_subscription(text)
@@ -351,6 +413,33 @@ class AgentTools:
     async def subscribe(self, title: str, season: int, tmdbid: int | None = None) -> dict[str, Any]:
         result = await self.service.add_subscription({"title": title, "season": season, "tmdbid": tmdbid})
         return {"ok": True, **result}
+
+    async def unsubscribe(self, title: str, season: int, tmdbid: int | None = None) -> dict[str, Any]:
+        await self.service.remove_subscription({"title": title, "season": season, "tmdbid": tmdbid})
+        return {"ok": True}
+
+    async def resume_subscription(self, title: str, season: int, tmdbid: int | None = None) -> dict[str, Any]:
+        self.service.reopen_subscription({"title": title, "season": season, "tmdbid": tmdbid})
+        return {"ok": True}
+
+    async def unignore(self, title: str, tmdbid: int | None = None, kind: str | None = None) -> dict[str, Any]:
+        await self.service.unignore_work({"title": title, "tmdbid": tmdbid, "kind": kind})
+        return {"ok": True}
+
+    async def correct(self, task_id: str, title: str | None = None, year: int | None = None,
+                      media_type: str | None = None, season: int | None = None, episodes: str | None = None,
+                      resolution: str | None = None) -> dict[str, Any]:
+        patch = {key: value for key, value in (("title", title), ("year", year), ("media_type", media_type),
+                                               ("season", season), ("resolution", resolution)) if value is not None}
+        if episodes is not None:
+            patch["episodes"] = _episode_list(episodes)
+        if not patch:
+            raise ValueError("没有要修改的字段")
+        record = await self.service.correct_parsed(task_id, patch)
+        return {"ok": True, "parsed": _safe_parsed((record.get("context") or {}).get("parsed"))}
+
+    async def reparse(self, task_ids: list[str]) -> dict[str, Any]:
+        return await self._each(task_ids, self.service.reparse)
 
     async def _each(self, task_ids: list[str], action) -> dict[str, Any]:
         """逐条执行并逐条报告，一条失败不影响其余任务。"""

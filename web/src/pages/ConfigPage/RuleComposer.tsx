@@ -80,7 +80,7 @@ export function RuleComposer({ config, dirty, onApply }: RuleComposerProps) {
             {result.unsupported.length ? (
               <Notice tone="warning" icon={CircleAlert} title="这些要求没法用规则表达">
                 <ul className="list-disc pl-4">{result.unsupported.map((u) => <li key={u}>{u}</li>)}</ul>
-                <p className="mt-1 text-xs">可以写进「收藏偏好」，并把转存判断方式改为「AI 按偏好判断」。</p>
+                <p className="mt-1 text-xs">可以写进「收藏偏好」，并把转存方式改为「AI 按偏好判断」。</p>
               </Notice>
             ) : null}
             {dirty && result.changes.length ? (

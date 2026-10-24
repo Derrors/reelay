@@ -223,22 +223,29 @@ def share_problem(client, share_code: str, receive_code: str | None) -> str | No
 
     列出分享内容不能说明分享可用：过期的分享仍能列出文件，转存时才被拒绝。
     """
+    return share_check(client, share_code, receive_code)[0]
+
+
+def share_check(client, share_code: str, receive_code: str | None) -> tuple[str | None, list[str]]:
+    """（不可用的原因或 None, 分享根目录的文件名）。同一次请求顺带列出根目录前 20 项，不多调 115。"""
     try:
-        resp = client.share_snap({'share_code': share_code, 'receive_code': receive_code or '', 'cid': 0, 'limit': 1})
+        resp = client.share_snap({'share_code': share_code, 'receive_code': receive_code or '', 'cid': 0, 'limit': 20})
     except Exception as exc:
         reason = business_error(exc)
         if reason is None:
             raise
-        return reason
+        return reason, []
     if not resp.get('state'):
-        return str(resp.get('error') or resp.get('msg') or '分享无法访问')[:100]
-    info = (resp.get('data') or {}).get('shareinfo') or {}
+        return str(resp.get('error') or resp.get('msg') or '分享无法访问')[:100], []
+    data = resp.get('data') or {}
+    info = data.get('shareinfo') or {}
     if info.get('forbid_reason'):
-        return str(info['forbid_reason'])[:100]
+        return str(info['forbid_reason'])[:100], []
     expire = str(info.get('expire_time') or '')
     if expire.isdigit() and 0 < int(expire) < time.time():
-        return '链接已过期'
-    return None
+        return '链接已过期', []
+    names = [str(item.get('n') or item.get('name') or '') for item in data.get('list') or [] if isinstance(item, dict)]
+    return None, [name for name in names if name]
 
 
 def _file_record(item: dict) -> dict:
@@ -247,8 +254,36 @@ def _file_record(item: dict) -> dict:
             'is_dir': bool(item.get('is_directory') or item.get('is_dir'))}
 
 
+def _landing_progress(expected: list[dict], actual: list[dict]) -> dict | None:
+    """暂存目录里的文件都能和清单对上（名称、大小、可用 SHA1），只是少了几个时，返回
+    ``{"landed": 已到的文件（按清单顺序）, "missing": 缺少的文件名}``；有对不上的文件或目录时返回 None。"""
+    by_name = {x['name']: x for x in expected}
+    if not actual or len(by_name) != len(expected) or any(x['is_dir'] for x in actual) \
+            or len({x['name'] for x in actual}) != len(actual):
+        return None
+    for landed in actual:
+        source = by_name.get(landed['name'])
+        if not source or source['size'] != landed['size'] or (
+                source.get('sha1') and source['sha1'].upper() != (landed.get('sha1') or '').upper()):
+            return None
+    arrived = {x['name']: x for x in actual}
+    return {'landed': [arrived[x['name']] for x in expected if x['name'] in arrived],
+            'missing': [x['name'] for x in expected if x['name'] not in arrived]}
+
+
 def _verified_files(expected: list[dict], actual: list[dict]) -> list[dict]:
-    """独占目录中必须恰好出现清单全部文件，数量、名称、大小和可用 SHA1 一致。"""
+    """独占目录中必须恰好出现清单全部文件，数量、名称、大小和可用 SHA1 一致。
+
+    只到了一部分（到的都对得上）时，异常带上 ``partial``（已到几个、缺哪些），管理台据此提供
+    「按已到的文件继续」。
+    """
+    progress = _landing_progress(expected, actual) if len(actual) < len(expected) else None
+    if progress and progress['missing']:
+        missing = progress['missing']
+        error = TransferUncertain(f'暂存目录已到 {len(actual)}/{len(expected)} 个文件，还差 {len(missing)} 个：'
+                                  f'{"、".join(missing[:2])}{" 等" if len(missing) > 2 else ""}，请核验')
+        error.partial = {'landed': len(actual), 'expected': len(expected), 'missing': missing}
+        raise error
     if not expected or len(expected) != len(actual) or any(x['is_dir'] for x in actual):
         dirs = sum(x['is_dir'] for x in actual)
         raise TransferUncertain(f'暂存目录有 {len(actual)} 项{f"（含 {dirs} 个目录）" if dirs else ""}，'
@@ -352,6 +387,43 @@ class P115Storage(ai.UsesAI):  # 转人工前的 AI 兜底
         from p115client import P115FileSystem
         if not list(P115FileSystem(self._cookie_client()).iterdir(stage)):
             self._auth.delete([stage])
+
+    async def reconcile_partial(self, ctx: PipelineContext) -> dict[str, Any]:
+        """人工选了「按已到的文件继续」：只读核验，暂存目录里的文件都与清单对得上就按这些文件出回执，
+        回执的 missing 是没到的文件名。不发任何写请求，没到的文件不会补转存。"""
+        manifest = ctx.ns('storage')['manifest']
+        if self._dry_run:
+            return self._receipt(manifest, manifest['files'], dry_run=True, missing=[])
+        self._require_client()
+        return await run_blocking(self._reconcile_partial_sync, manifest)
+
+    def _reconcile_partial_sync(self, manifest: dict) -> dict[str, Any]:
+        from p115client import P115FileSystem
+        actual = [_file_record(x) for x in P115FileSystem(self._cookie_client()).iterdir(manifest['staging_cid'])]
+        if len(actual) == len(manifest['files']):
+            return {**self._receipt(manifest, _verified_files(manifest['files'], actual)), 'missing': []}
+        progress = _landing_progress(manifest['files'], actual)
+        if not progress:
+            raise TransferUncertain('暂存目录里的文件与转存清单对不上，不能按已到的文件继续，请核验')
+        return {**self._receipt(manifest, progress['landed']), 'missing': progress['missing']}
+
+    async def abandon(self, ctx: PipelineContext) -> None:
+        """人工选了「放弃这次转存」：把独占暂存目录（连同已到的文件）移进 115 回收站，并读回确认已不在。
+        删除可以重复执行：结果不明时再点一次即可。"""
+        manifest = ctx.ns('storage')['manifest']
+        if self._dry_run:
+            return
+        self._require_client()
+        await run_blocking(self._abandon_sync, int(manifest['staging_cid']), int(manifest['to_cid']))
+
+    def _abandon_sync(self, stage: int, parent: int) -> None:
+        from p115client import P115FileSystem
+        fs = P115FileSystem(self._cookie_client())
+        if not any(int(x['id']) == stage for x in fs.iterdir(parent)):
+            return  # 上次已删除
+        self._auth.delete([stage])
+        if any(int(x['id']) == stage for x in fs.iterdir(parent)):
+            raise RuntimeError('删除暂存目录后读回仍在，请稍后再试')
 
     async def save(self, ctx: PipelineContext) -> dict[str, Any]:
         manifest = ctx.ns('storage')['manifest']

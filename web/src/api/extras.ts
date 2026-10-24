@@ -116,9 +116,10 @@ export const extras = {
   clearLogs: () => req<{ ok: boolean; freed: number }>('logs/clear', { method: 'POST' }),
   dirs: (cid: string, offset = 0) => req<{ items: IDirItem[]; path: IDirItem[]; next_offset: number | null; via: string }>(`storage/dirs?cid=${encodeURIComponent(cid)}&offset=${offset}`),
   sources: () => req<ISourcesResp>('sources'),
-  testParse: (text: string, urls: string[], source?: string) =>
+  /** draft：来源卡片上还没保存的设置（sources[] 的一项），省略时按已保存的来源规则。 */
+  testParse: (text: string, urls: string[], source?: string, draft?: Record<string, unknown>) =>
     req<ITestParseResp>('sources/test-parse', {
-      method: 'POST', body: JSON.stringify({ text, urls, source }),
+      method: 'POST', body: JSON.stringify({ text, urls, source, draft }),
     }),
   stats: (days = 30) => req<IStatsResp>(`stats?days=${days}`),
   advancedTasks: (q?: string, mediaType?: string) => {

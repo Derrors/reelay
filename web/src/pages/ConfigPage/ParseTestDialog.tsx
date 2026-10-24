@@ -1,22 +1,19 @@
-import {
-  CircleCheck, CircleX, ListFilter, LoaderCircle, MessageSquareText, Play, ScanSearch,
-} from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { CircleCheck, CircleX, ListFilter, LoaderCircle, Play, ScanSearch } from 'lucide-react';
+import { useRef, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
-import { extras, type ISourcesResp } from '@/api/extras';
+import { extras } from '@/api/extras';
 import { EmptyState } from '@/components/app/EmptyState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
-import { Page } from '@/components/app/Page';
-import { Panel } from '@/components/app/Panel';
-import { Select } from '@/components/app/Select';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { approvalShortLabels, CONFIDENCE_CAP_LABELS, decisionLabels, TONE_CLASS, type Tone } from '@/lib/status';
+import { CONFIDENCE_CAP_LABELS, decisionLabels, TONE_CLASS, type Tone } from '@/lib/status';
 import type { IParsedResource } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import type { Obj } from './shared';
 
 const SAMPLE = '📺 示例剧名 (2026) S01E01 ✨4K WEB-DL\n💾 大小：1.2 GB\n🔗 链接：https://115cdn.com/s/swabc123?password=x1y2';
 
@@ -183,27 +180,28 @@ function ResultView({ result }: { result: ITestParseResult }) {
   );
 }
 
-export default function SourcesPage() {
-  const [data, setData] = useState<ISourcesResp | null>(null);
-  const [source, setSource] = useState('');
+interface ParseTestDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** 来源卡片上当前的设置（sources[] 的一项，可能还没保存）。 */
+  source: Obj;
+}
+
+/** 来源卡片的「测试识别」：按这张卡片当前的设置（含未保存的修改）把一条消息完整识别一遍，不转存、不产生任务。
+ *  打开时才挂载（见 SourcesTab），每次打开都是空白的。 */
+export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogProps) {
   const [text, setText] = useState(SAMPLE);
   const [urls, setUrls] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ITestParseResult | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    extras.sources().then((d) => {
-      setData(d);
-      setSource(String(d.sources[0]?.bot ?? ''));
-    }).catch(() => setData({ sources: [], save_dirs: {} }));
-  }, []);
+  const bot = String(source.bot ?? '').trim();
 
   const run = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
     try {
-      const r = (await extras.testParse(text, urls.split(/[\s,，]+/).filter(Boolean), source || undefined)) as ITestParseResult;
+      const r = (await extras.testParse(text, urls.split(/[\s,，]+/).filter(Boolean), bot, source)) as ITestParseResult;
       setResult(r);
       // 窄屏下结果在表单下方，识别完自动滚过去。
       if (window.matchMedia('(max-width: 1023px)').matches) {
@@ -216,37 +214,19 @@ export default function SourcesPage() {
     }
   };
 
-  const sources = data?.sources ?? [];
-  const current = sources.find((s) => String(s.bot) === source);
-  const sourceHint = current
-    ? [
-        current.approval_mode ? `审批：${approvalShortLabels[String(current.approval_mode)] ?? '默认'}` : '',
-        current.save_to ? `保存到：${String(current.save_to)}` : '',
-      ].filter(Boolean).join(' · ')
-    : '';
   const decisionMeta = result ? DECISION_META[result.decision] : null;
 
   return (
-    <Page
-      title="识别测试"
-      description="用当前设置对一条消息做一次完整识别：类型、片名、置信度和转存建议。只做分析，不会转存，也不会产生任务。"
-    >
-      <div className="grid items-start gap-5 lg:grid-cols-2">
-        <Panel title="消息内容" icon={MessageSquareText} description="原样粘贴资源 Bot 发来的消息">
-          <form
-            className="space-y-4"
-            onSubmit={(e) => { e.preventDefault(); void run(); }}
-          >
-            <Field label="按哪个来源的规则识别" htmlFor="test-source" hint={sourceHint || '不同来源可以有各自的过滤、决策与审批规则。'}>
-              <Select
-                id="test-source"
-                value={source}
-                onValueChange={setSource}
-                disabled={!data}
-                placeholder={!data ? '正在读取来源…' : sources.length ? undefined : '默认规则'}
-                options={sources.map((s) => ({ value: String(s.bot), label: String(s.bot) }))}
-              />
-            </Field>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="space-y-1 px-5 pb-3 pr-12 pt-5 text-left">
+          <DialogTitle className="text-base">测试识别 · {bot || '未命名来源'}</DialogTitle>
+          <DialogDescription className="text-xs leading-5">
+            按这个来源当前的设置（包括还没保存的修改）把一条消息完整识别一遍：类型、片名、置信度和会怎么处理。只做分析，不会转存，也不会产生任务。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid min-h-0 flex-1 items-start gap-5 overflow-y-auto px-5 pb-5 lg:grid-cols-2">
+          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void run(); }}>
             <Field
               label="消息正文"
               htmlFor="test-text"
@@ -275,7 +255,7 @@ export default function SourcesPage() {
               />
             </Field>
             <div className="flex items-center gap-3 pt-1">
-              <Button type="submit" className="h-10 flex-1 sm:flex-none sm:px-6" disabled={busy || !text.trim()}>
+              <Button type="submit" className="h-10 flex-1 sm:flex-none sm:px-6" disabled={busy || !text.trim() || !bot}>
                 {busy ? <LoaderCircle className="animate-spin" /> : <Play />}
                 {busy ? '正在识别…' : '开始识别'}
               </Button>
@@ -283,24 +263,25 @@ export default function SourcesPage() {
                 也可以按 <kbd className="rounded border border-border bg-muted px-1 font-sans text-[11px]">⌘/Ctrl</kbd> + <kbd className="rounded border border-border bg-muted px-1 font-sans text-[11px]">Enter</kbd>
               </span>
             </div>
+            {!bot ? <p className="text-xs text-warning">先在卡片上填写 Bot 或频道。</p> : null}
           </form>
-        </Panel>
 
-        <div ref={resultRef} className="scroll-mt-20">
-          <Panel
-            title="识别结果"
-            icon={ScanSearch}
-            description={decisionMeta?.hint ?? '与真实流程一致，但只用于预览，不会保存'}
-            actions={result && decisionMeta ? (
-              <ToneBadge tone={decisionMeta.tone} className="px-2.5 py-1 text-[13px]">{decisionLabels[result.decision]}</ToneBadge>
-            ) : null}
-          >
+          <div ref={resultRef} className="scroll-mt-4 rounded-xl border border-border bg-card p-4">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-[13px] font-medium">识别结果</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">{decisionMeta?.hint ?? '与真实流程一致，但只用于预览，不会保存'}</p>
+              </div>
+              {result && decisionMeta ? (
+                <ToneBadge tone={decisionMeta.tone} className="shrink-0 px-2.5 py-1 text-[13px]">{decisionLabels[result.decision]}</ToneBadge>
+              ) : null}
+            </div>
             {result ? (
               <div className={cn('transition-opacity', busy && 'opacity-50')}>
                 <ResultView result={result} />
               </div>
             ) : busy ? (
-              <div className="flex min-h-72 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+              <div className="flex min-h-60 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
                 <LoaderCircle className="size-5 animate-spin text-primary" />
                 正在按当前设置识别…
               </div>
@@ -309,12 +290,12 @@ export default function SourcesPage() {
                 icon={ScanSearch}
                 title="粘贴一条消息，点「开始识别」"
                 description="会显示识别出的片名、季集与清晰度，置信度的计算依据，以及系统会怎么处理这条消息。"
-                className="border-none py-16"
+                className="border-none py-12"
               />
             )}
-          </Panel>
+          </div>
         </div>
-      </div>
-    </Page>
+      </DialogContent>
+    </Dialog>
   );
 }

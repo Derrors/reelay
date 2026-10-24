@@ -1,6 +1,6 @@
 import {
-  BellRing, ChartColumn, ChevronRight, Clapperboard, FolderCog, FolderTree, Inbox, LayoutDashboard, LibraryBig,
-  ListChecks, LogOut, Menu, Puzzle, ScanSearch, ScrollText, Settings2, Wrench,
+  BellRing, ChartColumn, ChevronRight, Clapperboard, FolderTree, Inbox, LayoutDashboard, LibraryBig,
+  ListChecks, LogOut, Menu, Puzzle, ScrollText, Settings2, Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Suspense, useEffect, useState } from 'react';
@@ -39,8 +39,6 @@ const SYSTEM: NavEntry[] = [
   { path: '/extensions', label: '插件', icon: Puzzle },
 ];
 const TOOLS: NavEntry[] = [
-  { path: '/sources', label: '识别测试', icon: ScanSearch },
-  { path: '/organize', label: '命名预览', icon: FolderCog },
   { path: '/storage', label: '115 目录', icon: FolderTree },
   { path: '/logs', label: '运行日志', icon: ScrollText },
 ];

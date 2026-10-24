@@ -34,7 +34,7 @@ export function AiSuggestions() {
     setBusy(true);
     try {
       await ai.enableAuto(source);
-      toast.success(`「${source}」已改为自动转存；拿不准的资源仍会交给你确认`);
+      toast.success(`「${source}」已改为 AI 处理；拿不准的资源仍会交给你确认`);
       await load();
     } catch (e) {
       toast.error(message(e, '保存失败'));
@@ -71,7 +71,7 @@ export function AiSuggestions() {
               <p className="flex items-center gap-1.5 text-[13px] font-medium"><TrendingUp className="size-3.5 text-success" />{s.source}</p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">{s.reason}。拿不准的资源仍会交给你。</p>
               <Button size="sm" variant="outline" className="mt-2 bg-card" disabled={busy} onClick={() => void enableAuto(s.source)}>
-                改为自动转存
+                改为 AI 处理
               </Button>
             </div>
           ))}

@@ -1,6 +1,6 @@
 /** 整理冲突的两种人工处理：删除本次转存的文件 / 覆盖保存。 */
 import { confirmDialog } from './confirm';
-import type { IOrganizeConflict } from './types';
+import type { IOrganizeConflict, ITransferPartial } from './types';
 
 export type ConflictChoice = 'skip' | 'replace';
 
@@ -24,6 +24,18 @@ export function confirmConflict(choice: ConflictChoice, conflict: IOrganizeConfl
     description: '本次转存的文件按命名规则放进库里，原有的那份移进 115 回收站。',
     details: [{ label: '删除', value: existing }, { label: '换成', value: incoming }],
     confirmText: '覆盖保存',
+    destructive: true,
+  });
+}
+
+/** 放弃转存：暂存目录连同已到的文件移进 115 回收站，任务改为忽略。 */
+export function confirmAbandon(title: string | null | undefined, partial?: ITransferPartial | null): Promise<boolean> {
+  return confirmDialog({
+    title: `放弃《${title ?? '这条资源'}》的这次转存？`,
+    description: '暂存目录连同已到的文件移进 115 回收站，任务改为忽略。',
+    details: partial ? [{ label: '已到', value: `${partial.landed} / ${partial.expected} 个文件` },
+      { label: '没到', value: partial.missing.join('\n') }] : undefined,
+    confirmText: '放弃并删除',
     destructive: true,
   });
 }

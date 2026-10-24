@@ -36,7 +36,7 @@ export function ConfirmHost() {
             {shown.details.map((item) => (
               <div key={`${item.label}-${item.value}`} className="min-w-0">
                 <dt className="text-muted-foreground">{item.label}</dt>
-                <dd className="mt-0.5 break-all font-mono text-[12px] text-foreground">{item.value}</dd>
+                <dd className="mt-0.5 whitespace-pre-line break-all font-mono text-[12px] text-foreground">{item.value}</dd>
               </div>
             ))}
           </dl>

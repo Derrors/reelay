@@ -95,6 +95,10 @@ export interface ISubscription {
   have: number[];
   missing: number[];
   aired: number | null;
+  /** 电视剧 / 动漫 / 综艺 / 纪录片 / 少儿（按 TMDB 题材）。 */
+  category: string;
+  /** 播完且全部入库后由每日巡检标记：不再自动转存与巡检缺集。 */
+  finished: { date: string; episodes: number } | null;
 }
 export interface ISubscriptionSuggestion {
   title: string;
@@ -103,10 +107,17 @@ export interface ISubscriptionSuggestion {
   count: number;
   text: string;
 }
+/** 不再接收的作品：同一部作品之后的消息识别后直接忽略（在 Telegram 审批卡片点「不再接收」添加）。 */
+export interface IIgnoredWork {
+  title: string;
+  tmdbid: number | null;
+  kind: 'movie' | 'tv' | null;
+}
+
 export interface ISubscriptionsResp {
   items: ISubscription[];
   suggestions: ISubscriptionSuggestion[];
-  /** 转存判断方式不支持订阅放行的规则（「默认规则」或来源名）。 */
+  /** 转存方式不支持订阅放行的规则（「默认规则」或来源名）。 */
   inactive: string[];
 }
 export interface IShowCandidate {
@@ -144,6 +155,32 @@ export interface ISourceDraft {
   blocked_approved: Array<{ preview: string; reason: string }>;
   /** 配置里已有同名来源，加入时会替换它。 */
   exists: boolean;
+}
+
+/** 来源识别规则的字段（见 reelay/core/parse_rules.py）。 */
+export const PARSE_RULE_FIELDS = ['title', 'year', 'season', 'episodes', 'resolution', 'size'] as const;
+export type ParseRuleField = typeof PARSE_RULE_FIELDS[number];
+export const PARSE_RULE_LABELS: Record<ParseRuleField, string> = {
+  title: '片名', year: '年份', season: '季', episodes: '集', resolution: '分辨率', size: '大小',
+};
+
+export interface IParseRulesPreview {
+  /** 去掉留空字段后的规则。 */
+  rules: Partial<Record<ParseRuleField, string>>;
+  /** 每条样例按规则识别的结果；from_rules 是来源规则匹配到的字段，其余来自通用规则。 */
+  results: Array<{
+    preview: string; title: string | null; year: number | null; season: number | null; episodes: number[];
+    resolution: string | null; size: string | null; media_type: string | null; from_rules: ParseRuleField[];
+  }>;
+  /** AI 起草时写的提醒。 */
+  notes?: string[];
+}
+
+export interface ISourceMessages {
+  messages: Array<{ text: string; urls: string[] }>;
+  /** telegram：主进程实时读取；history：读取失败，用的是这个来源已经收到的消息（problem 是原因）。 */
+  origin: 'telegram' | 'history';
+  problem: string | null;
 }
 
 export interface ISourceQuality {
@@ -206,9 +243,22 @@ export const ai = {
   subscribeFromTask: (taskId: string) => post<IAddSubscriptionResp>(`subscriptions/from-task/${taskId}`),
   unsubscribe: (item: { title: string; season: number; tmdbid: number | null }) =>
     post<{ ok: boolean }>('subscriptions/remove', item),
+  reopenSubscription: (item: { title: string; season: number; tmdbid: number | null }) =>
+    post<{ ok: boolean }>('subscriptions/reopen', item),
+  /** 订阅建议「不用了」：这部剧这一季不再出现在建议里（Telegram 上同样不再提示）。 */
+  dismissSuggestion: (item: { title: string; season: number; tmdbid: number | null }) =>
+    post<{ ok: boolean }>('subscriptions/suggestions/dismiss', item),
+  ignoredWorks: () => req<{ items: IIgnoredWork[] }>('ignored-works'),
+  unignoreWork: (item: IIgnoredWork) => post<{ ok: boolean }>('ignored-works/remove', item),
   /** AI 措辞的建议理由（按事实缓存）；AI 不可用时返回空对象。 */
   advice: (taskIds: string[]) => post<{ items: Record<string, IAdvice> }>('inbox/advice', { task_ids: taskIds }),
   draftSource: (bot: string, samples: string[]) => post<ISourceDraft>('sources/draft', { bot, samples }),
+  sourceMessages: (bot: string, limit = 10) =>
+    req<ISourceMessages>(`sources/messages?bot=${encodeURIComponent(bot)}&limit=${limit}`),
+  draftParseRules: (bot: string, samples: string[]) =>
+    post<IParseRulesPreview>('sources/parse-rules/draft', { bot, samples }),
+  previewParseRules: (rules: Record<string, string>, samples: string[]) =>
+    post<IParseRulesPreview>('sources/parse-rules/preview', { rules, samples }),
   sourceQuality: (days = 30) => req<{ days: number; sources: ISourceQuality[] }>(`sources/quality?days=${days}`),
   sourceQualityAdvice: (days = 30) => post<IQualityAdvice>(`sources/quality/advice?days=${days}`),
 };

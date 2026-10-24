@@ -13,6 +13,11 @@ import type {
 const BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
 
 /** 拼接 API 地址；部署在子路径（VITE_BASE_PATH）时自动带上前缀。 */
+/** 任务操作（POST /api/tasks/<id>/<action>）。accept-partial：转存只到一部分时按已到的文件继续；
+ *  abandon：放弃这次转存，删除暂存目录后忽略。 */
+export type TaskAction = 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile'
+  | 'accept-partial' | 'abandon';
+
 export const apiUrl = (path: string) => `${BASE}api/${path.replace(/^\//, '')}`;
 
 export class ApiError extends Error {
@@ -81,7 +86,7 @@ export const api = {
   inbox: (state: 'pending_approval' | 'need_manual' = 'pending_approval') =>
     request<{ items: IInboxItem[]; save_dirs: string[]; save_dir_paths: Record<string, string> }>(`inbox?state=${state}`),
   task: (taskId: string) => request<ITaskDetail>(`tasks/${taskId}`),
-  action: (taskId: string, action: 'approve' | 'reject' | 'retry' | 'reparse' | 'reorganize' | 'reconcile', body?: unknown) =>
+  action: (taskId: string, action: TaskAction, body?: unknown) =>
     request<{ ok: boolean }>(`tasks/${taskId}/${action}`, {
       method: 'POST',
       body: JSON.stringify(body ?? {}),

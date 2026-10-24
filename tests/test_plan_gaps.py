@@ -22,6 +22,7 @@ from reelay.core.store import Store, _dump_ctx, _load_ctx
 from reelay.core.worker import Worker
 from reelay.plugins.daily_report import render
 from reelay.plugins.episode_tracker import EpisodeRecorder, EpisodeTracker, format_episodes, missing_episodes
+from reelay.plugins.episode_tracker import render as tracker_render
 from reelay.plugins.tmdb_enrich import TmdbEnrich, search_kinds
 from reelay.providers.notify import ConsoleNotify
 from reelay.providers.parser import LLMParser
@@ -67,6 +68,9 @@ def message(text=f"剧 (2026) 第3集 {SHARE}", urls=(SHARE,), msg_id="1", sourc
     return PipelineContext(RawMessage(source, msg_id, text, list(urls)))
 
 
+REAL_DETAILS = tmdb.details  # 各用例默认把它替换成空结果（不联网）
+
+
 class Base(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {}, clear=True)
@@ -77,6 +81,10 @@ class Base(unittest.IsolatedAsyncioTestCase):
         # 凭证中心默认读仓库 data/ 下的凭证文件：开发机上可能有真实 cookie，测试里分享读取不能访问 115
         self.no_115 = patch("reelay.plugins.share_probe.get_store", return_value=types.SimpleNamespace(has_cookie=False))
         self.no_115.start()
+        # 匹配到 TMDB 后还会查条目详情（语言、主演）：测试不能联网，默认返回空
+        no_details = patch.object(tmdb, "details", return_value={})
+        no_details.start()
+        self.addCleanup(no_details.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.temp.name) / "t.db")
 
@@ -289,6 +297,9 @@ class TestNoticeDelivery(Base):
         await pipeline.dispatch_deliveries()
         self.assertEqual(sent, [{"text": "你好"}])
         self.assertEqual(self.store.delivery_counts(), {"done": 1, "skipped": 1})
+        self.store.stage_notice("y", "<b>日报</b>", ["console"], html=True)
+        await pipeline.dispatch_deliveries()
+        self.assertEqual(sent[-1], {"text": "<b>日报</b>", "html": True})
 
 
 class FailingStorage:
@@ -569,7 +580,7 @@ class TestManualDirectoryChoice(Base):
         console = ConsoleNotify()
         console.configure(sender=sender)
         await console.notify(self.store.get_task(task_id), "pending_approval")
-        self.assertIn("存到 <code>剧集/国产剧集</code>", sent[0])
+        self.assertIn("📂 存到：<code>剧集/国产剧集</code>", sent[0])
 
     async def test_targets_show_real_drive_paths_once_recorded(self):
         self.store.state_set("kernel", "save_dir_paths", {
@@ -636,7 +647,7 @@ class TestManualDirectoryChoice(Base):
 
 class TestRefreshMetadataAfterTmdbConfigured(Base):
     HIT = {"id": 294446, "name": "美人余", "first_air_date": "2026-10-09", "origin_country": ["CN"],
-           "genre_ids": [18], "poster_path": "/poster.jpg", "_kind": "tv", "_score": 1.1,
+           "genre_ids": [18], "poster_path": "/poster.jpg", "backdrop_path": "/backdrop.jpg", "_kind": "tv", "_score": 1.1,
            "original_name": "Mei Ren Yu", "overview": " 古装爱情剧。 ", "vote_average": 7.84, "vote_count": 3}
 
     def setUp(self):
@@ -662,7 +673,8 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
     async def test_pending_task_gets_tmdb_metadata_and_poster_without_llm(self):
         task_id = self.task("美人余")
         before = self.updated_at(task_id)
-        with patch.object(tmdb, "best_match", return_value=(self.HIT, [self.HIT])) as match:
+        with patch.object(tmdb, "best_match", return_value=(self.HIT, [self.HIT])) as match, \
+                patch.object(tmdb, "details", return_value={"languages": ["国语"], "cast": ["甲", "乙"], "rating": 7.9}):
             self.assertEqual(await self.pl.refresh_metadata(), 1)
             self.assertEqual(await self.pl.refresh_metadata(), 0)  # 已补全的任务不再重复查询
         self.assertEqual(match.call_count, 1)
@@ -670,13 +682,34 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
         self.assertEqual((ctx.state, ctx.parsed.raw_fields["poster_path"], ctx.parsed.raw_fields["tmdbid"]),
                          (TaskState.PENDING_APPROVAL, "/poster.jpg", 294446))
         self.assertEqual((ctx.parsed.genre_ids, ctx.parsed.origin_country), ([18], ["CN"]))
-        # 通知用的原名与简介；评分人数不到 10 人时不记评分
+        # 通知用的原名、简介、评分（评分人数少也显示）、语言与主演
         fields = ctx.parsed.raw_fields
-        self.assertEqual((fields["original_title"], fields["overview"], "rating" in fields), ("Mei Ren Yu", "古装爱情剧。", False))
+        self.assertEqual((fields["original_title"], fields["overview"], fields["rating"], fields["languages"], fields["cast"]),
+                         ("Mei Ren Yu", "古装爱情剧。", 7.9, ["国语"], ["甲", "乙"]))
         self.assertTrue(ctx.meta["confidence"]["checks"]["tmdb"])
         self.assertEqual(ctx.meta["library"]["preview"], "剧集/国产剧集")
         self.assertTrue(any("补跑元数据补全" in line for line in ctx.trail))
         self.assertEqual(self.updated_at(task_id), before)  # 审批超时不重新计时
+
+    async def test_ignored_work_skips_later_messages_and_pending_copies(self):
+        from reelay.core.service import ManagementService
+        service = ManagementService(self.store, self.pl, config_path=str(Path(self.temp.name) / "c.yaml"))
+        await service.save_config(dict(self.pl.cfg))  # 「不再接收」写进配置文件
+        first, second = self.task("美人余", msg_id="1"), self.task("美人余", msg_id="2")
+        with patch.object(tmdb, "best_match", return_value=(self.HIT, [self.HIT])):
+            await self.pl.refresh_metadata()
+            result = await service.ignore_work(first)
+            self.assertEqual(result["work"], {"title": "美人余", "tmdbid": 294446, "kind": "tv"})
+            self.assertEqual(sorted(result["rejected"]), sorted([first, second]))  # 待审批里同一部一并忽略
+            self.assertEqual(service.list_ignored_works()["items"], [{"title": "美人余", "tmdbid": 294446, "kind": "tv"}])
+            await self.pl.process_new(message(msg_id="3"))  # 之后的消息：识别后直接忽略
+        later = next(c for row in self.store.list_tasks() if (c := self.store.get_task(row["task_id"])).raw.msg_id == "3")
+        self.assertEqual(later.state, TaskState.SKIPPED)
+        self.assertIn("你已设置不再接收《美人余》", "\n".join(later.trail))
+        await service.unignore_work({"title": "美人余", "tmdbid": 294446, "kind": "tv"})
+        self.assertEqual(service.list_ignored_works()["items"], [])
+        with self.assertRaises(ValueError):
+            normalize_config({"save_dirs": {"默认": "1"}, "ignored_works": [{"title": "x", "kind": "anime"}]})
 
     async def test_unmatched_pending_task_is_capped_for_manual_review(self):
         task_id = self.task("星河彼岸的回声")
@@ -697,6 +730,7 @@ class TestRefreshMetadataAfterTmdbConfigured(Base):
         self.assertEqual(match.call_count, 2)
         kept = self.store.get_task(same)
         self.assertEqual((kept.parsed.title, kept.parsed.raw_fields.get("poster_path")), ("美人余", "/poster.jpg"))
+        self.assertEqual(kept.parsed.raw_fields.get("backdrop_path"), "/backdrop.jpg")
         untouched = self.store.get_task(renamed)
         self.assertEqual((untouched.parsed.title, untouched.parsed.raw_fields.get("poster_path")), ("美人余 竖屏版", None))
         self.assertEqual({task_id: self.updated_at(task_id) for task_id in (same, renamed)}, before)  # 入库统计不变
@@ -910,6 +944,19 @@ class TestShareProbe(Base):
             self.assertFalse(hook.needs_refresh(ctx))
 
 
+class TestShareCheck(unittest.TestCase):
+    def test_one_request_returns_status_and_root_file_names(self):
+        from reelay.providers.storage import share_check
+        snaps = []
+        client = types.SimpleNamespace(share_snap=lambda payload: snaps.append(payload) or {
+            "state": True, "data": {"shareinfo": {"forbid_reason": ""},
+                                     "list": [{"n": "Movie.2026.2160p.WEB-DL.mkv"}, {"n": "Movie.2026.nfo"}, {}]}})
+        self.assertEqual(share_check(client, "abc", None), (None, ["Movie.2026.2160p.WEB-DL.mkv", "Movie.2026.nfo"]))
+        self.assertEqual(len(snaps), 1)
+        gone = types.SimpleNamespace(share_snap=lambda payload: {"state": True, "data": {"shareinfo": {"forbid_reason": "已取消"}}})
+        self.assertEqual(share_check(gone, "abc", None), ("已取消", []))
+
+
 class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
     RESULTS = [
         {"id": 1, "title": "完全不同的电影", "release_date": "2026-01-01"},
@@ -919,6 +966,19 @@ class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         tmdb._CACHE.clear()
+        no_details = patch.object(tmdb, "details", return_value={})  # 测试不能联网
+        no_details.start()
+        self.addCleanup(no_details.stop)
+
+    def test_details_reads_languages_cast_and_rating(self):
+        data = {"original_language": "zh", "vote_average": 6.27,
+                "spoken_languages": [{"iso_639_1": "cn"}, {"iso_639_1": "zh"}, {"iso_639_1": "xx"}],
+                "credits": {"cast": [{"name": f"演员{i}", "order": 6 - i} for i in range(7)]}}
+        with patch.object(tmdb, "_request", return_value=data) as request:  # 用真实的 details，只替换网络请求
+            details = REAL_DETAILS("movie", 9, language="zh-CN", timeout=1)
+        self.assertEqual(details, {"languages": ["国语", "粤语", "xx"], "cast": ["演员6", "演员5", "演员4", "演员3", "演员2"],
+                                   "rating": 6.3})
+        self.assertEqual(request.call_args.args[0], "/movie/9")
 
     def test_best_match_prefers_title_similarity_over_rank(self):
         with patch.object(tmdb, "_request", return_value={"results": self.RESULTS}):
@@ -1012,8 +1072,16 @@ class TestDailyAndEpisodeTracker(Base):
         self.assertIsNone(render({"received": 0}, "2026-10-19"))
         text = render({"received": 4, "done_count": 1, "done": [{"title": "剧"}],
                        "received_by_state": {"rejected": 2}, "pending_approval": 3}, "2026-10-19")
-        self.assertIn("新收 4 条，入库 1 条，过滤 2 条", text)
+        self.assertIn("新收 4 条 · 入库 1 条 · 过滤 2 条", text)
+        self.assertIn("📺 剧", text)
         self.assertIn("待审批 3", text)
+        done = [{"title": "剧", "media_type": "tv", "pairs": [[1, 9]]}, {"title": "<片>", "media_type": "movie"},
+                {"title": "剧", "media_type": "tv", "pairs": [[1, 10]]}, {"title": "片", "media_type": "movie"},
+                {"title": "片", "media_type": "movie"}, {"title": "番", "media_type": "anime", "pairs": [[1, 1], [2, 1]]}]
+        text = render({"received": 6, "done_count": 6, "done": done}, "2026-10-19", story="《剧》已入库")
+        self.assertIn("<blockquote>《剧》已入库</blockquote>", text)
+        self.assertIn("📺 剧 · S01 E09-E10\n🎬 &lt;片&gt;\n🎬 片 ×2\n🍥 番 · S01–S02 共 2 集", text)
+        self.assertNotIn("待处理", text)
 
     async def test_daily_event_is_emitted_once_per_day(self):
         registry = Registry()
@@ -1052,9 +1120,55 @@ class TestDailyAndEpisodeTracker(Base):
                 await recorder.handle(ctx)
         with pipeline._scope(pipeline.cfg):
             await tracker.handle(message())
-        text = json.loads(self.store._conn.execute(
-            "SELECT snapshot FROM outbox WHERE kind='notice'").fetchone()[0])["text"]
-        self.assertIn("一瓯春 S01：已入库 3 集，缺 E22", text)
+        notice = json.loads(self.store._conn.execute(
+            "SELECT snapshot FROM outbox WHERE kind='notice'").fetchone()[0])
+        self.assertTrue(notice["html"])
+        self.assertIn("📺 <b>一瓯春</b> · S01\n缺 E22\n已入库 3 集", notice["text"])
+
+    async def test_finished_season_ends_the_subscription(self):
+        import time as _time
+        from reelay.core import subscriptions
+        cfg = {"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"},
+               "subscriptions": [{"title": "一瓯春", "season": 1, "tmdbid": 5}, {"title": "在播剧", "season": 1, "tmdbid": 6}]}
+        pipeline = self.pipeline(cfg)
+        for title, episodes in (("一瓯春", [1, 2, 3]), ("在播剧", [1, 2])):
+            ctx = message(msg_id=title)
+            ctx.parsed = ParsedResource(is_media=True, title=title, season=1, episodes=episodes, share_code=title)
+            ctx.save_dir_cid, ctx.result = "1", {"storage_verified": True}
+            ctx.ns("storage")["identity"] = {"cid": "1", "share_code": title, "title": title, "season": 1, "episodes": episodes}
+            self.store.save_task(ctx)
+            self.store.finish_transfer(ctx)
+        day = lambda ago: _time.strftime("%Y-%m-%d", _time.localtime(_time.time() - ago * 86400))  # noqa: E731
+        seasons = {5: [day(40), day(33), day(30)], 6: [day(3), day(2)]}  # 一瓯春 30 天前播完；在播剧前天才播完
+        episodes = lambda tv_id, season, **_: [{"episode": i + 1, "air_date": d} for i, d in enumerate(seasons[tv_id])]  # noqa: E731
+        details = lambda tv_id, **_: {"status": "Returning Series", "seasons": [{"season": 1, "episodes": 3}]}  # noqa: E731
+        with secret_store.override(tmdb_api_key="k"), patch.object(tmdb, "season_episodes", episodes), \
+                patch.object(tmdb, "tv_details", details), pipeline._scope(pipeline.cfg):
+            await EpisodeTracker().handle(message())
+        finished = self.store.state_get(*subscriptions.FINISHED)
+        self.assertEqual(list(finished), ["tmdb:5:S1"])  # 在播剧最近才播完、也没完结：先不结束
+        self.assertEqual(finished["tmdb:5:S1"]["episodes"], 3)
+        notice = json.loads(self.store._conn.execute("SELECT snapshot FROM outbox WHERE kind='notice'").fetchone()[0])
+        self.assertIn("🏁 《一瓯春》第 1 季已播完，3 集全部入库，订阅已自动结束", notice["text"])
+        # 剧已完结：最后一集刚播也可以结束
+        with secret_store.override(tmdb_api_key="k"), patch.object(tmdb, "season_episodes", episodes), \
+                patch.object(tmdb, "tv_details", lambda tv_id, **_: {"status": "Ended", "seasons": []}), \
+                pipeline._scope(pipeline.cfg):
+            await EpisodeTracker().handle(message())
+        self.assertEqual(sorted(self.store.state_get(*subscriptions.FINISHED)), ["tmdb:5:S1", "tmdb:6:S1"])
+
+    def test_tracker_render_groups_overdue_episodes(self):
+        text = tracker_render({
+            "甲|S01": {"have": [1], "missing": [2], "aired": None, "overdue": [], "media_type": "anime"},
+            "乙|S01": {"have": list(range(1, 11)), "missing": list(range(11, 25)), "aired": 24,
+                      "overdue": [{"episode": 20, "days": 20}, {"episode": 21, "days": 20}, {"episode": 13, "days": 7600}]},
+            "丙|S02": {"have": [1], "missing": [2, 3], "aired": 3,
+                      "overdue": [{"episode": 3, "days": 2}, {"episode": 2, "days": 8}]},
+        })
+        self.assertTrue(text.startswith("🔔 <b>追更检查</b> · 3 部缺集，2 部逾期\n\n📺 <b>乙</b> · S01"))
+        self.assertIn("🍥 <b>甲</b> · S01", text)
+        self.assertIn("⏰ E02-E03 已播 2~8 天，仍未入库", text)
+        self.assertIn("已入库 10 集 / 已播 24 集\n⏰ E13、E20-E21 已播 20 天~20 年，仍未入库", text)
 
     async def test_recorder_tracks_each_season_of_a_multi_season_pack(self):
         recorder = EpisodeRecorder()

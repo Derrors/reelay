@@ -102,7 +102,7 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_refusal_and_missing_credentials_require_approval(self):
         for client in (None, FakeAI(error=TimeoutError("secret must not be persisted")), FakeAI(media(), refusal="no")):
             ctx = context()
-            ctx.source_rule = {"approval_mode": "default_pass"}
+            ctx.source_rule = {"approval_mode": "auto"}
             parser = LLMParser()
             parser._client = client
             ctx.parsed = await parser.parse(ctx)
@@ -176,18 +176,24 @@ class RuntimeTest(unittest.IsolatedAsyncioTestCase):
         ctx.source_rule = pipeline._rule_for("@off")
         await provider.notify(ctx, "identified")
         self.assertEqual(len(sent), 1)
-        ctx.source_rule["approval_mode"] = "default_pass"
-        await provider.notify(ctx, "saved")
-        self.assertEqual(len(sent), 1)
         await provider.notify(ctx, "organize_failed")
         self.assertEqual(len(sent), 2)
 
-    async def test_silent_pipeline_does_not_enqueue_saved_notification(self):
+    def test_confirmation_modes_and_bot_notify_are_validated(self):
+        base = {"save_dirs": {"默认": "1"}}
+        cfg = normalize_config({**base, "sources": [{"bot": "@a", "approval_mode": "auto", "bot_notify": False}]})
+        self.assertEqual((cfg["defaults"]["approval_mode"], cfg["defaults"]["bot_notify"]), ("manual", True))
+        for defaults in ({"approval_mode": "default_pass"}, {"bot_notify": "off"}):
+            with self.subTest(defaults), self.assertRaises(ValueError):
+                normalize_config({**base, "defaults": defaults})
+
+    async def test_bot_notify_off_skips_cards_and_saved_but_not_problems(self):
         pipeline = Pipeline(self.registry(), self.store(), {})
         ctx = context()
-        ctx.source_rule = {"approval_mode": "default_pass"}
+        ctx.source_rule = {"approval_mode": "auto", "bot_notify": False}
         pipeline.store.save_task(ctx)
         await pipeline._notify_all(ctx, "saved")
+        await pipeline._notify_all(ctx, "pending_approval")
         self.assertEqual(pipeline.store.delivery_counts(), {})
         await pipeline._notify_all(ctx, "transfer_uncertain")
         self.assertEqual(pipeline.store.delivery_counts(), {"pending": 1})

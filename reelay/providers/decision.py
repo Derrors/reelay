@@ -4,7 +4,7 @@
 1. 硬过滤：非影视资源、广告、缺 115 链接、命中黑名单、缺 must_have，以及结构化规则
    （allow / deny / min_resolution，见 ``core/rules.py``）→ SKIP；清晰度未知无法核对 → ASK
 2. 低置信度（可配阈值）→ ASK（交人工兜底），避免 AI 误判直接放行
-3. 按来源的审批模式：manual → ASK；auto / default_pass → SAVE
+3. 按来源的确认方式：manual（人工确认）→ ASK；auto（AI 处理）→ SAVE
 
 三个实现逐层叠加：``default`` 只按规则；``subscription``（默认）在规则之上让订阅剧集的新集
 自动放行；``llm`` 再按自然语言偏好筛选（只能否决或转人工，不能越过前面的闸门）。
@@ -75,7 +75,7 @@ class DefaultDecision:
         mode = ApprovalMode.parse(rule.get("approval_mode"))
         if mode == ApprovalMode.MANUAL:
             return Decision.ASK
-        return Decision.SAVE   # auto / default_pass
+        return Decision.SAVE   # auto：AI 处理
 
 
 @register(kind="provider", ptype="decision")
@@ -109,7 +109,7 @@ class SubscriptionDecision(DefaultDecision):
             return decision
         pairs = planned_pairs(ctx)
         seasons = {season for season, _ in pairs} or ({p.season} if p.season is not None else set())
-        subs = subscriptions.items(runtime.get_config())
+        subs = subscriptions.items(runtime.get_config(), subscriptions.finished_records())  # 已完结的不再放行
         # 季未知时与这部剧任何一季的订阅比对，只为在轨迹里说明为什么没有放行
         item = subscriptions.match(subs, p, ctx.meta.get("tmdb", {}), seasons=seasons or {s["season"] for s in subs})
         if not item:

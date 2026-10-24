@@ -1,4 +1,5 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
+import { Link } from 'react-router-dom';
 import { AlertTriangle, ChevronDown, Clock3, Puzzle, RotateCcw, Workflow, Zap } from 'lucide-react';
 import PluginConfigEditor from '@/components/PluginConfigEditor';
 import { EmptyState } from '@/components/app/EmptyState';
@@ -12,7 +13,7 @@ import { cn } from '@/lib/utils';
 import { Field, Notice, SectionHeading, SwitchRow } from './fields';
 import { FlowOverview } from './FlowOverview';
 import {
-  CHOICE_LABELS, SLOT_LABELS, SLOT_ORDER, equal, extensionKeys, fieldDefault, getPath, isEnabled, obj, providerHint,
+  CHOICE_LABELS, PER_SOURCE_SLOTS, SLOT_LABELS, SLOT_ORDER, equal, extensionKeys, fieldDefault, getPath, isEnabled, obj, providerHint,
   providerLabel, setPath, stageNames, storagesInUse, strings, text, type Catalog, type Obj,
 } from './shared';
 
@@ -154,8 +155,10 @@ export function ExtensionsTab({ catalog, hooks, events, config, saved, setConfig
   const [open, setOpen] = useState<Set<string>>(new Set());
   const providers = obj(config.providers);
   const defaults = obj(config.defaults);
+  // 识别方式与转存方式按来源设置（设置 → 监听来源）；网盘只有一种时不必选
   const slots = [
-    ...SLOT_ORDER.filter(s => catalog.providers[s]),
+    ...SLOT_ORDER.filter(s => catalog.providers[s] && !PER_SOURCE_SLOTS.includes(s)
+      && (s !== 'storage' || (catalog.providers[s]?.length ?? 0) > 1)),
     ...Object.keys(catalog.providers).filter(s => !SLOT_ORDER.includes(s) && s !== 'notify'),
   ];
   const notify = catalog.providers.notify ?? [];
@@ -200,7 +203,7 @@ export function ExtensionsTab({ catalog, hooks, events, config, saved, setConfig
       <Panel
         icon={Workflow}
         title="核心能力"
-        description="为消息接入、识别、判断与网盘选择具体实现；单个监听来源可以在「设置 → 监听来源」中另行指定。"
+        description={<>选择消息接入与通知方式。识别方式与转存方式按来源设置，在 <Link to="/config?tab=sources" className="text-primary hover:underline">设置 → 监听来源</Link> 的来源卡片上选择。</>}
         actions={coreDirty ? (
           <>
             <DirtyTag />

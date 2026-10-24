@@ -134,12 +134,35 @@ def best_match(kind: str, title: str, year: int | None, *, language: str,
     return None, summary
 
 
+def details(kind: str, tmdb_id: int, *, language: str, timeout: float) -> dict:
+    """条目的评分、语言与主演（前 5 位），一次请求（附带演职员）。通知卡片展示用。"""
+    from .rules import LANGUAGES
+
+    def load():
+        data = _request(f"/{kind}/{int(tmdb_id)}", {"language": language, "append_to_response": "credits"},
+                        timeout=timeout)
+        codes = [item.get("iso_639_1") for item in data.get("spoken_languages") or [] if isinstance(item, dict)]
+        original = data.get("original_language")
+        if original and original not in codes:
+            codes.insert(0, original)  # 原始语言放最前
+        else:
+            codes = sorted(codes, key=lambda code: code != original)
+        cast = sorted((c for c in (data.get("credits") or {}).get("cast") or [] if isinstance(c, dict) and c.get("name")),
+                      key=lambda c: c.get("order", 99))
+        rating = data.get("vote_average")
+        return {"languages": [LANGUAGES.get(code, code) for code in dict.fromkeys(filter(None, codes))][:3],
+                "cast": [c["name"] for c in cast[:5]],
+                "rating": round(float(rating), 1) if type(rating) in (int, float) and rating > 0 else None}
+    return _cached(("details", kind, int(tmdb_id), language), load)
+
+
 def tv_details(tv_id: int, *, language: str, timeout: float) -> dict:
     """剧集条目的季列表（季号与集数），供订阅时选择季与填写总集数。"""
     def load():
         data = _request(f"/tv/{int(tv_id)}", {"language": language}, timeout=timeout)
         return {"id": data.get("id"), "name": data.get("name"), "poster_path": data.get("poster_path"),
-                "first_air_date": data.get("first_air_date"),
+                "first_air_date": data.get("first_air_date"), "status": data.get("status"),
+                "genre_ids": [g["id"] for g in data.get("genres") or [] if isinstance(g, dict) and type(g.get("id")) is int],
                 "seasons": [{"season": s.get("season_number"), "episodes": s.get("episode_count"),
                              "air_date": s.get("air_date")}
                             for s in data.get("seasons") or [] if type(s.get("season_number")) is int]}

@@ -98,6 +98,8 @@ class ParseTestPayload(BaseModel):
     text: str
     urls: list[str] = Field(default_factory=list)
     source: str | None = None
+    # 来源卡片上还没保存的设置（sources[] 的一项）；省略时按已保存的来源规则
+    draft: dict[str, Any] | None = None
 
 
 class CookiePayload(BaseModel):
@@ -439,7 +441,11 @@ def register_extras(app, *, log_file: Path, store, service, registry) -> None:
     @app.post("/api/sources/test-parse")
     async def test_parse(payload: ParseTestPayload):
         """与真实管线一致：合并默认规则 → 解析 → after_parse 扩展 → 确定性置信度 → 决策；不落库。"""
-        return await service.test_parse(payload.text, payload.urls, payload.source)
+        try:
+            rule = service.draft_source_rule(payload.draft) if payload.draft is not None else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await service.test_parse(payload.text, payload.urls, payload.source, rule=rule)
 
     # ------------------------------------------------------------------ #
     # 6) 任务高级检索：片名/剧集聚合 + 体积 + 支持批量操作的扩展筛选

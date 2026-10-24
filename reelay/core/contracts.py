@@ -30,7 +30,7 @@ class TaskState(str, enum.Enum):
     流转（详见 README 状态机图）::
 
         received → parsed → ┬ pending_approval ─(你确认)→ queued
-                            ├ queued (auto/default_pass 直接入队)
+                            ├ queued (auto：AI 处理，直接入队)
                             └ rejected / skipped
         queued → saving → stored → organizing → done
                    └ need_manual    └ need_manual
@@ -57,9 +57,8 @@ class TaskState(str, enum.Enum):
 
 
 class ApprovalMode(str, enum.Enum):
-    MANUAL = "manual"              # 人工确认后才转存
-    AUTO = "auto"                  # 自动转存 + 通知
-    DEFAULT_PASS = "default_pass"  # 静默转存
+    MANUAL = "manual"  # 人工确认：每条符合要求的资源都等你确认后才转存
+    AUTO = "auto"      # AI 处理：识别与规则都通过就直接转存，拿不准的仍交给你
 
     @classmethod
     def parse(cls, value: str | None) -> "ApprovalMode":

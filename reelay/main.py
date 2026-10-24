@@ -17,7 +17,7 @@ import asyncio
 import logging
 import os
 
-from .core import paths
+from .core import messages, paths
 from .core.config import ensure_config, load_config
 from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
@@ -123,6 +123,21 @@ async def _run_dry() -> int:
     return 0 if ok else 1
 
 
+async def _serve_fetch(store: Store, source, request: dict) -> None:
+    """管理台「获取最近消息」：监听会话只在主进程里，由这里代为读取并写回数据库。"""
+    try:
+        if not hasattr(source, "recent"):
+            raise RuntimeError("当前消息源不支持读取历史消息")
+        messages = await asyncio.wait_for(source.recent(request["bot"], request["max_count"]), 20)
+    except asyncio.CancelledError:
+        store.finish_source_fetch(request["id"], error="主进程正在切换消息源")
+        raise
+    except Exception as exc:  # noqa: BLE001 - 读取失败交给管理台改用已收到的消息
+        store.finish_source_fetch(request["id"], error=str(exc)[:200] or type(exc).__name__)
+        return
+    store.finish_source_fetch(request["id"], messages=messages)
+
+
 async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) -> None:
     """监听来源、目标清单都跟随有效配置；切换来源先关闭旧会话。
 
@@ -139,6 +154,7 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
         if hasattr(source, "bind_watermark"):
             source.bind_watermark(pipeline.store.source_watermark)
         listener = asyncio.create_task(source.listen(emit))
+        fetches: set[asyncio.Task] = set()  # 管理台请求读取的最近消息，见 _serve_fetch
         status, error = "stopped", None
         down_since = time.monotonic()
         backfilled = getattr(source, "backfilled", 0)
@@ -154,12 +170,16 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                     count, backfilled = source.backfilled - backfilled, source.backfilled
                     pipeline.store.stage_notice(
                         "backfill", f"📥 已补拉停机期间的 {count} 条消息。补拉的消息不逐条推送确认卡片，"
-                        "需要确认的资源请在管理台「待审批」中处理。", pipeline.notify_targets())
+                        "点下方按钮查看需要确认的资源。", pipeline.notify_targets(), buttons=messages.PENDING_BUTTONS)
                 health = source.health() if hasattr(source, "health") else {"status": "unobserved"}
                 pipeline.store.heartbeat("source", provider=name, config_revision=pipeline.revision, **health)
                 if health.get("status") in ("connected", "unobserved"):
                     down_since = None
                     pipeline.store.clear_alert("source", f"消息源 {name} 已恢复连接", pipeline.notify_targets())
+                    for request in pipeline.store.claim_source_fetches():
+                        fetch = asyncio.create_task(_serve_fetch(pipeline.store, source, request))
+                        fetches.add(fetch)
+                        fetch.add_done_callback(fetches.discard)
                 elif down_since is None:
                     down_since = time.monotonic()
                 elif time.monotonic() - down_since >= alert_after:
@@ -174,8 +194,9 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                 pipeline.notify_targets())
             raise
         finally:
-            listener.cancel()
-            await asyncio.gather(listener, return_exceptions=True)
+            for task in (listener, *fetches):
+                task.cancel()
+            await asyncio.gather(listener, *fetches, return_exceptions=True)
             try:
                 if hasattr(source, "close"):
                     await source.close()

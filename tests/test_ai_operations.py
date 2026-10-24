@@ -368,11 +368,12 @@ class TestDailyNarrative(Base):
         done_task(self.store, "1", title="剧")
         self.report._client = FakeAI({"text": "本周新收 1 部剧，《剧》已入库。"})
         text = await self.send()
-        self.assertTrue(text.startswith("📊 Reelay 日报 2026-10-19\n本周新收 1 部剧，《剧》已入库。\n\n过去 24 小时新收 3 条"))
+        self.assertTrue(text.startswith("📊 <b>Reelay 日报</b> · 2026-10-19\n\n<blockquote>本周新收 1 部剧，《剧》已入库。</blockquote>"
+                                        "\n\n📥 <b>过去 24 小时</b>\n新收 3 条"))
         facts = json.loads(self.report._client.calls[0]["messages"][1]["content"])["facts"]
         self.assertEqual(facts["last_7d"]["top"][0]["title"], "剧")
         self.report._client = FakeAI("bad")
-        self.assertTrue((await self.send()).startswith("📊 Reelay 日报 2026-10-19\n过去 24 小时"))
+        self.assertTrue((await self.send()).startswith("📊 <b>Reelay 日报</b> · 2026-10-19\n\n📥 <b>过去 24 小时</b>"))
         self.configure({**self.CFG, "plugins": {"daily_report": {"narrative": False}}})
         self.report._client = FakeAI({"text": "x"})
         await self.send()
