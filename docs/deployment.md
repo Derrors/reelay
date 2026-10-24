@@ -11,9 +11,37 @@
 | `worker` | `python -m reelay.main` | 监听 Telegram、执行识别 / 转存 / 整理、控制 Bot、发送通知 |
 | `web` | `python -m reelay.web` | 管理台与 API、Agent 用的 `/mcp`；只读写任务状态，不执行转存 |
 
-数据库、配置、密钥、Telegram 会话、115 凭证与日志全部在数据卷里。镜像以 UID 10001 运行，全新的命名卷会沿用镜像里的属主，不用手动授权；改用宿主机目录挂载时，先 `chown -R 10001:10001` 这个目录。同一个数据库只能有一个 `worker`（启动时用文件锁保证），也不要把数据卷放在网络文件系统上：SQLite 的 WAL 与文件锁在 NFS / SMB 上不可靠。
+数据库、配置、密钥、Telegram 会话、115 凭证与日志全部在数据卷里。镜像以 UID 10001 运行，全新的命名卷会沿用镜像里的属主，不用手动授权；想把数据放在宿主机目录里，见 [用宿主机目录存放数据](#用宿主机目录存放数据)。同一个数据库只能有一个 `worker`（启动时用文件锁保证），也不要把数据卷放在网络文件系统上：SQLite 的 WAL 与文件锁在 NFS / SMB 上不可靠。
 
 镜像发布在 `ghcr.io/derrors/reelay`，支持 linux/amd64 与 linux/arm64，标签有版本号（如 `1.0.0`）、次版本号（如 `1.0`）和 `latest`（最新正式版）。
+
+### 用宿主机目录存放数据
+
+NAS 上常把数据放在宿主机目录里（如 compose 文件旁的 `./data`），方便直接备份和查看。有两种做法：
+
+**以宿主机用户运行（推荐）**：文件归你自己的用户，宿主机上可以直接读写。`worker` 与 `web` 两个服务都要加上 `user`、`HOME` 与挂载：
+
+```yaml
+services:
+  worker:
+    user: "1000:1000"      # 你的 UID:GID，用 id 命令查看
+    environment:
+      HOME: /app/data      # 必须，见下
+    volumes:
+      - ./data:/app/data
+  web:
+    user: "1000:1000"
+    environment:
+      HOME: /app/data      # 加在 web 原有的 environment 里
+    volumes:
+      - ./data:/app/data
+```
+
+- `HOME` 必须设：镜像里没有这个用户的家目录，115 客户端启动时要在家目录下建缓存；不设时它无法加载，转存与整理都不可用。指到数据目录，缓存也随数据一起保存。
+- 先用这个用户建好目录（`mkdir data`），否则 Docker 会以 root 身份创建，容器写不进去。
+- 外部插件直接放进 `data/plugins/`，不用再单独挂载 `deploy/plugins`。
+
+**沿用镜像的 UID 10001**：只把挂载改为 `./data:/app/data`，并先执行 `sudo chown -R 10001:10001 data`。之后在宿主机上要用 root 才能读这些文件。
 
 ## 访问与安全
 
@@ -67,7 +95,7 @@ docker run --rm -v reelay_reelay-data:/data -v "$PWD":/backup alpine \
 docker compose start
 ```
 
-数据卷的实际名称是「项目目录名_reelay-data」，可以用 `docker volume ls` 确认。迁移到新机器时，在新机器上恢复同一个数据卷再启动即可；不要用 `docker compose down -v`，它会删除数据卷。
+数据卷的实际名称是「项目目录名_reelay-data」，可以用 `docker volume ls` 确认。[用宿主机目录存放数据](#用宿主机目录存放数据) 时，停止服务后直接打包这个目录即可。迁移到新机器时，在新机器上恢复同一个数据卷再启动即可；不要用 `docker compose down -v`，它会删除数据卷。
 
 ## 外部扩展
 
