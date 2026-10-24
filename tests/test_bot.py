@@ -6,7 +6,8 @@ import unittest
 from unittest.mock import patch
 
 from reelay.control import manage
-from reelay.core import messages
+from reelay.control.bot import ControlBot
+from reelay.core import messages, secret_store
 from reelay.core.messages import parse_callback
 from reelay.core.contracts import TaskState
 
@@ -180,6 +181,18 @@ class TestBulkPlans(ServiceCase):
         with patch("reelay.control.manage.time.time", return_value=time.time() + manage.BULK_TTL + 1):
             self.assertIn("过期", await manage.bulk_run(self.service, plan_id))
         self.assertEqual(self.store.get_task(task.task_id).state, TaskState.PENDING_APPROVAL)
+
+
+
+class TestHealth(ServiceCase):
+    def test_unconfigured_bot_is_not_reported_as_disconnected(self):
+        with secret_store.override():
+            health = ControlBot(self.service).health()
+        self.assertEqual(health["status"], "not_configured")  # 总览显示「未配置」，不是红色的连接中断
+        self.assertIn("设置 → Telegram", health["error"])
+        self.configure({**self.CFG, "telegram": {"owner_id": "42"}})
+        with secret_store.override(control_bot_token="123:abc"):
+            self.assertEqual(ControlBot(self.service).health(), {"status": "disconnected"})  # 配好了但还没连上
 
 
 if __name__ == "__main__":

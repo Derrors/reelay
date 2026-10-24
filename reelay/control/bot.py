@@ -456,6 +456,9 @@ class ControlBot:
             await self._client.run_until_disconnected()
 
     def health(self) -> dict:
+        if not self.enabled:  # 没配置不算断开：总览显示「未配置」而不是连接中断
+            return {"status": "not_configured",
+                    "error": "未配置：在「设置 → Telegram」填写控制 Bot Token 与你的数字 ID，重启主进程后生效"}
         return {"status": "connected" if self._client and self._client.is_connected() else "disconnected"}
 
     async def close(self) -> None:
