@@ -14,7 +14,9 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)
 [![License](https://img.shields.io/badge/license-MIT-64748B)](LICENSE)
 
-[快速开始](docs/quickstart.md) · [部署与运维](docs/deployment.md) · [配置参考](docs/configuration.md) · [Agent 接入](docs/agents.md) · [插件开发](docs/plugins.md) · [架构设计](docs/architecture.md)
+**简体中文** · [English](README.en.md)
+
+[快速开始](docs/quickstart.md) · [部署与运维](docs/deployment.md) · [配置参考](docs/configuration.md) · [Telegram 与 Agent](docs/agents.md) · [插件开发](docs/plugins.md) · [架构设计](docs/architecture.md)
 
 <br>
 
@@ -27,7 +29,9 @@
 
 <br>
 
-你关注的频道和 Bot 每天刷出一堆资源，真正想要的就那几部。Reelay 用你自己的 Telegram 账号替你盯着：AI 读懂每条消息是哪部片、第几季第几集、什么版本，再由 TMDB 和分享里的真实文件替它把关；你点一下「转存」，它就把分享存进你的 115，按 Jellyfin / Emby 的规范改名归类。下次打开媒体服务器，新的一集已经在那里了。
+你关注的频道和 Bot 每天刷出一堆资源，真正想要的就那几部。Reelay 用你自己的 Telegram 账号替你盯着：AI 读懂每条消息是哪部片、第几季第几集、什么版本，再由 TMDB 和分享里的真实文件替它把关；你在 Telegram 上点一下「转存」，它就把分享存进你的 115，按 Jellyfin / Emby 的规范改名归类。下次打开媒体服务器，新的一集已经在那里了。
+
+在网页管理台配置一次，之后审批、修正、追剧、看日报都在 Telegram 上完成。
 
 > **Reel**（胶片）+ **Relay**（接力）：替你把片子从消息流接力到媒体库。
 
@@ -38,13 +42,13 @@
 <td width="33%" valign="top">
 
 ### 🧠 读得懂消息
-LLM 抽取片名、季集、清晰度、字幕、音轨与 HDR，TMDB 校正成规范片名。分享码只由代码提取，AI 拿不准就交给你。
+LLM 抽取片名、季集、清晰度、字幕、音轨与 HDR，TMDB 校正成规范片名。每个来源还可以有自己的识别规则，由 AI 按频道最近的消息起草；AI 不可用时按规则兜底。
 
 </td>
 <td width="33%" valign="top">
 
-### ✋ 你说了算
-每条资源附建议和理由，一键批准、批量处理；也可以用一句话写偏好，AI 起草成规则，你确认后才生效。
+### 📱 在 Telegram 上搞定
+审批卡片一键转存、换目录、追剧；识别错了点「修正」发一句话就改好。待审批、失败任务、订阅都有命令，不配 AI 也能用。
 
 </td>
 <td width="33%" valign="top">
@@ -64,7 +68,7 @@ LLM 抽取片名、季集、清晰度、字幕、音轨与 HDR，TMDB 校正成�
 <td valign="top">
 
 ### 📺 追剧不用盯
-订阅一部剧，之后的新集自动放行；多季合集按季拆开整理，已入库的集自动跳过，缺集和断档会出现在日报里。
+订阅一部剧，之后的新集自动放行；同一部剧批准满 3 条会建议你订阅。每天推送日报与缺集提醒，播完自动结束订阅。
 
 </td>
 <td valign="top">
@@ -87,46 +91,70 @@ Web 管理台、Telegram 控制 Bot、给 Claude 等 Agent 用的 MCP；Provider
 <td valign="top">
 
 ```text
-🖼 （TMDB 海报）
-📺 漫长的季节 (2023)  ⭐ 8.6
+🖼 （TMDB 剧照）
+📺 漫长的季节 (2023) · S01 E01-E10
 The Long Season
-🏷 剧情 · 悬疑 · 犯罪 · 中国大陆
 
-🗂 第 1 季 · E01-E10
-🎞 2160p · 简体中字 · 国语 · 杜比视界
-📦 38.6 GB
+🌟 评分：8.6
+🎭 类型：剧情 · 悬疑 · 犯罪
+🌍 地区：中国大陆
+👥 主演：范伟、秦昊、陈明昊
+🖥 分辨率：2160p · 杜比视界
+💬 字幕：简体中字
+📦 大小：38.6 GB
 
-▍ 1997 年，出租车司机王响……（简介，可展开）
+📖 简介：
+▍ 1997 年，出租车司机王响……（可展开）
 
-📡 来源 @example_channel
-📂 存到 /剧集/国产剧集
+📂 存到：/剧集/国产剧集
+📡 来源：@example_channel
 
-   [ ✅ 转存 ]   [ 🚫 忽略 ]
+[ ✅ 转存 ]    [ 🚫 忽略   ]
+[ 📂 换目录 ]  [ ✏️ 修正    ]
+[ 🔔 追剧 ]    [ ⛔ 不再接收 ]
+[ 🎬 TMDB 详情             ]
 ```
 
 </td>
 <td valign="top">
 
 ```text
-🖼 （TMDB 海报）
+🖼 （TMDB 剧照）
 ✅ 已入库
 
-📺 漫长的季节 (2023)  ⭐ 8.6
-🏷 剧情 · 悬疑 · 犯罪 · 中国大陆
+📺 漫长的季节 (2023) · S01 E01-E10
+The Long Season
 
-🗂 第 1 季 · E01-E10
-🎞 2160p · 简体中字 · 国语 · 杜比视界
-📦 38.6 GB
-📂 /剧集/国产剧集/漫长的季节 (2023) [tmdbid=…]/Season 01
-📄 10 个文件：漫长的季节 - S01E01.mkv、
+🌟 评分：8.6
+🎭 类型：剧情 · 悬疑 · 犯罪
+🖥 分辨率：2160p · 杜比视界
+📦 大小：38.6 GB
+
+📂 位置：/剧集/国产剧集/漫长的季节 (2023)
+   [tmdbid=…]/Season 01
+📄 文件：10 个，漫长的季节 - S01E01.mkv、
    漫长的季节 - S01E02.mkv 等
+
+[ 🎬 TMDB 详情 ]
 ```
 
 </td>
 </tr>
 </table>
 
-同样的待审批也在管理台的收件箱里：海报、季集、版本对比与建议一目了然，可以多选批量处理。不想审批的来源可以改为自动转存，Reelay 会在你确认得够多之后主动建议。
+不打开网页也能做的事：
+
+| 场景 | 在 Telegram 上怎么做 |
+| --- | --- |
+| 识别错了 | 卡片上点「✏️ 修正」，发一句 `片名 繁花 第 2 季`，没写的不变；也可以重新识别 |
+| 转存或整理停下来 | 「需要处理」的提醒按情况给出按钮：核验转存、按已到的继续、重新整理、删除或覆盖、重试 |
+| 积压了一堆 | `/pending` 每条点开卡片处理，或一键全部批准、全部忽略 |
+| 追剧 | `/subs` 看已入库与缺集，取消、继续订阅，处理订阅建议；缺集提醒可标「不用等了」 |
+| 不想再收某部 | 卡片上点「⛔ 不再接收」，`/ignored` 随时恢复 |
+| 看看运行得怎样 | `/status` 运行概况；每天还会收到日报 |
+| 换个说法 | 配置了 AI 时直接说：「待审批里有什么」「把《X》这几集都批了，存到动漫」 |
+
+115 登录失效后的扫码和各项配置在网页管理台完成。详见 [Telegram 与 Agent](docs/agents.md)。
 
 ## 🚀 快速开始
 
@@ -147,7 +175,7 @@ docker compose run --rm --no-deps -it worker python -m reelay.login
 docker compose up -d
 ```
 
-账号从哪里申请、第一条资源怎么验证，见 [快速开始](docs/quickstart.md)。
+接着在「设置 → 监听来源」添加要盯的频道或 Bot：贴几条样例消息，AI 会起草这个来源的规则，在卡片上点「测试识别」看看效果。账号从哪里申请、第一条资源怎么验证，见 [快速开始](docs/quickstart.md)。
 
 <details>
 <summary><b>不用 Docker，或者先在本机模拟体验</b></summary>
@@ -177,7 +205,7 @@ python -m reelay.main      # 监听与后台任务（另开终端）
 
 ## 🎞️ 入库后的样子
 
-默认按二级分类存放（也可以按媒体类型或不分类），命名模板可在管理台修改：
+默认按二级分类存放（也可以按媒体类型或不分类），命名模板可在管理台修改，改完点「预览整理效果」就能看到结果：
 
 ```text
 电影/
@@ -202,7 +230,7 @@ python -m reelay.main      # 监听与后台任务（另开终端）
 
 **AI 提议 → 事实源校验 → 人工裁决 → 裁决回流给 AI。**
 
-AI 负责读消息、给建议，TMDB 与分享里的真实文件负责把关，拿不准的交给你；你的每次裁决都会让下次识别更准。转存、改名、去重始终由确定性代码完成并读回核验。详见 [架构设计](docs/architecture.md)。
+AI 负责读消息、给建议，TMDB 与分享里的真实文件负责把关，拿不准的交给你；你在卡片上的每次修正都会让同一来源的下次识别更准。转存、改名、去重始终由确定性代码完成并读回核验。详见 [架构设计](docs/architecture.md)。
 
 ## 📚 文档
 
@@ -210,8 +238,8 @@ AI 负责读消息、给建议，TMDB 与分享里的真实文件负责把关，
 | --- | --- |
 | [快速开始](docs/quickstart.md) | 准备账号、启动、首次配置，验证第一条资源 |
 | [部署与运维](docs/deployment.md) | Docker 部署、访问与安全、升级回滚、备份、健康检查与故障恢复 |
-| [配置参考](docs/configuration.md) | 系统配置、插件配置、密钥与运行文件的完整说明 |
-| [Agent 接入](docs/agents.md) | 用 MCP 让 Claude 等 Agent 查询和审批，控制 Bot 的对话操作 |
+| [配置参考](docs/configuration.md) | 系统配置、来源识别规则、插件配置、密钥与运行文件的完整说明 |
+| [Telegram 与 Agent](docs/agents.md) | 控制 Bot 的按钮、命令与对话；用 MCP 让 Claude 等 Agent 查询和审批 |
 | [插件开发](docs/plugins.md) | 扩展点、PipelineContext、调用 AI、元数据补全约定 |
 | [架构设计](docs/architecture.md) | 状态机、AI 与规则的分工、转存与恢复边界 |
 | [更新日志](CHANGELOG.md) | 每个版本的变化 |
@@ -227,15 +255,6 @@ AI 负责读消息、给建议，TMDB 与分享里的真实文件负责把关，
 ## 🤝 参与
 
 欢迎 Issue 与 PR，开发环境与提交规范见 [CONTRIBUTING](CONTRIBUTING.md)；安全问题请按 [SECURITY](SECURITY.md) 私下报告。
-
-<details>
-<summary>English</summary>
-
-<br>
-
-Reelay is a self-hosted pipeline that watches the Telegram channels and bots your own account follows. An LLM recognizes media releases and 115 cloud share links, TMDB and the actual share listing verify them, and—after your approval—Reelay saves them into your own 115 drive, organized for Jellyfin / Emby. It ships with a web console, a Telegram control bot, an MCP server for AI agents, and a plugin system. Multi-arch images are published at `ghcr.io/derrors/reelay`. The UI and docs are in Chinese.
-
-</details>
 
 ## License
 

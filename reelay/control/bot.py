@@ -136,14 +136,18 @@ class ControlBot:
             message = await e.get_message()
             original = tl_html.unparse(message.message or "", message.entities or []) if message else ""
             text, buttons, toast = await self.callback(data, original)
-            if text is None:
-                if buttons:  # 只换按钮，正文不动
-                    from telethon import functions
-                    await self._client(functions.messages.EditMessageRequest(
-                        peer=await e.get_input_chat(), id=e.message_id,
-                        reply_markup=self._client.build_reply_markup(self._buttons(buttons))))
-            else:
-                await e.edit(text, buttons=self._buttons(buttons) or None, parse_mode="html")
+            from telethon.errors import MessageNotModifiedError
+            try:
+                if text is None:
+                    if buttons:  # 只换按钮，正文不动
+                        from telethon import functions
+                        await self._client(functions.messages.EditMessageRequest(
+                            peer=await e.get_input_chat(), id=e.message_id,
+                            reply_markup=self._client.build_reply_markup(self._buttons(buttons))))
+                else:
+                    await e.edit(text, buttons=self._buttons(buttons) or None, parse_mode="html")
+            except MessageNotModifiedError:
+                toast = toast or "已是最新"  # 如「刷新」时内容没变：Telegram 拒绝原样编辑，不算出错
             await e.answer(toast or "")
 
     async def callback(self, data: str, original: str = "") -> tuple[str | None, list | None, str | None]:
