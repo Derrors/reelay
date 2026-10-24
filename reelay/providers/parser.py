@@ -18,99 +18,22 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from collections import OrderedDict
 
 from ..core import ai, parse_rules, release, runtime
+from ..core.parse_rules import AD_KEYWORDS, parse_115_url, prefilter_reason, regex_fields
 from ..core.ai import response_format
 from ..core.contracts import ParsedResource, PipelineContext
 from ..core.registry import register
 from ..core.validation import MEDIA_SCHEMA, validate_resource
 
 
-# --------------------------------------------------------------------------- #
-# 115 链接解析（确定性代码：AI 抽候选，这里较真）
-# --------------------------------------------------------------------------- #
-_SHARE_RE = re.compile(r"115(?:cdn)?\.(?:com|cn)/s/([0-9a-zA-Z]+)")
-_PWD_RE = re.compile(r"(?:访问码|password|pwd|提取码)[:：]?\s*([0-9a-zA-Z]{4})", re.I)
-
-
-def parse_115_url(text: str, urls: list[str]) -> tuple[str | None, str | None, str | None]:
-    """从正文与超链接里提取 (share_url, share_code, receive_code)。
-
-    兼容资源频道常用的短链域名 ``115cdn.com/s/...``；对外存储/转存仍以
-    115 官方域名为规范，只保留 path 中的 share code。
-    """
-    for u in [*urls, text]:
-        m = _SHARE_RE.search(u or "")
-        if m:
-            share_url = u if u.startswith("http") else f"https://115.com/s/{m.group(1)}"
-            pwd = None
-            pm = _PWD_RE.search(text or "")
-            if pm:
-                pwd = pm.group(1)
-            else:
-                qm = re.search(r"[?&]password=([0-9a-zA-Z]{4})", u or "")
-                if qm:
-                    pwd = qm.group(1)
-            return share_url, m.group(1), pwd
-    return None, None, None
-
-
-# --------------------------------------------------------------------------- #
-# 规则解析（兜底 / 降级）
-# --------------------------------------------------------------------------- #
-_YEAR_RE = re.compile(r"\((\d{4})\)")
-_SEASON_RE = re.compile(r"第\s*(\d+)\s*季")
-_EP_RE = re.compile(r"(?:更新至|更至|第)?\s*第?(\d+)\s*集")
-# 剧集的其他写法：S01E02、S01、全集 / 全 36 集、EP02（只用来判断是剧集，不取集数）
-_SERIES_RE = re.compile(r"(?i)(?<![a-z])S\d{1,2}(?:E\d{1,4})?(?![a-z])|全\s*\d*\s*集|(?<![a-z])EP?\d{1,4}(?![a-z])")
-_RES_RE = re.compile(r"(4K|2160p|1080p|720p|WEB-DL|BluRay|HDR)", re.I)
-_SIZE_RE = re.compile(r"([\d.]+\s*[GM]B)", re.I)
-_AD_KW = ("招商", "广告", "投稿", "点击进群", "更多资源关注", "推广")
-
-
-def regex_fields(text: str, rules: dict | None = None) -> dict:
-    """按规则从正文取片名、年份、季、集、分辨率、大小；from_rules 是来源规则匹配到的字段。
-
-    来源自己的识别规则（rules，见 core/parse_rules.py）优先，没写或没匹配到的字段沿用通用规则。
-    """
-    # 取正文第一行，剥掉前缀 emoji/符号，再按"(年份)/第N季/更新至"切出片名
-    first = (text.strip().splitlines() or [""])[0]
-    first = first.lstrip("📺🎬🎞🎥✨🌟 \t-·•").strip()
-    ym = _YEAR_RE.search(first)
-    sm = _SEASON_RE.search(text)
-    # 片名 = 第一行中"(年份)"或"第N季"或"更新至"之前的部分
-    cut = len(first)
-    for pat in (_YEAR_RE, _SEASON_RE, re.compile(r"更新至|更至|第\d+集")):
-        m = pat.search(first)
-        if m:
-            cut = min(cut, m.start())
-    found = [int(x) for x in _EP_RE.findall(text)][:1]  # 简单取"更新至X集"
-    res = _RES_RE.search(text)
-    size = _SIZE_RE.search(text)
-    fields = {
-        "title": first[:cut].strip(" -·•（(") or None,
-        "year": int(ym.group(1)) if ym else None,
-        "season": int(sm.group(1)) if sm else None,
-        "episodes": list(range(1, min(found[0], 1000) + 1)) if found else [],
-        "resolution": res.group(1) if res else None,
-        "size": size.group(1) if size else None,
-    }
-    custom = parse_rules.extract(rules, text)
-    fields.update(custom)
-    # 看不出是剧集时不猜电影：留空，由 TMDB（剧集与电影都搜）和读取分享补上
-    fields["media_type"] = "tv" if fields["season"] or fields["episodes"] or _SERIES_RE.search(text) else None
-    fields["from_rules"] = list(custom)
-    return fields
-
-
 def _regex_parse(ctx: PipelineContext) -> ParsedResource:
     text = ctx.raw.text or ""
     share_url, share_code, recv = parse_115_url(text, ctx.raw.urls)
 
-    is_ad = any(kw in text for kw in _AD_KW) and share_code is None
+    is_ad = any(kw in text for kw in AD_KEYWORDS) and share_code is None
     is_media = share_code is not None
     fields = regex_fields(text, (ctx.source_rule or {}).get("parse_rules"))
     if not is_media:  # 不是资源时只留集数、清晰度这些不影响判断的字段
@@ -136,20 +59,6 @@ def _regex_parse(ctx: PipelineContext) -> ParsedResource:
         reason=reason,
         raw_fields={"share_url": share_url},
     )
-
-
-def prefilter_reason(ctx: PipelineContext, share_code: str | None) -> str | None:
-    """与 DefaultDecision 的硬过滤一致；命中则无论 LLM 怎么判都会被跳过。"""
-    if not share_code:
-        return "无 115 链接"
-    filters = (ctx.source_rule or {}).get("filters", {}) or {}
-    text = ctx.raw.text or ""
-    must = filters.get("must_have") or []
-    if must and not any(keyword in content for keyword in must for content in [text, *ctx.raw.urls]):
-        return "未命中 must_have"
-    if any(keyword in text for keyword in filters.get("block_keywords") or []):
-        return "命中黑名单关键词"
-    return None
 
 
 class _ResultCache:
