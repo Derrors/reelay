@@ -5,18 +5,23 @@
 * web 与 worker 在 compose 部署下是两个进程，只共享同一个 SQLite，无法走内存
   事件总线。这里在 web 进程内放**唯一一个**观察者，定时对 SQLite 做轻量 diff，
   把 N 个浏览器标签的轮询收敛成「服务端 1 次查询」。
-* 有变化才向所有 /api/events 客户端广播；无变化发 SSE keepalive 注释保活。
+* 有变化才向所有 /api/events 客户端广播；无变化发 SSE keepalive 注释保活。没有客户端连着时不查库。
 * 浏览器端 EventSource 原生支持断线自动重连，后端不维护历史，客户端重连后应先
-  重新拉一次快照（前端在 onopen 时处理），因此这里只做「变化通知」而非消息队列。
+  重新拉一次快照（前端在 hello 时处理），因此这里只做「变化通知」而非消息队列。
+* 推送流在每次保活时重新核对登录：退出登录或改了密码后，已经打开的推送流随之结束。
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import logging
 import time
 import weakref
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
+
+log = logging.getLogger("reelay.web.events")
 
 # 观察者轮询间隔：这是服务端对 SQLite 的唯一固定查询，成本极低。
 WATCH_INTERVAL = 1.5
@@ -49,7 +54,6 @@ class EventBus:
         self._subscribers.discard(queue)
 
     def _broadcast(self, payload: dict[str, Any]) -> None:
-        import json
         event = payload.get("type", "message")
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         frame = f"event: {event}\ndata: {data}\n\n"
@@ -89,9 +93,13 @@ class EventBus:
         self._subscribers.clear()
 
     async def _watch(self) -> None:
-        """定时 diff；首个状态总是广播一次，让重连客户端立刻对齐。"""
-        first = True
+        """定时 diff；首个状态总是广播一次，让重连客户端立刻对齐。没有客户端连着时不查库。"""
+        first, failing = True, False
         while True:
+            if not self._subscribers:
+                self._last_signature, first = None, True  # 下一个客户端连上时重新对齐
+                await asyncio.sleep(WATCH_INTERVAL)
+                continue
             try:
                 # 在事件循环线程上直接读库：几条带索引的小查询；放进线程池会在关闭时与
                 # store.close() 竞争同一连接（取消协程不会停止线程），可导致进程崩溃。
@@ -104,11 +112,13 @@ class EventBus:
                     self._broadcast({"type": "ping", "ts": int(time.time())})
                     self._last_keepalive = now
                 self._last_signature = signature
+                failing = False
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                # 观察者不能因为单次读库异常退出；下一轮自愈。
-                pass
+            except Exception as exc:  # noqa: BLE001 - 观察者不能因为单次读库异常退出；下一轮自愈
+                if not failing:
+                    log.warning("实时推送读取状态失败（之后自动重试）：%s", exc)
+                failing = True
             await asyncio.sleep(WATCH_INTERVAL)
 
     # ------------------------------------------------------------------ #
@@ -122,11 +132,8 @@ class EventBus:
         health = store.health_status()
         worker = health.get("worker", {})
         source = health.get("source", {}) if isinstance(health, dict) else {}
-        # 最近更新任务的 (id, state, updated_at, error) 指纹：任何任务推进都会变。
-        try:
-            rows = store.list_recent_updated(RECENT_LIMIT) if hasattr(store, "list_recent_updated") else []
-        except Exception:
-            rows = []
+        # 最近更新任务的 (id, state, updated_at) 指纹：任何任务推进都会变。
+        rows = store.list_recent_updated(RECENT_LIMIT)
         recent = tuple((r["task_id"], r["state"], round(float(r["updated_at"]), 1)) for r in rows)
         alerts = tuple((a["key"], a["updated_at"]) for a in store.active_alerts())
 
@@ -156,7 +163,7 @@ class EventBus:
         return changed, signature
 
 
-# 进程内的全部总线；Web 收到停止信号时据此提前结束推送流（见 web.main）。
+# 进程内的全部总线；Web 收到停止信号时据此提前结束推送流（见 web.app.main）。
 _BUSES: weakref.WeakSet[EventBus] = weakref.WeakSet()
 
 
@@ -167,16 +174,19 @@ def close_all_streams() -> None:
         bus.close_streams()
 
 
-async def event_stream(bus: EventBus) -> AsyncIterator[bytes]:
-    """SSE 响应体生成器。"""
+async def event_stream(bus: EventBus, authorized: Callable[[], bool] = lambda: True) -> AsyncIterator[bytes]:
+    """SSE 响应体生成器；authorized 在每次收到帧（至少每个保活间隔）时核对，不再有效就结束推送流。"""
     queue = bus.subscribe()
     try:
         yield b": connected\n\n"
         # 新连接立即通知前端去拉一次快照对齐（首帧可能早于首个广播）。
         yield b"event: hello\ndata: {}\n\n"
         while True:
-            frame = await queue.get()
-            if frame is None:
+            try:
+                frame = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_INTERVAL * 2)
+            except asyncio.TimeoutError:
+                frame = ": keepalive\n\n"
+            if frame is None or not authorized():
                 break
             yield frame.encode("utf-8")
     finally:
