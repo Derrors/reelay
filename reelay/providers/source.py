@@ -1,9 +1,9 @@
 """消息源 Provider（SourceProvider）。
 
 - ``TelegramUserbotSource``（name="telegram"）：用你自己的账号（Telethon）监听多个 bot。
-  未装 telethon / 未配 api_id 时不可用。
-- ``DryRunSource``（name="dryrun"）：内置模拟源，吐几条样例消息用于骨架冒烟，
-  不依赖任何三方库与网络。
+  未配 API ID / Hash 或会话还没登录时不退出：health 报告原因并定时重试（见 _connect）。
+
+模拟源 ``dryrun`` 在 ``providers/dryrun.py``。
 """
 
 from __future__ import annotations
@@ -20,50 +20,9 @@ from ..core.registry import register
 
 EmitFn = Callable[[RawMessage], Awaitable[None]]
 log = logging.getLogger("reelay.source")
-
-
-# --------------------------------------------------------------------------- #
-# Dry-run 模拟源
-# --------------------------------------------------------------------------- #
-_SAMPLES = [
-    # 一条正常剧集资源
-    {
-        "source": "@example_tv_bot",
-        "text": (
-            "📺 法医秦明之龙番往事 (2026) 第1季 更新至第8集 ✨4K WEB-DL\n"
-            "🌍 地区： China\n💾 大小： 15.12 GB\n🔗 链接： https://115.com/s/swabc123?password=x1y2"
-        ),
-        "urls": ["https://115.com/s/swabc123?password=x1y2"],
-    },
-    # 一条广告（应被过滤）
-    {
-        "source": "@example_tv_bot",
-        "text": "🔥 招商广告：更多资源关注本频道，点击进群 👉 t.me/xxx",
-        "urls": ["https://t.me/xxx"],
-    },
-    # 一条电影资源
-    {
-        "source": "@example_movie_bot",
-        "text": "🎬 流浪地球2 (2023) 4K HDR\n💾 62 GB\n🔗 https://115.com/s/mv2gala?password=abcd",
-        "urls": ["https://115.com/s/mv2gala?password=abcd"],
-    },
-]
-
-
-@register(kind="provider", ptype="source")
-class DryRunSource:
-    name = "dryrun"
-
-    async def listen(self, emit: EmitFn) -> None:
-        for i, s in enumerate(_SAMPLES):
-            await emit(RawMessage(
-                source=s["source"],
-                msg_id=f"dry-{i}",
-                text=s["text"],
-                urls=s["urls"],
-            ))
-            await asyncio.sleep(0.05)
-        # dry-run 源发完即结束（真实源是长驻的）
+RETRY_SECONDS = 30  # 还没配置 / 没登录 / 连不上时多久重新检查一次
+LOGIN_HINT = ("监听会话还没有登录：在终端执行 python -m reelay.login（Docker 部署见 docs/quickstart.md），"
+              "登录后自动接上，不用重启")
 
 
 # --------------------------------------------------------------------------- #
@@ -76,6 +35,7 @@ class TelegramUserbotSource:
     def __init__(self) -> None:
         self._client = None
         self._authorized = False
+        self._problem: tuple[str, str] | None = None  # (状态, 说明)：还没配置、没登录或连不上
         self._targets: list[str] = []
         self._session = str(paths.USERBOT_SESSION)
         self._watermark: Callable[[str], int | None] | None = None
@@ -95,6 +55,9 @@ class TelegramUserbotSource:
         return bool(set(self._targets) & identities)
 
     def health(self) -> dict:
+        if self._problem:
+            status, error = self._problem
+            return {"status": status, "error": error}
         connected = bool(self._client and self._client.is_connected())
         return {"status": "connected" if connected and self._authorized else ("connecting" if connected else "disconnected")}
 
@@ -104,20 +67,12 @@ class TelegramUserbotSource:
             await self._client.disconnect()
 
     async def listen(self, emit: EmitFn) -> None:
-        # 在管理台「设置」填写；改了要重启主进程（会话在启动时建立）
-        self._api_id = secret_store.get("telegram_api_id")
-        self._api_hash = secret_store.get("telegram_api_hash")
-        if not (self._api_id and self._api_hash):
-            raise RuntimeError("未配置 Telegram API ID / API Hash（管理台「设置」中填写），无法启用 telegram 源")
+        from telethon import events  # 延迟导入
 
-        from telethon import TelegramClient, events  # 延迟导入
-
-        self._client = TelegramClient(self._session, int(self._api_id), self._api_hash, catch_up=True)
         self.backfill_done = False
         ready = asyncio.Event()
 
         # 过滤在回调中读取当前目标列表，热更新无需重建会话；空列表不监听任何来源。
-        @self._client.on(events.NewMessage())
         async def _handler(event):  # noqa: ANN001
             await ready.wait()
             if not self._authorized:
@@ -136,16 +91,13 @@ class TelegramUserbotSource:
             ))
 
         try:
-            await self._client.start()
-            account = await self._client.get_me()
-            if not account or getattr(account, "bot", False):
-                raise RuntimeError(
-                    "监听会话（data/userbot.session）必须登录个人 Telegram 账号，不能使用控制 Bot 会话"
-                )
+            self._client = await self._connect(lambda client: client.add_event_handler(_handler, events.NewMessage()))
+            # 放行实时消息之前记下各来源的水位：实时消息会推高水位，之后再读会漏掉停机期间的消息
+            marks = await self._watermarks()
             self._authorized = True
             ready.set()
             try:
-                await self.backfill(emit)
+                await self.backfill(emit, marks)
             except Exception as exc:  # noqa: BLE001 - 补拉失败不影响实时监听
                 log.warning("历史消息补拉失败：%s", exc)
             finally:
@@ -155,36 +107,86 @@ class TelegramUserbotSource:
             ready.set()
             await self.close()
 
+    async def _connect(self, setup: Callable[[Any], None]) -> Any:
+        """连上 Telegram 并确认会话登录的是个人账号，返回客户端。
 
-    async def backfill(self, emit: EmitFn) -> int:
+        API ID / Hash 在管理台「设置 → Telegram」填写，会话用 ``python -m reelay.login`` 建立（需要交互输入，
+        不能在这里做）；做不到时记下原因交给 health，每 RETRY_SECONDS 秒重新检查，补上后自动接上。
+        """
+        from telethon import TelegramClient  # 延迟导入
+
+        reported = None
+        while True:
+            api_id, api_hash = secret_store.get("telegram_api_id"), secret_store.get("telegram_api_hash")
+            if not (api_id and api_hash):
+                problem = ("not_configured", "未配置 Telegram API ID / API Hash：在管理台「设置 → Telegram」中填写")
+            else:
+                client = TelegramClient(self._session, int(api_id), api_hash, catch_up=True)
+                setup(client)
+                try:
+                    await client.connect()
+                    if not await client.is_user_authorized():
+                        problem = ("not_logged_in", LOGIN_HINT)
+                    elif getattr(await client.get_me(), "bot", True):
+                        problem = ("not_logged_in", "监听会话登录的是 Bot，需要个人账号："
+                                                    f"删除 {paths.USERBOT_SESSION.name} 后重新执行 python -m reelay.login")
+                    else:
+                        self._problem = None
+                        return client
+                except OSError as exc:  # 含 ConnectionError：网络问题，稍后重试
+                    problem = ("disconnected", f"连不上 Telegram：{exc}")
+                await client.disconnect()
+            self._problem = problem
+            if problem != reported:
+                log.warning("Telegram 监听未启动：%s", problem[1])
+                reported = problem
+            await asyncio.sleep(RETRY_SECONDS)
+
+    async def _watermarks(self) -> list[tuple[Any, str, int]]:
+        """每个来源的（实体, 来源标识, 水位）。首次监听（无水位）的来源不补拉；找不到的来源跳过，不影响其余来源。"""
+        if not self._watermark:
+            return []
+        marks = []
+        for target in list(self._targets):
+            try:
+                entity = await self._client.get_entity(int(target) if target.lstrip("-").isdigit() else target)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("补拉：找不到来源 %s（%s），跳过", target, exc)
+                continue
+            source = _entity_name(entity)
+            mark = self._watermark(source)
+            if mark is not None:
+                marks.append((entity, source, mark))
+        return marks
+
+    async def backfill(self, emit: EmitFn, marks: list[tuple[Any, str, int]] | None = None) -> int:
         """补拉每个来源水位之后、最近 max_days 天内最新的 limit 条消息，按时间顺序入库。
 
-        从最新往旧读取：停机很久时优先补最近的消息（较早的分享大多已失效），遇到超过
-        max_days 的消息即停止，上限只计入需要补拉的消息。首次监听（无水位）不导入历史。
+        marks 是监听开始时记下的水位（见 _watermarks），省略时现在读取。从最新往旧读取：停机很久时
+        优先补最近的消息（较早的分享大多已失效），遇到超过 max_days 的消息即停止，上限只计入需要补拉的消息。
+        一个来源读取失败只跳过这个来源。
         """
         limit = int(runtime.get("telegram.backfill_limit", 200))
         max_age = float(runtime.get("telegram.backfill_max_days", 7)) * 86400
-        if not self._watermark or limit <= 0:
+        if limit <= 0:
             return 0
         total = 0
-        for target in list(self._targets):
-            ref = int(target) if target.lstrip("-").isdigit() else target
-            entity = await self._client.get_entity(ref)
-            source = _entity_name(entity)
-            mark = self._watermark(source)
-            if mark is None:
-                continue
+        for entity, source, mark in (await self._watermarks() if marks is None else marks):
             recent, truncated = [], False
-            async for msg in self._client.iter_messages(entity, min_id=mark):
-                date = getattr(msg, "date", None)
-                if date is not None and time.time() - date.timestamp() > max_age:
-                    break  # 消息按时间倒序，之后的都更旧
-                if getattr(msg, "action", None):
-                    continue  # 服务消息（置顶、入群等）
-                if len(recent) >= limit:
-                    truncated = True
-                    break
-                recent.append(msg)
+            try:
+                async for msg in self._client.iter_messages(entity, min_id=mark):
+                    date = getattr(msg, "date", None)
+                    if date is not None and time.time() - date.timestamp() > max_age:
+                        break  # 消息按时间倒序，之后的都更旧
+                    if getattr(msg, "action", None):
+                        continue  # 服务消息（置顶、入群等）
+                    if len(recent) >= limit:
+                        truncated = True
+                        break
+                    recent.append(msg)
+            except Exception as exc:  # noqa: BLE001 - 一个来源读不到不影响其余来源
+                log.warning("补拉 %s 失败：%s", source, exc)
+                continue
             for msg in reversed(recent):
                 await emit(RawMessage(source=source, msg_id=str(msg.id), text=msg.raw_text or "",
                                       urls=_extract_urls(msg), extra={"backfill": True}))
