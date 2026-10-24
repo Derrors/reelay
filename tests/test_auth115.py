@@ -141,7 +141,6 @@ class TestCredentialStore(unittest.TestCase):
         with patch.dict(os.environ, {"REELAY_115_COOKIES": "UID=9;CID=8"}):
             store = auth115.CredentialStore(self.cred)
             self.assertFalse(store.has_cookie)
-            self.assertEqual(store.status()["cookie"]["source"], "none")
 
     def test_oauth_tokens_persisted(self):
         self.store.save_tokens("a1", "r1", 100195125)
@@ -284,8 +283,11 @@ class TestCredentialStore(unittest.TestCase):
 
     def test_managed_client_applies_lane_gate_and_enters_cooldown(self):
         class Gate:
+            qps = auth115.QPS_DEFAULTS["open"]
+
             def __init__(self):
                 self.calls = 0
+
             def acquire(self):
                 self.calls += 1
 
@@ -303,7 +305,7 @@ class TestCredentialStore(unittest.TestCase):
         self.assertGreaterEqual(self.store._cooldown_until, before + 1)
 
     def test_rate_limits_follow_system_config_without_restart(self):
-        self.assertEqual(auth115.CredentialStore().path, auth115.paths.CREDENTIALS_115)
+        self.assertIsNone(auth115.CredentialStore().path)  # 没指定文件时只在内存里，不读本机的真实凭证
         self.assertEqual(self.store.status()["traffic"]["share_qps"], 1.0)
         with runtime.scope({"p115": {"share_qps": 0.5, "risk_cooldown_sec": 60}}):
             self.assertEqual(self.store.status()["traffic"]["share_qps"], 0.5)

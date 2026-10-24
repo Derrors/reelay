@@ -22,7 +22,8 @@ from reelay.core.service import ManagementService
 from reelay.core.store import Store
 from reelay.mcp_server import build_server, readonly_enabled
 
-from tests.test_ai_operations import done_task
+from tests.fakes import WebCase, done_task
+
 
 HAS_MCP = importlib.util.find_spec("mcp") is not None
 HAS_WEB = importlib.util.find_spec("fastapi") is not None
@@ -212,8 +213,8 @@ class TestReadTools(Fixture):
         self.assertEqual(len(detail["trail"]), 15)
         self.assertEqual(detail["trail"][0], "00:00:05 步骤 5")
         self.assertIn("<链接已隐藏>", detail["trail"][-1])
-        self.assertEqual(detail["parsed"]["receive_code"], "****")
-        self.assertEqual(detail["parsed"]["share_code"], "swabc123")
+        self.assertNotIn("receive_code", detail["parsed"])  # 分享码与访问码不交给 Agent
+        self.assertNotIn("share_code", detail["parsed"])
         self.assertEqual(detail["parsed"]["raw_fields"], {"tmdbid": 42})
         dumped = json.dumps(detail, ensure_ascii=False)
         self.assertNotIn("115.com/s/", dumped)
@@ -325,31 +326,10 @@ class TestTokens(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_MCP and HAS_WEB, "未安装 agent / web 可选依赖")
-class TestHttpEndpoint(unittest.TestCase):
+class TestHttpEndpoint(WebCase):
     WRITE, READ = "w" * 32, "r" * 32
     HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
-
-    def setUp(self):
-        from fastapi.testclient import TestClient
-        from reelay.web import create_app
-
-        self.env = patch.dict(os.environ, {}, clear=True)
-        self.env.start()
-        self.env_loader = patch("reelay.web.load_env")
-        self.env_loader.start()
-        self.tempdir = tempfile.TemporaryDirectory()
-        root = Path(self.tempdir.name)
-        (root / "config.yaml").write_text(json.dumps({
-            "save_dirs": {"默认": "1"}, "defaults": {"parser": "regex", "save_to": "默认"}}), encoding="utf-8")
-        self.app = create_app(data_dir=root, start_worker=False, frontend_dir=root / "frontend")
-        self.client = TestClient(self.app)
-        self.client.__enter__()
-
-    def tearDown(self):
-        self.client.__exit__(None, None, None)
-        self.tempdir.cleanup()
-        self.env_loader.stop()
-        self.env.stop()
+    CONFIG = {"save_dirs": {"默认": "1"}, "defaults": {"parser": "regex", "save_to": "默认"}}
 
     def rpc(self, token: str | None, method: str, params: dict | None = None, **headers):
         auth = {"Authorization": f"Bearer {token}"} if token else {}

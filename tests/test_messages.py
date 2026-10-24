@@ -1,14 +1,18 @@
-"""发给用户的 Telegram 消息：待审批卡片、点按钮后的结果、入库通知与需要处理的提醒。"""
+"""消息模板、按钮编解码与通知投递（含审批汇总、系统通知）。"""
 from __future__ import annotations
 
+import json
 import types
 import unittest
 
 from reelay.control.bot import ControlBot
 from reelay.core import messages, release
 from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
+from reelay.core.registry import Registry
 from reelay.core.service import ConflictError
 from reelay.providers.notify import ConsoleNotify
+
+from tests.fakes import PipelineCase, message
 
 
 def tv(**fields) -> PipelineContext:
@@ -18,6 +22,15 @@ def tv(**fields) -> PipelineContext:
     ctx.parsed = ParsedResource(**{**values, **fields})
     ctx.meta["library"] = {"preview": "/测试/剧集/国产剧集"}
     return ctx
+
+
+def fake_bot(task, **service):
+    """控制 Bot 的按钮逻辑，不连 Telegram：store 返回同一个任务，service 的动作按需替换。"""
+    store = types.SimpleNamespace(get_task=lambda task_id: task, subscriptions=lambda: [])
+    pipeline = types.SimpleNamespace(cfg={"save_dirs": {"电影": "1", "剧集": "2"}})
+    bot = ControlBot.__new__(ControlBot)
+    bot.service = types.SimpleNamespace(store=store, pipeline=pipeline, **service)
+    return bot
 
 
 class TestTemplates(unittest.TestCase):
@@ -140,18 +153,10 @@ class TestTemplates(unittest.TestCase):
         self.assertIn("📂 存到：<code>/测试/剧集/国产剧集</code>\n📡 来源：@bot\n\n⚠️ <b>需要处理</b>：库里已有同一份资源\n"
                       "<blockquote>库里：a.mkv\n本次：&lt;b&gt;.mkv</blockquote>\n👉 选一个\n🆔 任务：<code>t1</code>", text)
         rows = messages.directory_buttons("t1", ["电影", "剧集", "动漫"])
-        self.assertEqual(rows, [[("📁 电影", "to:t1:0"), ("📁 剧集", "to:t1:1")], [("📁 动漫", "to:t1:2")],
-                                [("↩ 返回", "back:t1")]])
+        key = messages.short_key
+        self.assertEqual(rows, [[("📁 电影", f"to:t1:{key('电影')}"), ("📁 剧集", f"to:t1:{key('剧集')}")],
+                                [("📁 动漫", f"to:t1:{key('动漫')}")], [("↩ 返回", "back:t1")]])
         self.assertTrue(all(len(data.encode()) <= 64 for row in rows for _, data in row))
-
-
-def fake_bot(task, **service):
-    """控制 Bot 的按钮逻辑，不连 Telegram：store 返回同一个任务，service 的动作按需替换。"""
-    store = types.SimpleNamespace(get_task=lambda task_id: task)
-    pipeline = types.SimpleNamespace(cfg={"save_dirs": {"电影": "1", "剧集": "2"}})
-    bot = ControlBot.__new__(ControlBot)
-    bot.service = types.SimpleNamespace(store=store, pipeline=pipeline, **service)
-    return bot
 
 
 class TestDelivery(unittest.IsolatedAsyncioTestCase):
@@ -224,9 +229,12 @@ class TestDelivery(unittest.IsolatedAsyncioTestCase):
         bot = fake_bot(task, approve=approve, reject=reject)
         text, rows, _ = await bot.callback("dir:t1", "卡片")
         self.assertIsNone(text)  # 只换按钮
-        self.assertEqual(rows[0], [("📁 电影", "to:t1:0"), ("📁 剧集", "to:t1:1")])
+        key = messages.short_key
+        self.assertEqual(rows[0], [("📁 电影", f"to:t1:{key('电影')}"), ("📁 剧集", f"to:t1:{key('剧集')}")])
         self.assertEqual((await bot.callback("back:t1", "卡片"))[1], messages.approval_buttons(task))
-        text, rows, _ = await bot.callback("to:t1:1", "卡片")
+        # 目录按别名的短键回调：配置里目录增删、换顺序后，按钮仍指向原来那个目录
+        bot.service.pipeline.cfg["save_dirs"] = {"新目录": "9", "剧集": "2", "电影": "1"}
+        text, rows, _ = await bot.callback(f"to:t1:{key('剧集')}", "卡片")
         self.assertEqual(calls, [("approve", "t1", "剧集")])
         self.assertTrue(text.startswith("卡片\n\n✅ <b>已批准</b>，存到「剧集」"))
         self.assertEqual(rows, messages.link_buttons(task))  # 处理后只留链接
@@ -292,6 +300,70 @@ class TestDelivery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows, [])
         self.assertIn("ℹ️ 只有转存结果未知", (await bot.callback("rc:t1", "提醒"))[0])
         self.assertEqual((await bot.callback("cy:t1:keep", "提醒"))[2], "这个按钮已失效")
+
+
+class TestApprovalDigest(PipelineCase):
+    def pending(self, count, *, reminders=0):
+        ids = []
+        for index in range(count):
+            ctx = message(msg_id=str(index))
+            ctx.parsed = ParsedResource(is_media=True, title=f"片{index}")
+            ctx.state = TaskState.PENDING_APPROVAL
+            ctx.ns("task")["approval_reminders"] = reminders
+            self.store.save_task(ctx)
+            ids.append(ctx.task_id)
+        self.store._conn.execute("UPDATE tasks SET updated_at=updated_at-90000")
+        self.store._conn.commit()
+        return ids
+
+    def outbox(self):
+        return [dict(r) for r in self.store._conn.execute("SELECT kind, event, snapshot FROM outbox")]
+
+    async def test_overdue_tasks_are_merged_into_one_digest(self):
+        self.pending(3)
+        pipeline = self.pipeline()
+        self.assertEqual(await pipeline.sweep_approval_timeouts(), 3)
+        rows = self.outbox()
+        self.assertEqual([(r["kind"], r["event"]) for r in rows], [("notice", "digest")])
+        self.assertIn("3 条资源等待审批", json.loads(rows[0]["snapshot"])["text"])
+        # 刚提醒过的任务不会在下一轮再次计入
+        self.assertEqual(await pipeline.sweep_approval_timeouts(), 0)
+
+    async def test_reminder_limit_stops_reminding_but_keeps_pending(self):
+        ids = self.pending(2, reminders=3)
+        self.assertEqual(await self.pipeline().sweep_approval_timeouts(), 0)
+        self.assertEqual(self.outbox(), [])
+        self.assertEqual(self.store.get_task(ids[0]).state, TaskState.PENDING_APPROVAL)
+
+    async def test_card_style_keeps_per_task_cards(self):
+        self.pending(2)
+        pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"},
+                                  "approval": {"reminder": "card"}})
+        await pipeline.sweep_approval_timeouts()
+        self.assertEqual([r["event"] for r in self.outbox()], ["pending_approval", "pending_approval"])
+
+
+class TestNoticeDelivery(PipelineCase):
+    async def test_notice_goes_to_providers_that_support_it(self):
+        registry = Registry()
+        sent = []
+        console = ConsoleNotify()
+
+        async def sender(**kwargs):
+            sent.append(kwargs)
+
+        console.configure(sender=sender)
+        registry.add_provider("notify", console)
+        plain = types.SimpleNamespace(name="plain")  # 没有 notice 方法的通知渠道
+        registry.add_provider("notify", plain)
+        pipeline = self.pipeline(registry=registry)
+        self.store.stage_notice("x", "你好", ["console", "plain"])
+        await pipeline.dispatch_deliveries()
+        self.assertEqual(sent, [{"text": "你好"}])
+        self.assertEqual(self.store.delivery_counts(), {"done": 1, "skipped": 1})
+        self.store.stage_notice("y", "<b>日报</b>", ["console"], html=True)
+        await pipeline.dispatch_deliveries()
+        self.assertEqual(sent[-1], {"text": "<b>日报</b>", "html": True})
 
 
 if __name__ == "__main__":

@@ -15,10 +15,6 @@ from reelay.core.service import ConflictError, ManagementService
 from reelay.core.store import Store
 
 
-def run(coro):
-    return asyncio.run(coro)
-
-
 class TestManagementService(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -59,19 +55,19 @@ class TestManagementService(unittest.TestCase):
 
     def test_retry_restores_recorded_stage(self):
         ctx = self._task(TaskState.FAILED, retry_from=TaskState.RECEIVED)
-        run(self.service.retry(ctx.task_id))
+        asyncio.run(self.service.retry(ctx.task_id))
         self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.RECEIVED)
 
     def test_approve_reject_conflict(self):
         ctx = self._task(TaskState.PENDING_APPROVAL)
-        run(self.service.approve(ctx.task_id))
+        asyncio.run(self.service.approve(ctx.task_id))
         self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.QUEUED)
         with self.assertRaises(ConflictError):
-            run(self.service.reject(ctx.task_id))
+            asyncio.run(self.service.reject(ctx.task_id))
 
     def test_approve_can_change_target_directory(self):
         ctx = self._task(TaskState.PENDING_APPROVAL)
-        run(self.service.approve(ctx.task_id, save_dir_alias="电影4K"))
+        asyncio.run(self.service.approve(ctx.task_id, save_dir_alias="电影4K"))
         restored = self.store.get_task(ctx.task_id)
         self.assertEqual(restored.state, TaskState.QUEUED)
         self.assertEqual(restored.save_dir_alias, "电影4K")
@@ -79,7 +75,7 @@ class TestManagementService(unittest.TestCase):
     def test_unknown_directory_does_not_silently_use_default(self):
         ctx = self._task(TaskState.PENDING_APPROVAL)
         with self.assertRaises(ValueError):
-            run(self.service.approve(ctx.task_id, save_dir_alias="不存在的目录"))
+            asyncio.run(self.service.approve(ctx.task_id, save_dir_alias="不存在的目录"))
         self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.PENDING_APPROVAL)
 
     def test_active_tasks_cannot_be_overwritten_by_management(self):
@@ -90,7 +86,7 @@ class TestManagementService(unittest.TestCase):
                 with self.assertRaises(ConflictError):
                     self.service.patch_parsed(ctx.task_id, {"title": "编辑"})
                 with self.assertRaises(ConflictError):
-                    run(self.service.reparse(ctx.task_id))
+                    asyncio.run(self.service.reparse(ctx.task_id))
 
     def test_dashboard_counts_transfer_and_organizing_as_active(self):
         self._task(TaskState.STORED)
@@ -101,7 +97,7 @@ class TestManagementService(unittest.TestCase):
         ctx = self._task(TaskState.FAILED, retry_from=TaskState.RECEIVED)
         for _ in range(4):
             self.store.bump_retry(ctx.task_id)
-        run(self.service.retry(ctx.task_id))
+        asyncio.run(self.service.retry(ctx.task_id))
         self.assertEqual(self.store.get_task_record(ctx.task_id)["retries"], 0)
 
     def test_patch_parsed_and_task_detail(self):
@@ -115,17 +111,22 @@ class TestManagementService(unittest.TestCase):
             TaskState.NEED_MANUAL,
             landed=[{"id": "one", "name": "S01E01.mp4"}],
         )
-        run(self.service.requeue_organize(ctx.task_id, save_dir_alias="剧集"))
+        asyncio.run(self.service.requeue_organize(ctx.task_id, save_dir_alias="剧集"))
         restored = self.store.get_task(ctx.task_id)
         self.assertEqual(restored.state, TaskState.QUEUED)
         self.assertEqual(restored.save_dir_alias, "剧集")
         self.assertEqual(restored.ns("task")["action"], "organize_only")
 
-    def test_config_text_roundtrip(self):
-        text = '{"save_dirs":{"默认":"123"},"defaults":{"approval_mode":"manual"},"sources":[]}'
-        config = run(self.service.save_config_text(text))
-        self.assertEqual(config["save_dirs"]["默认"], "123")
-        self.assertIn("save_dirs", self.service.get_config_text())
+    def test_config_save_rejects_stale_revisions(self):
+        from reelay.core.config import config_revision
+        current = self.service.get_config()
+        saved = asyncio.run(self.service.save_config({**current, "save_dirs": {"默认": "123"}},
+                                             expected_revision=config_revision(current)))
+        self.assertEqual(saved["config"]["save_dirs"]["默认"], "123")
+        with self.assertRaises(ConflictError):  # 期间配置已被别处改过：不覆盖
+            asyncio.run(self.service.save_config({**current, "save_dirs": {"默认": "456"}},
+                                         expected_revision=config_revision(current)))
+        self.assertEqual(self.service.get_config()["save_dirs"]["默认"], "123")
 
     def test_organize_preview_respects_filename_episode(self):
         # 「工具 → 整理预览」调用媒体库整理插件的动作 preview_plan

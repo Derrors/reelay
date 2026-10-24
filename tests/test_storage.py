@@ -1,4 +1,4 @@
-"""转存与整理的故障注入测试：SDK 假实现严格区分文件 ID 和路径，不访问网盘。"""
+"""存储 Provider：转存与中断恢复、选集、目录浏览。"""
 from __future__ import annotations
 
 import asyncio
@@ -10,18 +10,20 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from reelay.core import secret_store
 from reelay.core.auth115 import CredentialStore
+from reelay.core.config import normalize_config
 from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
 from reelay.core.pipeline import Pipeline
 from reelay.core.registry import Registry, discover
 from reelay.core.service import ConflictError, ManagementService
-from reelay.core.store import DEDUP_MESSAGE, Store
+from reelay.core.store import Store
 from reelay.core.worker import Worker
 from reelay.plugins.organizer import Organizer
-from reelay.providers.storage import P115Storage, _select_video_items
+from reelay.providers import dryrun
+from reelay.providers.storage import P115Storage, StorageBrowseError, _select_video_items, browse_dirs
 
 
 class Cloud:
@@ -747,7 +749,6 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.cloud.receives()), 1)
 
     async def test_partial_transfer_that_stops_changing_is_notified_early(self):
-        import time
         from reelay.core.worker import RECHECK_STABLE_TIMES, RECHECK_WINDOW_SEC
         sent = []
 
@@ -787,7 +788,6 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.cloud.receives()), 1)
 
     async def test_late_landing_is_rechecked_automatically_and_only_notified_when_giving_up(self):
-        import time
         from reelay.core.worker import RECHECK_FIRST_SEC, RECHECK_WINDOW_SEC
         self.cfg = {**self.cfg, 'providers': {'notify': ['console']}}
         self.pipeline = Pipeline(self.reg, self.store, self.cfg)
@@ -1002,20 +1002,23 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done.state, TaskState.DONE)
         self.assertEqual(len(self.cloud.receives()), 1)
 
-    async def test_dry_run_with_cookies_never_initializes_or_calls_live_client(self):
-        with patch.dict(os.environ, {'REELAY_DRY_RUN': 'true'}), \
-                secret_store.override(llm_api_key='fake', tmdb_api_key='fake'):
-            with patch('p115client.P115Client', side_effect=AssertionError('不允许初始化真实客户端')):
-                registry = discover()
-                pipeline = Pipeline(registry, self.store, self.cfg)
-                ctx = self.task()
-                self.assertIsNone(registry.get_provider('parser', 'llm')._client)
-                with patch('urllib.request.urlopen') as request:
-                    await pipeline._run_hooks('after_parse', ctx)
-                    request.assert_not_called()
-                await pipeline.execute_save(ctx)
+    async def test_dry_run_storage_transfers_and_organizes_in_memory(self):
+        """模拟存储：转存与整理都在内存网盘里真实执行并读回核验，不初始化 115 客户端。"""
+        with patch('p115client.P115Client', side_effect=AssertionError('不允许初始化真实客户端')):
+            registry = discover()
+            storage = dryrun.install(registry)
+            library = storage.drive.mkdir(0, '剧集')
+            cfg = {**self.cfg, 'save_dirs': {'默认': str(library)}, 'defaults': {'save_to': '默认', 'storage': 'dryrun'}}
+            pipeline = Pipeline(registry, self.store, cfg)
+            ctx = self.task(episodes=(1, 2))
+            ctx.source_rule = {'storage': 'dryrun'}
+            self.store.save_task(ctx)
+            await pipeline.execute_save(ctx)
         self.assertEqual(ctx.state, TaskState.DONE)
-        self.assertTrue(ctx.result['dry_run'])
+        self.assertTrue(ctx.result['storage_verified'])
+        self.assertEqual(storage.drive.tree(library), [  # 默认按二级分类：保存目录下是「剧集/其他剧集」
+            '剧集/', '    其他剧集/', '        剧集 (2026)/', '            Season 01/',
+            '                剧集 - S01E01 - 第 1 集 - 1080p.mkv', '                剧集 - S01E02 - 第 2 集 - 1080p.mkv'])
         self.assertEqual(self.cloud.calls, [])
 
     async def test_worker_drains_parse_then_save_and_duplicate_tasks(self):
@@ -1086,155 +1089,154 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed, [True])
 
 
-class TestPersistenceBoundaries(unittest.TestCase):
-    def test_installed_sdk_supports_the_required_filesystem_signatures(self):
-        import inspect
-        try:
-            from p115client import P115FileSystem
-        except ImportError:
-            self.skipTest('未安装 115 可选依赖')
-        for method, args, kwargs in (
-            ('mkdir', (1,), {'name': 'library'}),
-            ('get_attr', (123,), {'refresh': True}),
-            ('rename', (123,), {'name': 'new-name'}),
-            ('move', (123,), {'to_dir': 1}),
-        ):
-            with self.subTest(method=method):
-                inspect.signature(getattr(P115FileSystem, method)).bind(object(), *args, **kwargs)
+class TestStorageEpisodeSelection(unittest.TestCase):
+    ITEMS = [
+        {"id": "1", "name": "Show.S01E08.mkv"},
+        {"id": "2", "name": "Show.S01E09.mkv"},
+        {"id": "3", "name": "Show.S01E10.mkv"},
+    ]
 
-    def test_message_and_task_insertion_roll_back_together(self):
-        store = Store(':memory:')
-        try:
-            store._conn.execute("CREATE TRIGGER fail_task BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT, 'disk failure'); END")
-            ctx = PipelineContext(RawMessage('@bot', '1', 'message'))
-            with self.assertRaises(sqlite3.IntegrityError):
-                store.accept_task(ctx)
-            self.assertFalse(store.seen(DEDUP_MESSAGE, '@bot:1'))
-            store._conn.execute('DROP TRIGGER fail_task')
-            self.assertTrue(store.accept_task(ctx))
-            self.assertFalse(store.accept_task(ctx))
-            self.assertEqual(len(store.list_tasks()), 1)
-        finally:
-            store.close()
+    def test_share_listing_is_source_of_truth_and_skips_stored(self):
+        parsed = ParsedResource(media_type="tv", episodes=[10])  # 消息只提示最新一集
+        selected = _select_video_items(self.ITEMS, parsed, stored=[[1, 8]])
+        self.assertEqual([item["id"] for item in selected["files"]], ["2", "3"])
+        self.assertEqual((selected["episodes"], selected["season"]), ([9, 10], 1))
 
-    def test_skipping_prepared_task_releases_claim_in_the_same_transaction(self):
-        store = Store(':memory:')
-        try:
-            ctx = PipelineContext(RawMessage('@bot', 'skip', 'message'))
-            ctx.state = TaskState.SAVING
-            ctx.ns('storage')['phase'] = 'preparing'
-            store.save_task(ctx)
-            self.assertTrue(store.claim_resource(ctx, 'p115:1:share'))
-            store._conn.execute("CREATE TRIGGER fail_update BEFORE UPDATE ON tasks BEGIN SELECT RAISE(ABORT, 'disk failure'); END")
-            ctx.state = TaskState.SKIPPED
-            with self.assertRaises(sqlite3.IntegrityError):
-                store.save_task(ctx)
-            self.assertEqual(store.get_task(ctx.task_id).state, TaskState.SAVING)
-            self.assertEqual(store._conn.execute('SELECT COUNT(*) FROM resource_claims').fetchone()[0], 1)
-            store._conn.execute('DROP TRIGGER fail_update')
-            store.save_task(ctx)
-            self.assertEqual(store._conn.execute('SELECT COUNT(*) FROM resource_claims').fetchone()[0], 0)
-        finally:
-            store.close()
+    def test_empty_llm_episodes_still_select_from_filenames(self):
+        selected = _select_video_items(self.ITEMS, ParsedResource(media_type="tv"))
+        self.assertEqual(selected["episodes"], [8, 9, 10])
 
-    def test_parsed_and_preparing_tasks_are_recovered(self):
-        store = Store(':memory:')
-        try:
-            parsed = PipelineContext(RawMessage('@bot', 'parsed', 'message'))
-            parsed.state = TaskState.PARSED
-            preparing = PipelineContext(RawMessage('@bot', 'preparing', 'message'))
-            preparing.state = TaskState.SAVING
-            preparing.ns('storage')['phase'] = 'preparing'
-            for ctx in (parsed, preparing):
-                store.save_task(ctx)
-            store.recover_interrupted()
-            self.assertEqual(store.get_task(parsed.task_id).state, TaskState.RECEIVED)
-            self.assertEqual(store.get_task(preparing.task_id).state, TaskState.QUEUED)
-        finally:
-            store.close()
+    def test_message_scope_restricts_to_declared_episodes(self):
+        parsed = ParsedResource(media_type="tv", episodes=[9, 10])
+        selected = _select_video_items(self.ITEMS, parsed, scope="message")
+        self.assertEqual([item["id"] for item in selected["files"]], ["2", "3"])
 
-    def test_two_workers_cannot_own_the_same_database(self):
-        with tempfile.TemporaryDirectory() as directory:
-            a, b = Store(Path(directory) / 'tasks.db'), Store(Path(directory) / 'tasks.db')
-            try:
-                a.acquire_worker()
-                with self.assertRaises(RuntimeError):
-                    b.acquire_worker()
-                a.release_worker()
-                b.acquire_worker()
-                with self.assertRaises(RuntimeError):
-                    b.acquire_worker()
-            finally:
-                a.close()
-                b.close()
+    def test_message_scope_requires_all_declared_episodes(self):
+        from reelay.core.contracts import NeedsManual
+        parsed = ParsedResource(media_type="tv", episodes=[9, 10])
+        with self.assertRaises(NeedsManual):
+            _select_video_items([{"id": "2", "name": "Show.S01E09.mkv"}], parsed, scope="message")
 
-    def test_registry_instances_do_not_share_provider_clients(self):
-        with patch.dict(os.environ, {}, clear=True):
-            a, b = discover(), discover()
-        self.assertIsNot(a, b)
-        self.assertIsNot(a.get_provider('storage', 'p115'), b.get_provider('storage', 'p115'))
+    def test_ambiguous_incremental_share_fails_closed(self):
+        from reelay.core.contracts import NeedsManual
+        parsed = ParsedResource(media_type="tv", episodes=[9])
+        with self.assertRaises(NeedsManual):
+            _select_video_items([{"id": "1", "name": "video.mkv"}], parsed)
 
-    def test_episode_selection_distinguishes_seasons_including_specials(self):
-        items = [{'id': 'one', 'name': 'S01E01.mkv'}, {'id': 'special', 'name': 'S00E01.mkv'}]
-        p = ParsedResource(episodes=[1], season=0)
-        self.assertEqual([x['id'] for x in _select_video_items(items, p)['files']], ['special'])
-        self.assertEqual(Store.episode_key('Show', None, 1), Store.episode_key('Show', 1, 1))
+    def test_all_stored_raises_already_stored(self):
+        from reelay.core.contracts import AlreadyStored
+        with self.assertRaises(AlreadyStored):
+            _select_video_items(self.ITEMS, ParsedResource(media_type="tv"), stored=[[1, 8], [1, 9], [1, 10]])
 
+    def test_extras_are_dropped_before_episode_detection(self):
+        items = [*self.ITEMS[:1], {"id": "9", "name": "预告片.mp4"}, {"id": "8", "name": "Show.Sample.mkv"}]
+        selected = _select_video_items(items, ParsedResource(media_type="tv"))
+        self.assertEqual([item["id"] for item in selected["files"]], ["1"])
 
-class TestStoreThreading(unittest.TestCase):
-    def test_plugin_state_from_organize_thread_does_not_race_event_loop(self):
-        # 整理在线程里读写扩展状态；事件循环同时执行同一条语句曾报 API misuse 或读到对方的结果
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(Path(tmp) / 'reelay.db')
-            try:
-                for i in range(50):
-                    store.state_set('organizer', f'file:{i}', {'rank': i})
-                errors, stop = [], threading.Event()
+    def test_movie_drops_small_extras_and_rejects_multiple_mains(self):
+        from reelay.core.contracts import NeedsManual
+        movie = ParsedResource(media_type="movie")
+        items = [{"id": "m", "name": "Film.2160p.mkv", "size": 20_000},
+                 {"id": "f", "name": "Featurette.mkv", "size": 900},
+                 {"id": "x", "name": "Bonus.mkv", "size": 1_000}]
+        self.assertEqual([x["id"] for x in _select_video_items(items, movie)["files"]], ["m"])
+        with self.assertRaises(NeedsManual):
+            _select_video_items([{"id": "a", "name": "Film.CD1.mkv", "size": 9_000},
+                                 {"id": "b", "name": "Film.CD2.mkv", "size": 8_000}], movie)
 
-                def organize():
-                    i = 0
-                    while not stop.is_set():
-                        try:
-                            if store.state_get('organizer', f'file:{i % 50}') is None:
-                                raise AssertionError('读到了不属于自己的结果')
-                            store.state_set('organizer', f'file:{i % 50}', {'rank': i})
-                        except Exception as exc:
-                            errors.append(exc)
-                            stop.set()
-                        i += 1
+    def test_disc_named_after_its_bundled_extras_is_still_the_movie(self):
+        # 原盘文件名列出附带内容：「花絮中字」
+        from reelay.core.contracts import NeedsManual
+        disc = {"id": "d", "name": "[Film 2018][原盘 简繁字幕 花絮中字][40.91G].iso", "size": 40 << 30}
+        trailer = {"id": "t", "name": "Film 预告片.mp4", "size": 80 << 20}
+        movie = ParsedResource(media_type="movie")
+        self.assertEqual([x["id"] for x in _select_video_items([disc, trailer], movie)["files"]], ["d"])
+        with self.assertRaises(NeedsManual):  # 只有预告片
+            _select_video_items([trailer], movie)
+        with self.assertRaises(NeedsManual):  # 剧集分享里只有花絮时仍转人工
+            _select_video_items([{**disc, "name": "Show 花絮 E01.mkv"}], ParsedResource(media_type="tv"))
 
-                thread = threading.Thread(target=organize)
-                thread.start()
-                deadline = time.monotonic() + 1.5
-                try:
-                    while time.monotonic() < deadline and not stop.is_set():
-                        store.state_get('inbox_advice', 'missing')
-                        store.heartbeat('worker', status='running')
-                        store.get_task('missing')
-                finally:
-                    stop.set()
-                    thread.join()
-                self.assertEqual(errors, [])
-            finally:
-                store.close()
+    MULTI = [{"id": "11", "name": "Show.S01E01.mkv"}, {"id": "12", "name": "Show.S01E02.mkv"},
+             {"id": "21", "name": "Show.S02E01.mkv"}, {"id": "22", "name": "Show.S02E02.mkv"}]
 
-    def test_store_methods_using_the_connection_hold_the_lock(self):
-        import ast
-        import inspect
-        from reelay.core import store as store_module
-        tree = ast.parse(inspect.getsource(store_module.Store))
-        # 构造时还没有其他线程；_write_task / _stage_notice 只在已持锁的事务里调用
-        exempt = {'__init__', '_migrate', '_init_pragmas', '_write_task', '_stage_notice'}
-        unlocked = []
-        for node in tree.body[0].body:
-            if not isinstance(node, ast.FunctionDef) or node.name in exempt:
-                continue
-            source = ast.unparse(node)
-            decorated = any(isinstance(d, ast.Name) and d.id == '_locked' for d in node.decorator_list)
-            if 'self._conn' in source and not decorated and 'self._lock' not in source:
-                unlocked.append(node.name)
-        self.assertEqual(unlocked, [])
+    def test_multi_season_share_is_received_season_by_season(self):
+        selected = _select_video_items(self.MULTI, ParsedResource(media_type="tv"), stored=[[1, 1]])
+        self.assertEqual([(x["id"], x["season"], x["episode"]) for x in selected["files"]],
+                         [("12", 1, 2), ("21", 2, 1), ("22", 2, 2)])
+        self.assertEqual((selected["season"], selected["episodes"], selected["pairs"]),
+                         (None, [1, 2], [[1, 2], [2, 1], [2, 2]]))
+
+    def test_message_season_still_restricts_multi_season_share(self):
+        selected = _select_video_items(self.MULTI, ParsedResource(media_type="tv", season=2))
+        self.assertEqual(([x["id"] for x in selected["files"]], selected["season"], selected["pairs"]),
+                         (["21", "22"], 2, [[2, 1], [2, 2]]))
+
+    def test_ambiguous_multi_season_shares_still_stop_before_transfer(self):
+        from reelay.core.contracts import AlreadyStored, NeedsManual
+        cases = {
+            "有文件名不带季号": [*self.MULTI, {"id": "9", "name": "Show.E03.mkv"}],
+            "第 2 季第 1 集有多个文件": [*self.MULTI, {"id": "23", "name": "Show.S02E01.1080p.mkv"}],
+        }
+        for reason, items in cases.items():
+            with self.subTest(reason), self.assertRaisesRegex(NeedsManual, reason):
+                _select_video_items(items, ParsedResource(media_type="tv"))
+        with self.assertRaisesRegex(NeedsManual, "消息只写了集数"):
+            _select_video_items(self.MULTI, ParsedResource(media_type="tv", episodes=[1]), scope="message")
+        with self.assertRaisesRegex(AlreadyStored, "2 季共 4 集"):
+            _select_video_items(self.MULTI, ParsedResource(media_type="tv"), stored=[[1, 1], [1, 2], [2, 1], [2, 2]])
 
 
-if __name__ == '__main__':
+class TestDirectoryReads(unittest.TestCase):
+    def test_long_id_preserved_and_pagination(self):
+        client=Mock()
+        client.fs_files.return_value={'state':True,'count':3,'path':[{'cid':'0','name':'根目录'}],'data':[
+            {'cid':'9876543210987654301','n':'影视','pid':'0'},
+            {'fid':'999','cid':'0','n':'file.txt'}]}
+        result=browse_dirs(SimpleNamespace(has_oauth=False,cookie_client=lambda:client),'0',0,2)
+        self.assertEqual(result['items'][0]['id'],'9876543210987654301')
+        self.assertEqual(result['path'][-1], {'id': '0', 'name': '根目录'})
+        self.assertEqual(result['next_offset'],2)
+        self.assertEqual(len(result['items']),1)
+
+    def test_open_list_response(self):
+        client=Mock()
+        client.fs_files_open.return_value={'state':True,'count':1,'path':[{'file_id':'9876543210987654301','file_name':'电影'}],'data':[{'file_id':'9876543210987654301','file_name':'电影','file_category':'0','parent_id':'0'}]}
+        result=browse_dirs(SimpleNamespace(has_oauth=True,open_client=lambda:client),'9876543210987654301')
+        self.assertEqual(result['items'][0]['id'],'9876543210987654301')
+        self.assertEqual(result['path'][-1]['name'],'电影')
+        self.assertEqual(result['via'],'oauth')
+
+    def test_open_list_uses_short_field_names(self):
+        # 开放接口实际返回的字段：fid / fn / fc（0 目录、1 文件）/ pid；path 是 cid / name
+        client=Mock()
+        client.fs_files_open.return_value={'state':True,'count':3,'path':[{'cid':'0','name':'根目录'},{'cid':'42','name':'电影'}],'data':[
+            {'fid':'101','fn':'国产电影','fc':'0','pid':'42'},{'fid':'102','fn':'欧美电影','fc':'0','pid':'42'},
+            {'fid':'103','fn':'a.mkv','fc':'1','pid':'42'}]}
+        result=browse_dirs(SimpleNamespace(has_oauth=True,open_client=lambda:client),'42')
+        self.assertEqual([(i['id'],i['name'],i['pid']) for i in result['items']],[('101','国产电影','42'),('102','欧美电影','42')])
+        self.assertEqual(result['path'],[{'id':'0','name':'根目录'},{'id':'42','name':'电影'}])
+
+    def test_expired_credentials_and_missing_directory(self):
+        client=Mock()
+        credentials=SimpleNamespace(has_oauth=False,cookie_client=lambda:client)
+        client.fs_files.return_value={'state':False,'errno':99,'error':'请重新登录'}
+        with self.assertRaises(StorageBrowseError) as caught:
+            browse_dirs(credentials,'0')
+        self.assertEqual(caught.exception.code,'credentials_expired')
+        client.fs_files.return_value={'state':True,'data':[],'path':[{'cid':'0'}]}
+        with self.assertRaises(StorageBrowseError) as caught:
+            browse_dirs(credentials,'12')
+        self.assertEqual(caught.exception.code,'directory_missing')
+
+    def test_invalid_templates_rejected(self):
+        for template in [
+            '../{{ title }}{{ fileExt }}', '{{ title.__class__ }}/{{ fileExt }}',
+            '{{ title }}/{{ season|pad2 }}.{{ missing }}', '/{{ title }}{{ fileExt }}',
+            '{missing}/{ext}', '{{ title }}.{{ ext }}',  # 旧变量名不再支持
+        ]:
+            with self.assertRaises(ValueError):
+                normalize_config({'plugins': {'organizer': {'naming': {'tv': template}}}})
+
+
+if __name__ == "__main__":
     unittest.main()
