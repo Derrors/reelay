@@ -84,4 +84,4 @@ claude mcp add reelay -- /path/to/reelay/.venv/bin/reelay-mcp
 | `correct` | 修正待审批、待人工或失败任务的识别结果（片名、年份、类型、季、集、分辨率） | 写 |
 | `reparse` | 重新识别（不用缓存），已有转存检查点的任务不行 | 写 |
 
-`approve`、`reject`、`retry` 接收任务 ID 数组，逐条返回结果。批准和重试只改任务状态，真实的 115 转存与整理由正在运行的主进程执行，无法从 MCP 撤销。会产生真实转存的工具带 `destructiveHint` 标注，客户端可以据此逐次确认。
+`approve`、`reject`、`retry`、`reparse` 接收任务 ID 数组（每次 1–100 个），逐条返回结果，期间已被处理的任务会标出来。批准和重试只改任务状态，真实的 115 转存与整理由正在运行的主进程执行，无法从 MCP 撤销。会产生真实转存的工具带 `destructiveHint` 标注，客户端可以据此逐次确认。

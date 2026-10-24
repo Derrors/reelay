@@ -57,13 +57,7 @@ system:
       forward:
         enabled: false         # 来源级覆盖，全局 target/template 继续继承
 
-  # 剧集订阅：订阅的剧从第 1 集开始检查缺集；auto 为 true（默认）时新集自动转存
-  # （decision 为 subscription 或 llm 的来源生效）。管理台「追剧订阅」与待审批「追这部剧」会写入这里。
-  subscriptions: []
-  # 不再接收的作品（Telegram 审批卡片点「不再接收」写入，「追剧订阅」页可恢复）：之后的消息识别完直接忽略
-  ignored_works: []
-  # - {title: 一瓯春, season: 1, total: 36, tmdbid: 12345}
-  # - {title: 只想提醒缺集的剧, season: 2, auto: false}
+  # 追剧订阅与「不再接收」的作品不在配置里：在管理台「追剧订阅」、Telegram 审批卡片与 MCP 里维护，存在数据库中。
 
   # 转发（识别成功后按模板转发到目标，可一键开关）
   forward:
@@ -109,7 +103,7 @@ system:
     language: zh-CN
     timeout: 10
 
-  # Telegram：控制 Bot 只服务 owner_id（你的数字 ID）；重连后按来源补拉停机期间的消息
+  # Telegram：控制 Bot 只服务 owner_id（你的数字 ID）；监听启动时按来源补拉停机期间的消息
   telegram:
     owner_id: ""
     backfill_limit: 200        # 每个来源最多补拉条数，0 关闭
@@ -151,7 +145,7 @@ plugins:
     # | suffix（新文件加「 (2)」并存）| upgrade（洗版：按版本偏好更好则替换，旧文件进回收站）
     conflict: manual
 
-  # 缺集追更：自动跟踪最近有更新的剧（订阅的剧见 system.subscriptions）
+  # 缺集追更：订阅的剧（在管理台「追剧订阅」管理，存在数据库里）之外，也自动跟踪最近有更新的剧
   episode_tracker:
     enabled: true
     track_all: true

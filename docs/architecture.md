@@ -27,8 +27,9 @@ flowchart LR
     ident -- save --> store
     ident -- ask --> pend[[pending_approval]]
     pend -- 批准 --> store
-    pend -- 忽略 --> rejected([rejected])
-    ident -- skip --> skipped([skipped])
+    pend -- 忽略 --> skipped([skipped])
+    ident -- 不收 --> skipped
+    ident -- 广告 --> rejected([rejected])
     store --> done([done])
 ```
 
@@ -41,26 +42,29 @@ stateDiagram-v2
     received --> parsed
     parsed --> pending_approval: 需要确认
     parsed --> queued: 自动放行
-    parsed --> skipped: 不收
+    parsed --> skipped: 不收（非影视、过滤、去重）
+    parsed --> rejected: 广告
     pending_approval --> queued: 批准
-    pending_approval --> rejected: 忽略
+    pending_approval --> skipped: 忽略 / 超时
     queued --> saving
     queued --> skipped: 内容已入库
     saving --> stored: 读回核验通过
     saving --> need_manual: 结果不明
     stored --> organizing
     organizing --> done
-    organizing --> need_manual: 整理失败
+    organizing --> need_manual: 整理失败 / 同名冲突
     need_manual --> queued: 核验转存 / 重新整理 / 自动复查
+    need_manual --> skipped: 放弃转存 / 不再处理
     received --> failed: 解析失败
     queued --> failed: 准备或转存失败
     failed --> received: 重试
     failed --> queued: 重试
     failed --> stored: 重试
+    failed --> skipped: 不再处理
     done --> [*]
 ```
 
-进入 `failed` 的任务从记录的阶段（`retry_from`）重试：临时错误自动退避重试（`not_before`，不占并发槽），分享失效、校验不通过这类重试也没用的只能人工重试。
+进入 `failed` 的任务从记录的阶段（`retry_from`）重试：临时错误自动退避重试（`not_before`，不占并发槽，最多 3 次），分享失效、校验不通过这类重试也没用的只能人工重试。网盘暂时拒绝一切请求时（如 115 风控冷却），存储 Provider 抛 `StorageBusy`，表示请求没有发出：任务退回所在阶段、到点再领取，不算失败、不消耗重试次数。
 
 - **审批态落库**：待确认任务持久化为 `pending_approval`，按钮 callback 只带任务 ID，进程重启后仍可点。
 - **三层去重**：消息级（来源 + 消息 ID）、资源级（存储 Provider + 目标 CID + 分享码）、内容级（存储 Provider + 目标 CID + 标题 + 季 + 集）。剧集按集去重，同一分享链接追更新增的集仍会转存。
@@ -104,17 +108,21 @@ stateDiagram-v2
 
 - 通知与事件使用事务 Outbox：与任务状态在同一事务内写入，投递器独立重试（单次 30 秒超时，最多 8 次，支持 Telegram FloodWait），至少一次语义。已处理的审批和旧轮次通知不再推送。
 - 系统通知（故障告警与恢复、审批汇总、日报）同样走 Outbox，进程重启不丢。告警按类别去重：状态由正常变为异常时通知一次，恢复时发送恢复通知。
-- 115 cookie 缺失或失效时暂停转存与整理的领取（解析照常），任务回到原阶段等待，不消耗重试次数，凭证恢复后自动继续。
-- 消息源断开超过阈值告警；重连后按每个来源已接收的最大消息 ID 补拉停机期间的消息。
+- 115 cookie 缺失或失效、115 风控冷却期间暂停转存与整理的领取（解析照常），任务回到原阶段等待，不消耗重试次数，凭证恢复或冷却结束后自动继续。
+- 消息源断开超过阈值告警（还没配置或登录 Telegram 时同样告警，消息源原地等待，补上后自动接上）。监听启动时先记下每个来源已接收的最大消息 ID，再放行实时消息，然后补拉停机期间的消息（最近 7 天、每个来源最多 200 条）；一个来源读取失败不影响其他来源。
+- 已投递的通知与事件保留 7 天、投递失败的保留 30 天，每日巡检时清理；AI 调用记录保留 90 天。
 
 ## 配置与快照
 
-任务接收时保存审批、过滤、转发、路由、命名和扩展开关的配置快照：配置更新只影响新任务；"重新解析"使用当前策略，"重新整理"使用当前命名与扩展配置。目录别名在尚无转存检查点时解析为当前 CID，有检查点后绑定原 Provider、CID、清单与文件 ID。
+任务接收时记下当时的配置版本号，审批、过滤、转发、路由、命名和扩展开关都按这个版本执行（配置本身按版本号只存一份，在 `config_snapshots` 表）：配置更新只影响新任务；「重新识别」「重新整理」改用当前配置，重新整理会按当前命名模板重新生成整理计划。目录别名在尚无转存检查点时解析为当前 CID，有检查点后绑定原 Provider、CID、清单与文件 ID。
+
+订阅与「不再接收」的作品是用户数据，存在数据库里，不属于配置：追剧、取消订阅不会改变配置版本，也不会和正在编辑的设置页冲突。
 
 ## 进程模型
 
-- `python -m reelay.main`：消息源 + Worker + 控制 Bot，单实例（数据库旁的文件锁阻止两个 Worker 消费同一数据库）。
+- `python -m reelay.main`：消息源 + Worker + 控制 Bot，单实例（数据库旁的文件锁阻止两个 Worker 消费同一数据库）。还没配置 Telegram 时照常运行，消息源等待配置，管理台显示原因。
+- `python -m reelay.main --dry-run`：内置配置 + 样例消息 + 内存网盘走一遍完整流程，不读本机配置与密钥、不访问网络。
 - `python -m reelay.web`：管理 API 与前端，只读写任务状态，不启动 Worker。
 - `python -m reelay.mcp_server`：MCP 的 stdio 接入，与 Web 相同的服务层；Web 进程也在 `/mcp` 提供同一组工具（Streamable HTTP，凭 MCP 访问令牌）。工具的定义、参数校验与实现在 `reelay/agent_tools.py`，控制 Bot 的对话助手也从这里取工具，区别只在写操作何时执行：MCP 直接执行（客户端按工具标注确认），对话助手先列出来，用户点「执行」后才执行。
 
-三者共享同一个 SQLite 数据库与配置文件；Web/MCP 修改配置后，Worker 约 1 秒内采用。
+三者共享同一个 SQLite 数据库与配置文件；Web/MCP 修改配置后，Worker 约 1 秒内采用。各组件的心跳写在同一数据库里，内容不变时最多 10 秒写一次。

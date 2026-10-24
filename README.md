@@ -132,8 +132,9 @@ The Long Season
 
 📂 位置：/剧集/国产剧集/漫长的季节 (2023)
    [tmdbid=…]/Season 01
-📄 文件：10 个，漫长的季节 - S01E01.mkv、
-   漫长的季节 - S01E02.mkv 等
+📄 文件：10 个，漫长的季节 - S01E01 - 第 1 集
+   - 2160p H265.mkv、漫长的季节 - S01E02 -
+   第 2 集 - 2160p H265.mkv 等
 
 [ 🎬 TMDB 详情 ]
 ```
@@ -164,7 +165,6 @@ The Long Season
 mkdir reelay && cd reelay
 curl -fsSLO https://raw.githubusercontent.com/Derrors/reelay/main/compose.yaml
 docker compose pull
-docker compose run --rm --no-deps --user root worker chown -R 10001:10001 /app/data
 docker compose up -d web          # 管理台 http://127.0.0.1:28080
 ```
 
@@ -182,7 +182,7 @@ docker compose up -d
 
 <br>
 
-模拟模式使用内存数据库和内置样例消息走完整条流程，不需要任何账号：
+模拟模式用内置配置、样例消息和内存里的网盘走完整条流程，不读本机的配置与密钥，也不需要任何账号：
 
 ```bash
 git clone https://github.com/Derrors/reelay && cd reelay
@@ -211,13 +211,13 @@ python -m reelay.main      # 监听与后台任务（另开终端）
 电影/
 └── 国产电影/
     └── 流浪地球2 (2023) [tmdbid=…]/
-        └── 流浪地球2 (2023) - 4K.mkv
+        └── 流浪地球2 (2023) - 2160p H265.mkv
 剧集/
 └── 国产剧集/
     └── 漫长的季节 (2023) [tmdbid=…]/
         └── Season 01/
-            ├── 漫长的季节 - S01E01.mkv
-            └── 漫长的季节 - S01E02.mkv
+            ├── 漫长的季节 - S01E01 - 第 1 集 - 2160p H265.mkv
+            └── 漫长的季节 - S01E02 - 第 2 集 - 2160p H265.mkv
 动漫/
 └── 日本番剧/
     └── …
@@ -247,7 +247,7 @@ AI 负责读消息、给建议，TMDB 与分享里的真实文件负责把关，
 ## 📌 项目状态
 
 > [!NOTE]
-> 早期版本（Alpha），作者日常自用，人工审批的完整流程在真实账号上持续运行。自动审批、多来源与容器长期运行的验证还不充分，欢迎反馈。支持 macOS / Linux，Windows 请使用 Docker。
+> 测试版（Beta），功能已经齐备，作者日常自用，人工审批的完整流程在真实账号上持续运行；自动审批、多来源与容器长期运行还在积累验证，1.0 之前配置与数据格式仍可能调整，欢迎反馈。支持 macOS / Linux，Windows 请使用 Docker。
 
 > [!WARNING]
 > Reelay 不提供、不索引任何内容来源，只处理你自己的账号能看到的消息，转存到你自己的网盘。以个人账号自动化监听 Telegram 可能导致**封号**，频繁调用 115 接口可能触发**风控**。使用前请阅读 [免责声明](DISCLAIMER.md)。

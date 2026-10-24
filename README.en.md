@@ -131,8 +131,9 @@ Web console, Telegram bot and MCP; one folder is one plugin.
 
 📂 Location: /TV/Chinese TV/The Long Season
    (2023) [tmdbid=…]/Season 01
-📄 Files: 10, The Long Season - S01E01.mkv,
-   The Long Season - S01E02.mkv …
+📄 Files: 10, The Long Season - S01E01 -
+   第 1 集 - 2160p H265.mkv, The Long Season
+   - S01E02 - 第 2 集 - 2160p H265.mkv …
 
 [ 🎬 TMDB details ]
 ```
@@ -163,7 +164,6 @@ All you need is Docker and a `compose.yaml`. Images are published for amd64 and 
 mkdir reelay && cd reelay
 curl -fsSLO https://raw.githubusercontent.com/Derrors/reelay/main/compose.yaml
 docker compose pull
-docker compose run --rm --no-deps --user root worker chown -R 10001:10001 /app/data
 docker compose up -d web          # console at http://127.0.0.1:28080
 ```
 
@@ -181,7 +181,7 @@ Then add the channels or bots to watch under **Settings → Sources**: paste a f
 
 <br>
 
-Simulation mode runs the whole pipeline on an in-memory database with built-in sample messages, with no accounts needed:
+Simulation mode runs the whole pipeline with a built-in config, sample messages and an in-memory drive. It reads none of your local config or secrets and needs no accounts:
 
 ```bash
 git clone https://github.com/Derrors/reelay && cd reelay
@@ -204,19 +204,19 @@ python -m reelay.main      # listener and background worker (separate terminal)
 
 ## 🎞️ What the library looks like
 
-Filed by category by default (or by media type, or flat). Naming templates are editable in the console, and **Preview organizing** shows the result before you save:
+Filed by category by default (or by media type, or flat). Naming templates are editable in the console, and **Preview organizing** shows the result before you save. The default episode template adds the Chinese episode label 第 N 集 ("episode N"); remove it from the template if you don't want it:
 
 ```text
 Movies/
 └── Chinese Movies/
     └── The Wandering Earth II (2023) [tmdbid=…]/
-        └── The Wandering Earth II (2023) - 4K.mkv
+        └── The Wandering Earth II (2023) - 2160p H265.mkv
 TV/
 └── Chinese TV/
     └── The Long Season (2023) [tmdbid=…]/
         └── Season 01/
-            ├── The Long Season - S01E01.mkv
-            └── The Long Season - S01E02.mkv
+            ├── The Long Season - S01E01 - 第 1 集 - 2160p H265.mkv
+            └── The Long Season - S01E02 - 第 2 集 - 2160p H265.mkv
 Anime/
 └── Japanese Anime/
     └── …
@@ -248,7 +248,7 @@ The documentation is in Chinese.
 ## 📌 Status
 
 > [!NOTE]
-> Early (alpha). The author uses it daily, and the full manual-approval flow runs continuously on a real account. Automatic approval, many sources and long-running containers are less tested; feedback is welcome. Runs on macOS / Linux; on Windows, use Docker.
+> Beta. The features are complete and the author uses it daily; the full manual-approval flow runs continuously on a real account. Automatic approval, many sources and long-running containers are still being proven, and config and data formats may still change before 1.0. Feedback is welcome. Runs on macOS / Linux; on Windows, use Docker.
 
 > [!WARNING]
 > Reelay does not provide or index any content. It only processes messages your own account can see and saves to your own drive. Automating a personal Telegram account may get it **banned**, and calling 115 APIs too often may trigger **rate limits or risk control**. Read the [disclaimer](DISCLAIMER.md) (Chinese) before use.

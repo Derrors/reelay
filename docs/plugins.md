@@ -56,7 +56,7 @@ from reelay.core.registry import register
 @register(kind="provider", ptype="notify")   # ptype: source / parser / decision / storage / notify
 class MyNotify: ...
 
-@register(kind="hook", stage="after_parse", order=60)
+@register(kind="hook", stage="after_parse", order=70)
 class MyHook: ...
 
 @register(kind="event", event="on_saved")
@@ -85,7 +85,7 @@ class MyListener: ...
 class MyHook:
     name = "my_hook"
     stage = "after_parse"   # before_parse / after_parse / before_save / after_save
-    order = 60              # 同一阶段内从小到大执行；内置：organizer 选目录 10（before_save）与整理 20（after_save），tmdb_enrich 50，share_probe 60
+    order = 70              # 同一阶段内从小到大执行；内置：organizer 选目录 10（before_save）与整理 20（after_save），tmdb_enrich 50，share_probe 60
 
     async def run(self, ctx) -> bool:
         ...
@@ -100,7 +100,9 @@ class MyHook:
 | `before_save` | 任务结束为 skipped | 任务失败并按阶段重试（转存前置检查不能静默跳过） |
 | `after_save` | 任务转 need_manual | 记录整理错误，任务转 need_manual |
 
-`after_save` 运行时文件已经转存完成。只适用于某个存储 Provider 的整理类 Hook 应声明 `storage_provider = "p115"`，内核会拒绝把它用在其他 Provider 转存的任务上。只做附加产物（如生成媒体服务器索引文件）的 Hook 应自己捕获异常并返回 `True`，不要影响任务结果。
+同一阶段里不要和内置插件取相同的 order，否则先后顺序取决于加载顺序。
+
+`after_save` 运行时文件已经转存完成。要用到存储 Provider 某些可选方法的扩展，在 `requires_storage` 里声明方法名，如媒体库整理的 `requires_storage = ("library",)`：配置里有规则使用不提供这些方法的存储时，保存配置会被拒绝，「插件」页也会标出不支持的存储。只做附加产物（如生成媒体服务器索引文件）的 Hook 应自己捕获异常并返回 `True`，不要影响任务结果。
 
 ## Event
 
@@ -125,8 +127,22 @@ class MyListener:
 | `source` | `async listen(emit)`：长驻协程，每条消息 `await emit(RawMessage(...))` | `configure(targets)`、`bind_watermark(lookup)`、`health()`、`async close()` |
 | `parser` | `async parse(ctx) -> ParsedResource` | — |
 | `decision` | `async decide(ctx) -> Decision` | — |
-| `storage` | `prepare` / `save` / `reconcile`（只读核验，绝不能重发写请求） | `discard(ctx)` |
-| `notify` | `async notify(ctx, event)`；event 为 identified / pending_approval / saved / transfer_uncertain / organize_failed / failed | `async notice(text)`：系统通知（告警、汇总、日报） |
+| `storage` | `prepare` / `save` / `reconcile`（只读核验，绝不能重发写请求）/ `abandon`（放弃结果不明的转存，删除暂存目录并读回确认） | 见下 |
+| `notify` | `async notify(ctx, event)`；event 为 identified / pending_approval / saved / transfer_uncertain / organize_failed / failed | `async notice(text, html=False, buttons=None)`：系统通知（告警、汇总、日报）；不接受 `html` 的渠道收到去掉标签的文字，不接受 `buttons` 的只收到正文 |
+
+存储 Provider 的可选方法（`reelay/core/contracts.py` 的 `StorageProvider`）：
+
+| 方法 | 用途 |
+| --- | --- |
+| `discard(ctx)` | 清理 `prepare` 建立、但因去重而没用上的空暂存目录 |
+| `reconcile_partial(ctx)` | 只读核验，按已经到了的文件出回执（人工选「按已到的继续」） |
+| `ready() -> bool` | 凭证是否就绪；没有时视为就绪 |
+| `dir_path(cid)` | 目录在网盘里的路径，管理台与审批卡片据此显示真实去向 |
+| `library()` | 整理用的网盘接口：`iterdir` / `get_attr` / `mkdir` / `rename` / `move` / `delete`，ID 为 int |
+| `inspect_share(parsed, describe=...)` | 只读查询分享是否可用、有哪些季集（分享检查插件用） |
+| `browse(cid, offset, limit)` | 列出子目录（管理台选目录用） |
+
+`save` 的结果用异常区分：`TransferRejected` 表示网盘明确拒绝、确定没有转存，可以重发；`TransferUncertain` 表示请求可能已经执行，之后只能核验；`StorageBusy(reason, until)` 表示网盘暂时拒绝一切请求、这次请求没有发出，任务到 `until` 再继续，不算失败。`prepare`、`reconcile` 与可选方法遇到同样的情况也抛 `StorageBusy`。
 
 Provider 由配置选择：`providers.source`、`providers.notify`，以及 `defaults`/`sources[]` 中的 `parser`、`decision`、`storage`。
 
@@ -134,15 +150,12 @@ Provider 由配置选择：`providers.source`、`providers.notify`，以及 `def
 
 ## 调用 AI
 
-扩展需要调用 AI 时用 `reelay/core/ai.py`，与内置能力共用客户端配置、退避重试与调用记录：
+扩展需要调用 AI 时用 `reelay/core/ai.py`，与内置能力共用客户端配置、退避重试与调用记录。继承 `ai.UsesAI` 后，`self._client` / `self._model` 在用到时按当前的配置与密钥取得（管理台改了立即生效，未配置时 `_client` 为 None）；测试里直接给它们赋值即可替换：
 
 ```python
 from reelay.core import ai
 
-class MyListener:
-    def __init__(self):
-        self._client, self._model = ai.make_client()   # 未配置时为 None，测试可直接替换 _client
-
+class MyListener(ai.UsesAI):
     async def handle(self, ctx):
         if self._client is None:
             return                                     # 按规则降级
@@ -179,7 +192,7 @@ class MyListener:
 | --- | --- | --- |
 | 匹配成功 | `matched: True`、`tmdbid` | 计为通过的信号 |
 | 查询成功但没有可信匹配 | `matched: False` | 封顶 0.45，标记「TMDB 未匹配」，转人工确认 |
-| 没有查询（未配置凭证、模拟模式） | `matched: False`、`note: 原因` | 中立，不影响分数 |
+| 没有查询（未配置凭证） | `matched: False`、`note: 原因` | 中立，不影响分数 |
 | 查询出错（网络、限流等） | `matched: False`、`error: 异常类型名` | 中立，不影响分数 |
 
 `candidates`、`kind`、`score` 等其余字段只供任务详情排查，内核不读取。
@@ -198,7 +211,7 @@ from reelay.core import runtime
 from reelay.core.registry import register
 
 
-@register(kind="hook", stage="after_parse", order=60)
+@register(kind="hook", stage="after_parse", order=55)
 class DoubanFallback:
     name = "douban_fallback"
 
@@ -233,9 +246,44 @@ state.set("last_run", "2026-10-19")
 runtime.observe("my_api", "failed", "TimeoutError")    # 记录一次外部调用结果（connected / failed）
 ```
 
-`runtime.observe` 记录的是最近一次真实调用的结果，不会因一段时间没有调用而过期，可在 `GET /api/health` 的 `runtime` 中查看；内置的 LLM 解析与 TMDB 补全用它驱动管理台「AI 解析」「TMDB 元数据」的连接状态。
+`runtime.observe` 记录的是最近一次真实调用的结果，不会因一段时间没有调用而过期，可在 `GET /api/health` 的 `runtime` 中查看；内置的 LLM 解析与 TMDB 补全用它驱动管理台「总览 → 运行状态」里「AI 解析」「TMDB 元数据」两行。
 
-`runtime.get` / `runtime.plugin_config` 读到的是任务接收时的配置快照，配置变更只影响新任务；不在任务作用域里时读进程当前的有效配置。`services()` 在内核调用 Hook、Event、通知渠道，以及解析/决策/存储 Provider 的方法时可用（包括其中的 `asyncio.to_thread`）；消息源的 `listen` 是长驻协程，不在任务作用域内。
+`runtime.get` / `runtime.plugin_config` 读到的是任务接收时的配置（按任务记下的配置版本），配置变更只影响新任务；不在任务作用域里时读进程当前的有效配置。`services()` 在内核调用 Hook、Event、通知渠道，以及解析/决策/存储 Provider 的方法时可用（包括其中的 `asyncio.to_thread`）；消息源的 `listen` 是长驻协程，不在任务作用域内。
+
+`services()` 提供的方法：
+
+| 方法 | 内容 |
+| --- | --- |
+| `notify(text, key=, html=, buttons=)` | 发系统通知到所有通知渠道（持久化投递） |
+| `state(name)` | 按扩展隔离的持久化 KV（`get` / `set` / `delete` / `items`） |
+| `storage(name)` | 名为 name 的存储 Provider（如整理插件取 `library()`） |
+| `query(capability, *args)` | 调用其他扩展声明的能力，见下 |
+| `subscriptions()` / `finish_subscription(id, record)` | 剧集订阅；把播完且全部入库的订阅标为已结束 |
+| `ignored_works()` | 不再接收的作品 |
+| `stored_series()` | 按（片名, 季）汇总的已入库集 |
+| `task(task_id)` / `task_record(task_id)` | 任务快照（`PipelineContext`）/ 任务行（状态、错误、更新时间等） |
+| `title_media_types()` / `titles_since(since)` | 片名 → 媒体类型；某个时间之后新收的片名 |
+| `recent_feedback(source=, kinds=, limit=)` | 最近的人工裁决（批准、忽略、修正），正文已去掉链接与访问码 |
+
+扩展之间、内核与扩展之间不互相导入。扩展在 `provides`（能力名 → 方法名）里声明它能回答什么，内核和其他扩展用 `services().query(能力名, ...)` 调用；扩展关闭或没有安装时返回 None，调用方按没有这项能力处理。内置的能力：
+
+| 能力 | 谁提供 | 方法与返回 |
+| --- | --- | --- |
+| `task_explanation` | 失败解释 | `(task_id) -> dict \| None`：这条任务最近一次的原因与建议操作，任务详情显示 |
+| `episode_report` | 追更提醒 | `() -> dict`：最近一次缺集巡检结果，日报、媒体库与订阅页使用 |
+| `bot_action:<动作>` | 追更提醒 | `(action, digest, original) -> (正文, 按钮, 提示)`：控制 Bot 上这个插件自己的按钮 |
+
+```python
+class MyReport:
+    name = "my_report"
+    provides = {"weekly_summary": "summary"}
+
+    def summary(self) -> dict:
+        ...
+
+# 其他扩展里
+summary = runtime.services().query("weekly_summary") or {}
+```
 
 同步阻塞调用（HTTP、SDK）请放进 `asyncio.to_thread`，不要阻塞事件循环。
 

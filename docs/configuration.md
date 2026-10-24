@@ -2,8 +2,8 @@
 
 所有设置都能在管理台修改，保存后约 1 秒生效（个别项注明需要重启主进程）。本页是完整的字段说明，日常使用不需要逐项阅读，遇到具体问题时按目录查找即可。
 
-- [系统配置](#系统配置system)：[目录与来源](#目录与来源save_dirs--sources--providers) · [识别与决策](#识别与决策defaults--sources) · [AI 能力](#ai-能力ai) · [版本偏好](#版本偏好release) · [转发、审批提醒、定时](#转发审批提醒定时) · [剧集订阅](#剧集订阅subscriptions) · [AI 服务与 TMDB](#ai-服务与-tmdbllm--tmdb) · [Telegram](#telegramtelegram) · [115 请求限速](#115-请求限速p115) · [运行参数](#运行参数runtime)
-- [插件配置](#插件配置plugins) · [密钥](#密钥) · [运行文件位置](#运行文件位置) · [环境变量](#环境变量)
+- [系统配置](#系统配置system)：[目录与来源](#目录与来源save_dirs--sources--providers) · [识别与决策](#识别与决策defaults--sources) · [AI 能力](#ai-能力ai) · [版本偏好](#版本偏好release) · [转发、审批提醒、定时](#转发审批提醒定时) · [AI 服务与 TMDB](#ai-服务与-tmdbllm--tmdb) · [Telegram](#telegramtelegram) · [115 请求限速](#115-请求限速p115) · [运行参数](#运行参数runtime)
+- [插件配置](#插件配置plugins) · [订阅与不再接收的作品](#订阅与不再接收的作品) · [密钥](#密钥) · [运行文件位置](#运行文件位置) · [环境变量](#环境变量)
 
 设置分四类：
 
@@ -14,7 +14,7 @@
 | **密钥** | `data/secrets.json`（权限 600，不进配置文件） | 管理台「设置」：只显示是否已设置，可替换或清除，读不回原值 |
 | **固定，不可配置** | 代码常量 | 不提供配置项，见 [运行文件位置](#运行文件位置) |
 
-管理台保存时原子写入 `data/config.yaml`；也可以直接编辑这个文件（或用管理台的原文编辑），运行中的 Worker 约 1 秒内采用新配置；配置无效时继续使用上一个有效版本并在总览报错。完整示例见 [`config.example.yaml`](../config.example.yaml)。
+管理台按页保存，原子写入 `data/config.yaml`；也可以直接编辑这个文件，运行中的 Worker 约 1 秒内采用新配置。保存时会核对读取时的配置版本，期间被其他页面或进程改过就拒绝保存，重新加载后再改。文件改坏时继续使用上一个有效版本，总览与设置页显示出错的文件和原因；这期间管理台不能保存（不会覆盖你的文件），修正文件后恢复。完整示例见 [`config.example.yaml`](../config.example.yaml)。
 
 所有字段都有默认值，下表只列默认值和含义；`sources[]` 中的条目可覆盖 `defaults` 里的任何字段。
 
@@ -74,7 +74,7 @@ plugins:
 | `ai.history` | `20` | `decision: llm` 时附上同一来源最近几条人工批准与忽略（0–100，0 关闭） |
 | `ai.assist` | `true` | 分享清单按规则无法确定要转存哪些文件时（文件名认不出集号或季号、同一季同一集多个文件、电影多个正片候选、消息只写了集数而分享跨多季），先让 AI 给方案；方案按同一套规则校验，不过才转人工 |
 | `ai.advice` | `true` | 待审批附建议动作（批准 / 忽略 / 需要你看一下）与理由；动作由规则决定，AI 只负责措辞 |
-| `ai.suggest_auto.min_decisions` | `20` | 某来源人工确认满这么多次后才评估是否建议改为自动转存 |
+| `ai.suggest_auto.min_decisions` | `20` | 某来源人工确认满这么多次后才评估是否建议「改为 AI 处理」 |
 | `ai.suggest_auto.approve_rate` | `0.9` | 批准率不低于该值 |
 | `ai.suggest_auto.max_correct_rate` | `0.1` | 被修正识别结果的比例不高于该值 |
 
@@ -106,13 +106,6 @@ plugins:
 | `approval.max_reminders` | `3` | 每条最多提醒次数，之后不再提醒但仍保留在待审批；`0` 不限 |
 | `schedule.daily_hour` | `9` | 每日系统事件（日报、追更巡检）发送的本地小时；进程启动时会先等停机期间补拉的消息解析完（最多 15 分钟） |
 
-### 剧集订阅（`subscriptions`）
-
-| 字段 | 默认 | 说明 |
-| --- | --- | --- |
-| `subscriptions` | `[]` | 剧集订阅 `{title, season?, total?, tmdbid?, auto?}`：缺集巡检从第 1 集开始检查；`auto`（默认 `true`）时，`decision` 为 `subscription` 或 `llm` 的来源里同一 tmdbid（没有时按 TMDB 规范片名）、同一季的新集直接转存。仍要求 TMDB 匹配、置信度达标、过滤规则无疑问、消息里的集未全部入库；消息没写季集时以读取分享（`share_probe`）的结果确认季，跨多季的合集不放行，消息没写季号时转存只取订阅的那一季。管理台「追剧订阅」与待审批「追这部剧」会写入这里 |
-| `ignored_works` | `[]` | 不再接收的作品 `{title, tmdbid?, kind?}`（`kind` 为 `movie` / `tv`）：识别后同一 tmdbid 与类型（没有 tmdbid 时按 TMDB 规范片名）的消息直接忽略。Telegram 审批卡片「不再接收」会写入，「追剧订阅」页可恢复 |
-
 ### AI 服务与 TMDB（`llm` / `tmdb`）
 
 | 字段 | 默认 | 说明 |
@@ -123,22 +116,24 @@ plugins:
 | `tmdb.base_url` | 空 | 留空用 `https://api.themoviedb.org/3`；国内该域名常被 DNS 污染，可改用官方备用域名 `https://api.tmdb.org/3` 或自己的反向代理 |
 | `tmdb.language` / `tmdb.timeout` | `zh-CN` / `10` | TMDB 匹配语言与超时秒数 |
 
-AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生效。管理台「AI 服务」可以用表单里当前的地址获取模型列表（OpenAI 兼容的 `GET /models`），并用当前的地址、模型与推理强度发一条很短的消息测试连通性，不必先保存。
+AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生效。「设置 → AI 与 TMDB」可以用表单里当前的地址获取模型列表（OpenAI 兼容的 `GET /models`），并用当前的地址、模型与推理强度发一条很短的消息测试连通性，不必先保存。
+
+已保存的密钥只发给已保存的地址：表单里的地址与已保存的不同时，要同时填写这个地址的密钥才能获取模型或测试。保存时改了 `llm.base_url` 或 `tmdb.base_url`，原来的对应密钥会一并清除，需要重新填写。
 
 ### Telegram（`telegram`）
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `telegram.owner_id` | 空 | 你的 Telegram 数字 ID；控制 Bot 只服务这个 ID，留空不启用控制 Bot（重启主进程生效） |
-| `telegram.backfill_limit` / `backfill_max_days` | `200` / `7` | 重连后每个来源最多补拉的消息条数（`0` 关闭）与最大消息年龄（天） |
-| `telegram.alert_after_sec` | `120` | 消息源断开多久后告警 |
+| `telegram.backfill_limit` / `backfill_max_days` | `200` / `7` | 监听启动时（含断线后进程重启）每个来源最多补拉的停机期间消息条数（`0` 关闭）与最大消息年龄（天）；首次监听的来源不导入历史 |
+| `telegram.alert_after_sec` | `120` | 消息源断开（含还没配置或登录 Telegram）多久后告警 |
 
 ### 115 请求限速（`p115`）
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `p115.open_qps` / `cookie_qps` / `share_qps` | `3` / `2` / `1` | 开放平台接口、网页接口、分享与转存接口每秒最多请求数 |
-| `p115.risk_cooldown_sec` | `3600` | 触发 115 风控（访问上限、操作频繁）后所有接口暂停的秒数 |
+| `p115.risk_cooldown_sec` | `3600` | 触发 115 风控（访问上限、操作频繁）后所有接口暂停的秒数。冷却期间转存与整理暂停，任务到点自动继续，不算失败、不消耗重试次数 |
 
 115 的登录态在「设置 → 115 网盘」扫码获得，保存在 `data/115_credentials.json`。
 
@@ -172,23 +167,30 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `plugins.share_probe.enabled` | `true` | 消息没写集数的剧集，识别后只读列出 115 分享，在待审批显示实际的季、集与大小，跨多季时显示为「S01–S03 · 30 集」，并提前标出失效链接、文件名无法识别季集等转存时会转人工的情况；同一时间只读一个分享、间隔 2 秒，单个分享最多列 20 个目录 |
+| `plugins.share_probe.enabled` | `true` | 识别后只读查询 115 分享：过期、取消或违规的分享在待审批标为「分享无法访问」并建议忽略；消息没写集数的剧集再列出分享内容，显示实际的季、集与大小（跨多季时如「S01–S03 · 30 集」），并提前标出文件名无法识别季集等转存时会转人工的情况。同一时间只读一个分享、两次至少间隔 2 秒，单个分享最多列 20 个目录，115 风控冷却期间不读 |
 | `plugins.tmdb_enrich.enabled` | `true` | 识别后匹配 TMDB 补全规范元数据与海报；TMDB 的地址、语言与 key 是系统配置 |
 | `plugins.episode_tracker.track_all` | `true` | 自动跟踪最近有新集入库的剧，只报告断档和 TMDB 已播未入库的新集 |
 | `plugins.episode_tracker.lookback_days` | `30` | 自动跟踪的时间窗口 |
 | `plugins.daily_report.narrative` | `true` | 配置了 AI 时，日报开头附一段 AI 按统计事实写的提醒，数字版保留 |
 
+## 订阅与不再接收的作品
+
+订阅与「不再接收」的作品是用户数据，存在数据库（`data/reelay.db`）里，不在配置文件里：在管理台「追剧订阅」、Telegram（审批卡片的「追剧」「不再接收」，`/subs`、`/ignored`）或 MCP 里管理，改动不会改变配置版本。
+
+- **剧集订阅**：片名、季、总集数（可选）、TMDB ID（可选）与是否自动放行。缺集巡检从第 1 集开始检查；自动放行时，`decision` 为 `subscription` 或 `llm` 的来源里同一 tmdbid（没有时按 TMDB 规范片名）、同一季的新集直接转存。仍要求 TMDB 匹配、置信度达标、过滤规则无疑问、消息里的集未全部入库；消息没写季集时以读取分享（`share_probe`）的结果确认季，跨多季的合集不放行，消息没写季号时转存只取订阅的那一季。播完且全部入库后自动结束。
+- **不再接收的作品**：片名、TMDB ID（可选）与类型（电影 / 剧集）。识别后同一 tmdbid 与类型（没有 tmdbid 时按 TMDB 规范片名）的消息直接忽略。
+
 ## 密钥
 
-在管理台「设置」中填写，保存即生效（Telegram 与控制 Bot 需重启主进程）；页面只显示「已设置 / 未设置」。
+在管理台「设置」中填写，保存即生效；页面只显示「已设置 / 未设置」。控制 Bot 的 token 改了要重启主进程；Telegram API ID / Hash 在监听连上之前填写会自动采用，连上之后再改需要重启主进程。
 
 | 名称 | 在哪一页 | 说明 |
 | --- | --- | --- |
-| `llm_api_key` | AI 与 TMDB | AI 接口密钥；未设置时识别降级为规则匹配并且每条都转人工 |
-| `tmdb_api_key` | AI 与 TMDB | TMDB v3 API Key 或 v4 Read Access Token |
+| `llm_api_key` | AI 与 TMDB | AI 接口密钥；未设置时识别降级为规则匹配并且每条都转人工。改了 `llm.base_url` 时自动清除 |
+| `tmdb_api_key` | AI 与 TMDB | TMDB v3 API Key 或 v4 Read Access Token。改了 `tmdb.base_url` 时自动清除 |
 | `telegram_api_id` / `telegram_api_hash` | Telegram | 个人账号的 Telegram API 凭证 |
 | `control_bot_token` | Telegram | 控制 Bot 的 token |
-| `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要。暴露到本机以外时必须设置；修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。登录会话保存在数据库里，有效期 7 天，Web 重启不影响。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项即可恢复免登录 |
+| `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要。没有设置时管理台只接受本机地址（127.0.0.1 / localhost）的访问，要从其他设备访问必须先设置；修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。登录会话保存在数据库里，有效期 7 天，Web 重启不影响。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项即可恢复免登录 |
 | `mcp_token` / `mcp_readonly_token` | 运行与安全 | MCP 访问令牌（读写 / 只读）。外部 Agent 在请求头 `Authorization: Bearer <令牌>` 里带上它访问 `/mcp`；只读令牌看不到写操作工具。至少 24 个字符，两个不能相同，管理台可随机生成。两个都没设置时 `/mcp` 关闭。与 Web 登录密码相互独立 |
 
 ## 运行文件位置
@@ -214,7 +216,9 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `REELAY_VERSION` | `latest` | 仅 Docker Compose：使用的镜像版本，如 `0.3.0` |
+| `REELAY_VERSION` | `latest` | 仅 Docker Compose：使用的镜像版本，如 `0.6.2` |
 | `REELAY_WEB_HOST` / `REELAY_WEB_PORT` | `127.0.0.1` / `28080` | 本机运行时管理台的监听地址（Docker 部署改 `compose.yaml` 的 `ports`） |
+| `REELAY_FORWARDED_ALLOW_IPS` | `127.0.0.1` | 管理台信任哪些反向代理转发的客户端地址（`X-Forwarded-For`），逗号分隔，`*` 表示全部；登录失败限流按真实客户端计数。Docker 部署时填反向代理在容器网络里的地址 |
 | `REELAY_MCP_READONLY` | 空 | 设为 `1` 时 MCP 只暴露查询工具（stdio 与 HTTP 都是，HTTP 的读写令牌也降为只读） |
+| `REELAY_LOG_LEVEL` | `WARNING` | 仅 MCP stdio（`python -m reelay.mcp_server`）：写到 stderr 的日志级别。主进程的日志级别是系统配置 `runtime.log_level` |
 | `VITE_BASE_PATH` | `/` | 构建前端时的子路径前缀（反向代理到子路径时使用） |
