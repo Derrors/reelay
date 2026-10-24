@@ -28,7 +28,6 @@ from .core.config import ensure_config, load_config
 from .core.contracts import PipelineContext, RawMessage
 from .core.store import Store
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EVAL_DIR = paths.EVAL
 FIELDS = ("is_media", "media_type", "title", "year", "season", "episodes")
 
@@ -136,7 +135,7 @@ def compare(old: dict, new: dict) -> list[str]:
 
 
 def _load_samples(args) -> list[dict]:
-    if args.dataset:
+    if getattr(args, "dataset", None):  # 只有 run 有 --dataset
         return [json.loads(line) for line in Path(args.dataset).read_text(encoding="utf-8").splitlines() if line.strip()]
     store = Store(args.db)
     try:
@@ -146,9 +145,6 @@ def _load_samples(args) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ensure_config()
-    secret_store.use(paths.SECRETS)
-    runtime.set_process_config(load_config())  # AI 接口地址与模型取系统配置
     parser = argparse.ArgumentParser(prog="reelay.eval", description="用人工裁决样本评测识别提示词与模型（只在本地运行）")
     sub = parser.add_subparsers(dest="command", required=True)
     db = str(paths.DATABASE)
@@ -181,9 +177,12 @@ def main(argv: list[str] | None = None) -> None:
         samples = samples[-args.limit:]
     if not samples:
         raise SystemExit("没有可用样本：在管理台批准或修正一些识别结果后再评测")
+    ensure_config()
+    secret_store.use(paths.SECRETS)
+    runtime.set_process_config(load_config())  # AI 接口地址与模型取系统配置
     client, model = ai.make_client()
     if client is None:
-        raise SystemExit("未配置 AI 接口密钥（管理台「设置」中填写），无法评测")
+        raise SystemExit("未配置 AI 接口密钥（管理台「设置 → AI 与 TMDB」中填写），无法评测")
     report = asyncio.run(run(samples, client=client, model=args.model or model, examples=args.examples))
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     path = EVAL_DIR / f"report-{time.strftime('%Y%m%d-%H%M%S')}.json"
