@@ -13,9 +13,12 @@ license-files = ["LICENSE"]
 authors = [{ name = "Derrors" }]
 keywords = ["telegram", "115", "media-library", "jellyfin", "emby", "llm", "self-hosted"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Web Environment",
     "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: Chinese (Simplified)",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.12",
@@ -24,40 +27,31 @@ classifiers = [
 dependencies = [
     "Jinja2>=3.1,<4",
     # 配置文件与媒体库整理的二级分类规则（category.yaml）
-    "PyYAML>=6.0",
+    "PyYAML>=6.0,<7",
 ]
 
+# 上限是已验证的大版本；Docker 镜像与 CI 按 constraints.txt 安装确切版本（更新方法见 CONTRIBUTING.md）
 [project.optional-dependencies]
 # 接入真实能力时安装：pip install -e ".[full]"
 full = [
-    "telethon>=1.36",
+    "telethon>=1.36,<2",
     "p115client==0.0.9.6.5.1",
     # p115client 未给传递依赖设上限；0.1.9 起移除了它导入的 threadpool_map
     "python-concurrenttools==0.1.8",
     "qrcode>=7.4,<9",
-    "openai>=1.40",
+    "openai>=1.40,<4",
 ]
 web = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
 ]
-agent = ["mcp>=1.30"]
-all = [
-    "telethon>=1.36",
-    "p115client==0.0.9.6.5.1",
-    # p115client 未给传递依赖设上限；0.1.9 起移除了它导入的 threadpool_map
-    "python-concurrenttools==0.1.8",
-    "qrcode>=7.4,<9",
-    "openai>=1.40",
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "mcp>=1.30",
-]
+agent = ["mcp>=2,<3"]
+all = ["reelay[full,web,agent]"]
 # 开发与 CI：pip install -e ".[all,dev]"
 dev = [
-    "ruff>=0.15",
-    "pre-commit>=4",
-    "httpx2>=2",  # starlette TestClient
+    "ruff>=0.15,<1",
+    "pre-commit>=4,<5",
+    "httpx2>=2,<3",  # starlette TestClient
 ]
 
 [project.urls]

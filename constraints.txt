@@ -1,0 +1,112 @@
+# 已验证的依赖确切版本：Docker 镜像与 CI 用 pip install -c constraints.txt 安装。
+# 更新：uv pip compile pyproject.toml --extra all --extra dev --universal --python-version 3.12 --no-annotate -o constraints.txt
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+bitarray==3.12.3
+brotli==1.2.0
+cachedict==0.0.7
+cffi==2.1.1 ; platform_python_implementation != 'PyPy'
+cfgv==3.5.0
+click==8.5.0
+colorama==0.4.6 ; sys_platform == 'win32'
+cryptography==50.0.2
+distlib==0.4.4
+ed2k==0.0.2.2
+errno2==0.0.5
+fastapi==0.156.6
+filelock==4.2.4
+glob-pattern==0.0.2
+h11==0.16.0
+http-response==0.0.9.1
+httpcore2==2.16.0 ; sys_platform != 'emscripten'
+httptools==0.9.0
+httpx2==2.16.0
+httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
+id2dirnode==0.0.2
+identify==2.6.20
+idna==3.20
+integer-tool==0.0.6.1
+iter-collect==0.0.6
+iterdir==0.0.10.1
+jh2==5.0.15
+jinja2==3.1.6
+jiter==0.17.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+markupsafe==3.0.4
+mcp==2.3.0
+mcp-types==2.3.0
+multidict==7.1.0
+nodeenv==1.11.0
+openai==3.35.1
+opentelemetry-api==1.45.1
+orjson==3.13.0
+p115cipher==0.0.6
+p115client==0.0.9.6.5.1
+p115oss==0.1.2
+p115pickcode==0.0.5.4
+packaging==26.3
+platformdirs==4.13.5
+posixpatht==0.0.4
+pre-commit==4.7.0
+propcache==0.5.4
+pyaes==1.6.1
+pyasn1==0.6.4
+pycparser==3.11 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
+pycryptodome==4.1.0
+pydantic==2.14.1
+pydantic-core==2.50.1
+pyjwt==2.15.1
+python-argtools==0.0.4
+python-asynctools==0.2.2
+python-concurrenttools==0.1.8
+python-cookietools==0.1.5
+python-decotools==0.0.4
+python-dictattr==0.0.5
+python-dicttools==0.0.5
+python-discovery==1.6.4
+python-dotenv==1.2.4
+python-download==0.0.4.1
+python-encode-uri==0.0.3
+python-ensure==0.0.2
+python-filewrap==0.3.1.1
+python-hashtools==0.0.6
+python-http-request==0.1.7.2
+python-httpfile==0.0.6.1
+python-iterutils==0.3.1.1
+python-multipart==0.0.32
+python-property==0.0.3
+python-startfile==0.0.3
+python-temporary==0.0.1
+python-texttools==0.0.6
+python-undefined==0.0.4
+pywin32==312 ; sys_platform == 'win32'
+pyyaml==6.0.3
+qh3==2.0.4 ; (platform_machine == 'AMD64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'armv7l' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'i686' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'ppc64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'ppc64le' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'riscv64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'riscv64gc' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 's390x' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'x86' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'armv7l' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'i686' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'ppc64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'ppc64le' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'riscv64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'riscv64gc' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 's390x' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'AMD64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'armv7l' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'i686' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'ppc64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'ppc64le' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'riscv64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'riscv64gc' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 's390x' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'x86' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'win32')
+qrcode==8.2
+referencing==0.37.0
+rpds-py==2026.9.1
+rsa==4.9.1
+ruff==0.17.1
+sniffio==1.3.1
+socket-keepalive==0.0.1
+sqlitetools==0.1.3
+sqlparse==0.6.0
+sse-starlette==3.5.0
+starlette==1.9.0
+telethon==1.45.0
+truststore==0.10.5 ; sys_platform != 'emscripten'
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+urllib3-future==2.25.902
+urllib3-future-request==0.0.2
+uvicorn==0.54.0
+uvloop==0.23.0 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+virtualenv==21.14.12
+watchfiles==1.3.0
+wcwidth==0.9.3
+websockets==17.3
+yarl==1.25.1
+zstandard==0.25.0

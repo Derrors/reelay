@@ -26,9 +26,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: constraints.txt
       - name: 安装依赖
-        run: pip install -e ".[all,dev]"
+        run: pip install -c constraints.txt -e ".[all,dev]"
       - name: 代码检查（ruff）
         run: ruff check .
       - name: 单元测试

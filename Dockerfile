@@ -16,12 +16,13 @@ LABEL org.opencontainers.image.source="https://github.com/Derrors/reelay" \
       org.opencontainers.image.description="Self-hosted Telegram → 115 auto transfer with AI parsing"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml constraints.txt README.md LICENSE ./
 COPY reelay/ ./reelay/
-RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" ".[all]" \
+# 按 constraints.txt 安装已验证的确切版本
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -c constraints.txt ".[all]" \
     && useradd --create-home --uid 10001 reelay \
-    && mkdir -p /app/data/plugins /app/config /app/web/dist \
-    && chown -R reelay:reelay /app/data /app/config
+    && mkdir -p /app/data/plugins /app/web/dist \
+    && chown -R reelay:reelay /app/data
 COPY --from=frontend /build/web/dist/ ./web/dist/
 USER reelay
 CMD ["python", "-m", "reelay.main"]

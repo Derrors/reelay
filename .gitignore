@@ -7,27 +7,17 @@ build/
 dist/
 .venv/
 venv/
-env/
+.ruff_cache/
 
-# ---- Reelay runtime data ----
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/*.session
-data/*.session-journal
+# ---- 运行数据：数据库、配置、密钥、会话、115 凭证与日志都在 data/ ----
+data/
 *.session
+*.session-journal
 
-# ---- Secrets ----
+# ---- 部署参数（模板见 .env.example） ----
 .env
-115-cookies.txt
-deploy/config/
 
 # ---- IDE / OS ----
 .idea/
 .vscode/
 .DS_Store
-
-# ---- 凭证备份 / 本地配置 / 运行产物 ----
-.env.bak.*
-config.yaml
-data/

@@ -1,6 +1,6 @@
 name: 发布
 
-# 推送版本标签（如 v0.3.0）时：跑完整 CI → 构建 amd64 / arm64 镜像推送到 GHCR → 创建 GitHub Release。
+# 推送版本标签（如 v1.0.0）时：跑完整 CI → 构建 amd64 / arm64 镜像推送到 GHCR → 创建 GitHub Release。
 # 手动运行（Actions 页「Run workflow」）只构建两个架构的镜像、不推送，用来在发版前验证镜像能构建。
 on:
   push:
@@ -61,7 +61,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
-          # v0.3.0 → 0.3.0、0.3、latest；预发布版本（如 v0.3.0-rc.1）只打自己的标签，不更新 latest
+          # v1.0.0 → 1.0.0、1.0、latest；预发布版本（如 v1.0.0-rc.1）只打自己的标签，不更新 latest
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
