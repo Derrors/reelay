@@ -168,7 +168,7 @@ docker compose pull
 docker compose up -d web          # 管理台 http://127.0.0.1:28080
 ```
 
-在管理台「设置」里填好 Telegram、AI 与 115，然后登录个人 Telegram 账号并启动监听：
+第一次打开管理台先设置登录密码，然后在「设置」里填好 Telegram、AI 与 115，再登录个人 Telegram 账号并启动监听：
 
 ```bash
 docker compose run --rm --no-deps -it worker python -m reelay.login

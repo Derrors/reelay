@@ -190,7 +190,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `tmdb_api_key` | AI 与 TMDB | TMDB v3 API Key 或 v4 Read Access Token。改了 `tmdb.base_url` 时自动清除 |
 | `telegram_api_id` / `telegram_api_hash` | Telegram | 个人账号的 Telegram API 凭证 |
 | `control_bot_token` | Telegram | 控制 Bot 的 token |
-| `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要。没有设置时管理台只接受本机地址（127.0.0.1 / localhost）的访问，要从其他设备访问必须先设置；修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。登录会话保存在数据库里，有效期 7 天，Web 重启不影响。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项即可恢复免登录 |
+| `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要，至少 8 个字符。第一次打开管理台时设置（局域网里用 IP 地址打开的设备也可以）；设置之前，除首次设置外的接口只接受本机地址。修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。登录会话保存在数据库里，有效期 7 天，Web 重启不影响。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项，再打开管理台重新设置 |
 | `mcp_token` / `mcp_readonly_token` | 运行与安全 | MCP 访问令牌（读写 / 只读）。外部 Agent 在请求头 `Authorization: Bearer <令牌>` 里带上它访问 `/mcp`；只读令牌看不到写操作工具。至少 24 个字符，两个不能相同，管理台可随机生成。两个都没设置时 `/mcp` 关闭。与 Web 登录密码相互独立 |
 
 ## 运行文件位置

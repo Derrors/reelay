@@ -40,7 +40,8 @@ class TestWebAuthGuard(WebCase):
         self.client.cookies.set("reelay_session", "forged")
         self.assertEqual(self.client.get("/api/events").status_code, 401)
         self.client.cookies.clear()
-        self.assertEqual(self.client.get("/api/auth/status").json(), {"auth_required": True, "authenticated": False})
+        self.assertEqual(self.client.get("/api/auth/status").json(), {"auth_required": True, "authenticated": False,
+                                                                       "setup_required": False, "setup_blocked": None})
         self.assertEqual(self.client.post("/api/auth/login", json={"password": "pw"}).status_code, 200)
         self.assertEqual(self.client.get("/api/auth/status").json()["authenticated"], True)
         self.assertEqual(self.client.get("/api/config").status_code, 200)
@@ -100,7 +101,7 @@ class TestLocalOnlyAndCrossSite(WebCase):
             with self.subTest(host=host):
                 response = self.client.get("/api/config", headers={"Host": host})
                 self.assertEqual(response.status_code, 403)
-                self.assertIn("设置 → 运行与安全", response.json()["detail"])
+                self.assertIn("首次设置", response.json()["detail"])
         for host in ("127.0.0.1:28080", "localhost", "[::1]:28080"):
             with self.subTest(host=host):
                 self.assertEqual(self.client.get("/api/config", headers={"Host": host}).status_code, 200)
@@ -130,6 +131,47 @@ class TestMountedUnderPrefix(WebCase):
         self.assertEqual(self.client.get("/reelay/api/config").status_code, 401)
         self.assertEqual(self.client.post("/reelay/api/auth/login", json={"password": "pw"}).status_code, 200)
         self.assertEqual(self.client.get("/reelay/api/config").status_code, 200)
+
+
+
+class TestFirstRunSetup(WebCase):
+    """首次打开管理台先设置登录密码：局域网里的设备也能做，公网、经域名来的请求不行，设好一次后不能再用。"""
+
+    def visitor(self, host="192.168.1.10:28080", client="192.168.1.20"):
+        # 不进入 with：同一个应用的启动流程只跑一次（见 WebCase），请求照常处理
+        return TestClient(self.app, base_url=f"http://{host}", client=(client, 50000))
+
+    def test_lan_device_sets_the_first_password_and_is_logged_in(self):
+        lan = self.visitor()
+        status = lan.get("/api/auth/status").json()
+        self.assertEqual((status["setup_required"], status["setup_blocked"], status["authenticated"]), (True, None, False))
+        self.assertEqual(lan.get("/api/config").status_code, 403)  # 设好密码之前其他接口仍然只接受本机
+        self.assertEqual(lan.post("/api/auth/setup", json={"password": "short"}).status_code, 422)
+        response = lan.post("/api/auth/setup", json={"password": "a-long-password"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(lan.get("/api/config").status_code, 200)  # 设好后直接登录
+        self.assertEqual(lan.get("/api/auth/status").json()["authenticated"], True)
+        self.assertEqual(self.visitor(client="192.168.1.30").get("/api/config").status_code, 401)  # 其他设备要登录
+        again = self.visitor(client="192.168.1.30").post("/api/auth/setup", json={"password": "another-password"})
+        self.assertEqual(again.status_code, 409)
+        self.assertEqual(self.client.post("/api/auth/login", json={"password": "a-long-password"}).status_code, 200)
+
+    def test_setup_is_refused_from_public_addresses_and_domain_names(self):
+        for visitor, reason in ((self.visitor(client="8.8.8.8"), "局域网"),
+                                (self.visitor(host="reelay.example.com"), "IP 地址")):
+            with self.subTest(reason=reason):
+                self.assertIn(reason, visitor.get("/api/auth/status").json()["setup_blocked"])
+                response = visitor.post("/api/auth/setup", json={"password": "a-long-password"})
+                self.assertEqual(response.status_code, 403)
+                self.assertIn(reason, response.json()["detail"])
+        cross_site = self.visitor().post("/api/auth/setup", json={"password": "a-long-password"},
+                                         headers={"Origin": "http://evil.example"})
+        self.assertEqual(cross_site.status_code, 403)
+        self.assertEqual(self.client.get("/api/auth/status").json()["setup_required"], True)  # 都没有设置成功
+
+    def test_local_setup_works_too(self):
+        self.assertEqual(self.client.post("/api/auth/setup", json={"password": "a-long-password"}).status_code, 200)
+        self.assertEqual(self.client.get("/api/auth/status").json()["auth_required"], True)
 
 
 if __name__ == "__main__":

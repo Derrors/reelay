@@ -129,7 +129,7 @@ export function PasswordField({ secrets, onSaved }: { secrets: ISecretStatus; on
         ) : null}
       </div>
       <p className="text-xs leading-5 text-muted-foreground">
-        管理台暴露到本机以外（局域网、公网、反向代理）时务必设置。忘记密码时删掉 data/secrets.json 里的 web_password 一项即可恢复免登录。
+        至少 8 个字符；修改或清除要先输入当前密码。清除后再打开管理台会要求重新设置；忘记密码时删掉 data/secrets.json 里的 web_password 一项，再打开管理台重新设置。
       </p>
     </div>
   );

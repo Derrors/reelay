@@ -188,16 +188,18 @@ class TestSettingsApi(WebCase):
         self.assertTrue(secrets["tmdb_api_key"]["set"])
 
     def test_password_change_requires_the_current_one_and_resets_sessions(self):
-        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "one"}}).status_code, 200)
+        short = self.client.put("/api/settings/secrets", json={"changes": {"web_password": "short"}})
+        self.assertEqual(short.status_code, 422)  # 至少 8 个字符
+        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "password-one"}}).status_code, 200)
         self.assertEqual(self.client.get("/api/config").status_code, 200)  # 当前页面换了新会话继续使用
         other = TestClient(self.app, base_url=LOCAL)
         self.assertEqual(other.get("/api/config").status_code, 401)
-        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "two"},
+        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "password-two"},
                                                                          "current_password": "bad"}).status_code, 409)
-        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "two"},
-                                                                         "current_password": "one"}).status_code, 200)
-        self.assertEqual(other.post("/api/auth/login", json={"password": "one"}).status_code, 401)
-        self.assertEqual(other.post("/api/auth/login", json={"password": "two"}).status_code, 200)
+        self.assertEqual(self.client.put("/api/settings/secrets", json={"changes": {"web_password": "password-two"},
+                                                                         "current_password": "password-one"}).status_code, 200)
+        self.assertEqual(other.post("/api/auth/login", json={"password": "password-one"}).status_code, 401)
+        self.assertEqual(other.post("/api/auth/login", json={"password": "password-two"}).status_code, 200)
 
     def test_system_and_plugin_sections_save_back_to_the_file(self):
         cfg = self.client.get("/api/config").json()

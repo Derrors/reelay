@@ -2,10 +2,15 @@
 
 守卫（``Guard``，ASGI 中间件）对每个 /api/* 请求（含接口文档与实时推送）依次检查：
 
-1. 还没设置登录密码时只接受本机地址（Host 为 localhost / 127.0.0.1 / ::1），挡住经局域网访问与 DNS 重绑定；
+1. 还没设置登录密码时，除首次设置与登录相关接口外只接受本机地址（Host 为 localhost / 127.0.0.1 / ::1），
+   挡住经局域网访问与 DNS 重绑定；
 2. 写请求（非 GET/HEAD/OPTIONS）必须来自管理台自己的页面（``Sec-Fetch-Site`` 为 same-origin，或 Origin 与
    Host 一致），挡住同一台 NAS 上其他端口、同一域名下其他子站点发起的跨站请求；
-3. 设置了密码时，除登录、登录状态与健康检查外都要求登录。
+3. 设置了密码时，除登录、登录状态、首次设置与健康检查外都要求登录。
+
+首次打开管理台时先设置登录密码（``POST /api/auth/setup``）。NAS 上通常没有浏览器，所以局域网里的设备也能做这一步，
+但只在还没有密码、请求来自局域网或本机、地址栏是 IP 或 localhost 时可用：公网来的请求、经域名（DNS 重绑定的网页
+只能用它自己的域名）发来的请求都不行，设好之后再用域名访问。
 
 登录失败按客户端地址计数：5 分钟内 5 次错误后暂时拒绝。在反向代理后面时，用 ``REELAY_FORWARDED_ALLOW_IPS``
 信任代理转发的真实地址（见 app.main），否则所有人共用代理的地址。
@@ -14,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import secrets
 import time
 from urllib.parse import urlsplit
@@ -30,8 +36,8 @@ LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
 # 失败记录最多保留这么多个客户端地址，超过时丢掉最早的，不会无限增长
 LOGIN_MAX_CLIENTS = 10000
-# 设置密码后仍可匿名访问的接口：登录相关与容器健康检查。
-PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/status", "/api/health"}
+# 不用登录就能访问的接口：登录相关、首次设置密码与容器健康检查。
+PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/status", "/api/auth/setup", "/api/health"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -71,6 +77,24 @@ def _host(value: str) -> str:
     return urlsplit(f"//{value}").hostname or ""
 
 
+def _ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
+def setup_problem(request: Request) -> str | None:
+    """这个请求为什么不能做首次设置；可以时为 None（还没有密码这一条由调用方判断）。"""
+    client = _ip(request.client.host if request.client else "")
+    if client is None or not (client.is_private or client.is_loopback or client.is_link_local):
+        return "首次设置登录密码只能在局域网内进行：请在家里的网络中打开管理台"
+    host = _host(request.headers.get("host", ""))
+    if host not in LOCAL_HOSTS and _ip(host) is None:
+        return "首次设置登录密码请用 IP 地址打开管理台（如 http://192.168.1.10:28080），设好之后就可以用域名访问"
+    return None
+
+
 def _cross_site(request: Request) -> bool:
     site = request.headers.get("sec-fetch-site")
     if site:
@@ -101,9 +125,8 @@ class Guard:
     def check(self, request: Request, path: str) -> tuple[int, str] | None:
         if path == "/api/health":
             return None  # 容器健康检查；不带运行细节（见 system.health）
-        if not auth_enabled() and _host(request.headers.get("host", "")) not in LOCAL_HOSTS:
-            return 403, ("还没有设置登录密码，管理台只能在本机打开（127.0.0.1 或 localhost）。"
-                         "请先在本机打开管理台，在「设置 → 运行与安全」设置登录密码，再从其他设备访问。")
+        if not auth_enabled() and path not in PUBLIC_PATHS and _host(request.headers.get("host", "")) not in LOCAL_HOSTS:
+            return 403, "还没有设置登录密码：先打开管理台完成首次设置，再从其他设备访问"
         if request.method not in SAFE_METHODS and _cross_site(request):
             return 403, "拒绝来自其他网站的请求"
         if path not in PUBLIC_PATHS and not is_authenticated(request, self.store):
@@ -124,6 +147,7 @@ class SecretsPayload(BaseModel):
 def router(store, service) -> APIRouter:
     api = APIRouter()
     failures: dict[str, list[float]] = {}  # 客户端地址 → 最近的失败时间
+    setup_lock = asyncio.Lock()  # 两个页面同时提交首次设置时只有一个生效
 
     def new_session(body: dict) -> JSONResponse:
         token = secrets.token_urlsafe(32)
@@ -164,8 +188,27 @@ def router(store, service) -> APIRouter:
 
     @api.get("/api/auth/status")
     async def auth_status(request: Request):
-        # authenticated 让前端刷新后保留已登录状态，而不是每次都显示登录页。
-        return {"auth_required": auth_enabled(), "authenticated": is_authenticated(request, store)}
+        """authenticated 让前端刷新后保留已登录状态；setup_required 时前端先显示设置密码页，
+        setup_blocked 说明这个地址为什么不能做首次设置。"""
+        if not auth_enabled():
+            return {"auth_required": False, "authenticated": _host(request.headers.get("host", "")) in LOCAL_HOSTS,
+                    "setup_required": True, "setup_blocked": setup_problem(request)}
+        return {"auth_required": True, "authenticated": is_authenticated(request, store),
+                "setup_required": False, "setup_blocked": None}
+
+    @api.post("/api/auth/setup")
+    async def setup(payload: LoginPayload, request: Request):
+        """首次设置登录密码：只在还没有密码时可用，设好后直接登录。"""
+        problem = setup_problem(request)
+        if problem:
+            raise HTTPException(status_code=403, detail=problem)
+        async with setup_lock:
+            if auth_enabled():
+                raise HTTPException(status_code=409, detail="已经设置过登录密码，请直接登录")
+            # 密码摘要要算 20 万轮：放到线程里；太短时服务层抛 ValueError（422）
+            status = await asyncio.to_thread(service.update_secrets, {"web_password": payload.password})
+            store.web_session_drop()
+            return new_session(status)
 
     @api.put("/api/settings/secrets")
     async def update_secrets(payload: SecretsPayload):

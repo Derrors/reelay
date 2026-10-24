@@ -202,7 +202,7 @@ class WebCase(unittest.TestCase):
             secret_store.SecretStore(self.root / "secrets.json").update(dict(self.SECRETS))
         self.prepare(self.root)
         self.app = create_app(data_dir=self.root, frontend_dir=self.root / "frontend")
-        self.client = TestClient(self.app, base_url=LOCAL, root_path=self.ROOT_PATH)
+        self.client = TestClient(self.app, base_url=LOCAL, root_path=self.ROOT_PATH, client=("127.0.0.1", 50000))
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 

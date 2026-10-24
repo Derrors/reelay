@@ -167,7 +167,7 @@ docker compose pull
 docker compose up -d web          # console at http://127.0.0.1:28080
 ```
 
-Fill in Telegram, AI and 115 under **Settings** in the console, then log in with your personal Telegram account and start listening:
+The first time you open the console, set a login password. Then fill in Telegram, AI and 115 under **Settings**, log in with your personal Telegram account and start listening:
 
 ```bash
 docker compose run --rm --no-deps -it worker python -m reelay.login

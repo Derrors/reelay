@@ -20,6 +20,7 @@ log = logging.getLogger("reelay.service")
 
 # 接口地址 → 发往这个地址的密钥：地址改了，密钥要重新填写
 _KEY_FOR_URL = (("llm", "llm_api_key"), ("tmdb", "tmdb_api_key"))
+MIN_PASSWORD_LENGTH = 8  # Web 登录密码的最短长度（首次设置可以在局域网里的任何设备上进行）
 
 
 class SettingsMixin(ServiceBase):
@@ -111,6 +112,9 @@ class SettingsMixin(ServiceBase):
             raise ConflictError("当前进程没有加载密钥文件")
         if not isinstance(changes, dict) or not changes:
             raise ValueError("没有要修改的密钥")
+        password = changes.get("web_password")
+        if isinstance(password, str) and password.strip() and len(password.strip()) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f"Web 登录密码至少 {MIN_PASSWORD_LENGTH} 个字符")
         if "web_password" in changes and store.get("web_password") and not store.check_password(current_password or ""):
             raise ConflictError("当前 Web 登录密码不正确")
         store.update(changes)
