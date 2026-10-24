@@ -4,100 +4,30 @@ import * as echarts from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import ReactEChartsCore from 'echarts-for-react/esm/core';
 import {
-  ChartColumn, ChartPie, CheckCircle2, CircleAlert, HardDrive, Hourglass, RefreshCw, Table2, Trophy,
+  ChartColumn, ChartPie, CheckCircle2, CircleAlert, HardDrive, Hourglass, Table2, Trophy,
 } from 'lucide-react';
-import { useTheme } from 'next-themes';
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { extras, type IStatsResp } from '@/api/extras';
+import { statsApi, type IStatsResp } from '@/api/stats';
 import { EmptyState } from '@/components/app/EmptyState';
+import { ErrorState, RefreshError } from '@/components/app/ErrorState';
 import { Page } from '@/components/app/Page';
 import { Panel } from '@/components/app/Panel';
+import { Segmented } from '@/components/app/Segmented';
 import { StatCard } from '@/components/app/StatCard';
-import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAsync } from '@/hooks/useAsync';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { STATE_META } from '@/lib/status';
-import type { TaskState } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { AiUsagePanel, SourceQualityPanel } from './AiPanels';
-
-/* ---------------- 图表配色：只取主题变量 ---------------- */
+import { useChartPalette, withAlpha } from './chartPalette';
+import { buildView, GROUPS, longDay, RANGES, shortDay, type GroupKey, type Range, type StatsView } from './statsView';
 
 // 只注册用到的图表与组件：整包引入 echarts 约 1 MB
 echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer]);
 type EChartsOption = echarts.ComposeOption<BarSeriesOption | GridComponentOption | TooltipComponentOption>;
-
-const TOKENS = [
-  '--chart-1', '--chart-2', '--chart-3', '--chart-5',
-  '--foreground', '--muted-foreground', '--border', '--card', '--popover', '--popover-foreground',
-] as const;
-type Token = typeof TOKENS[number];
-interface ChartPalette { colors: Record<Token, string>; font: string }
-
-/**
- * 读取当前主题下的颜色变量。变量是 `hsl(173 58% 38%)` 这种空格写法，zrender 解析不了（悬停高亮会变黑），
- * 所以借一个探针元素让浏览器换算成 rgb。
- */
-function readPalette(): ChartPalette {
-  const probe = document.createElement('span');
-  probe.style.display = 'none';
-  document.body.append(probe);
-  const colors = {} as Record<Token, string>;
-  for (const token of TOKENS) {
-    probe.style.color = `var(${token})`;
-    colors[token] = getComputedStyle(probe).color;
-  }
-  probe.remove();
-  return { colors, font: getComputedStyle(document.body).fontFamily };
-}
-
-const samePalette = (a: ChartPalette, b: ChartPalette) =>
-  a.font === b.font && TOKENS.every((token) => a.colors[token] === b.colors[token]);
-
-/** 主题切换后重新取色。next-themes 在自己的 effect 里才改 <html class>，所以同时监听 class 变化。 */
-function useChartPalette(): ChartPalette {
-  const { resolvedTheme } = useTheme();
-  const [palette, setPalette] = useState(readPalette);
-  useEffect(() => {
-    const refresh = () => setPalette((prev) => {
-      const next = readPalette();
-      return samePalette(prev, next) ? prev : next;
-    });
-    const frame = requestAnimationFrame(refresh);
-    const observer = new MutationObserver(refresh);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [resolvedTheme]);
-  return palette;
-}
-
-function withAlpha(rgb: string, alpha: number): string {
-  const [r = 0, g = 0, b = 0] = rgb.match(/[\d.]+/g)?.map(Number) ?? [];
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-/* ---------------- 状态分组 ---------------- */
-
-type GroupKey = 'done' | 'waiting' | 'active' | 'failed' | 'filtered';
-interface Group { key: GroupKey; label: string; states: TaskState[]; token: Token; alpha?: number; swatch: string }
-
-/**
- * 12 个状态按主流程聚合成 5 组。堆叠顺序即色板顺序（青 → 琥珀 → 蓝 → 红 → 灰）：
- * 青与蓝相邻时肉眼难以区分（dataviz 校验 ΔE < 15），所以把蓝放在琥珀之后，调整顺序前请重新校验。
- */
-const GROUPS: Group[] = [
-  { key: 'done', label: '已入库', states: ['done'], token: '--chart-1', swatch: 'bg-chart-1' },
-  { key: 'waiting', label: '待处理', states: ['pending_approval', 'need_manual'], token: '--chart-3', swatch: 'bg-chart-3' },
-  { key: 'active', label: '处理中', states: ['received', 'parsed', 'queued', 'saving', 'stored', 'organizing'], token: '--chart-2', swatch: 'bg-chart-2' },
-  { key: 'failed', label: '失败', states: ['failed'], token: '--chart-5', swatch: 'bg-chart-5' },
-  { key: 'filtered', label: '已过滤', states: ['rejected', 'skipped'], token: '--muted-foreground', alpha: 0.45, swatch: 'bg-muted-foreground/45' },
-];
-
-const GROUP_OF = new Map<string, GroupKey>(GROUPS.flatMap((g) => g.states.map((s) => [s, g.key] as const)));
-
-const RANGES = [7, 30, 90] as const;
 
 // 统计按维度分页；ranged 表示受顶部时间范围影响
 const TABS = [
@@ -109,67 +39,16 @@ const TABS = [
 type TabKey = (typeof TABS)[number]['value'];
 const isTab = (value: string | null): value is TabKey => TABS.some((t) => t.value === value);
 const TRIGGER_CLASS = [
-  'h-8 rounded-md px-3 text-[13px] text-muted-foreground sm:px-4',
+  'h-9 rounded-md px-3 text-[13px] text-muted-foreground sm:h-8 sm:px-4',
   'data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs',
 ].join(' ');
-type Range = typeof RANGES[number];
-
-const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const shortDay = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
-const longDay = (d: string) => `${Number(d.slice(5, 7))} 月 ${Number(d.slice(8, 10))} 日`;
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-
-interface View {
-  days: string[];
-  series: Record<GroupKey, number[]>;
-  rangeTotals: Record<GroupKey, number>;
-  counts: Record<GroupKey, number>;
-  total: number;
-  avg: number;
-  peak: number;
-  peakDay: string;
-}
-
-function buildView(stats: IStatsResp, range: Range): View {
-  // 没有任务的日子后端不返回，这里补齐为 0，避免横轴把空白日挤掉。
-  const today = new Date();
-  const dates = new Set(stats.daily.map((row) => row.d));
-  for (let i = range - 1; i >= 0; i -= 1) {
-    dates.add(ymd(new Date(today.getFullYear(), today.getMonth(), today.getDate() - i)));
-  }
-  const days = [...dates].sort();
-  const index = new Map(days.map((d, i) => [d, i]));
-  const empty = <T,>(fn: () => T) => Object.fromEntries(GROUPS.map((g) => [g.key, fn()])) as Record<GroupKey, T>;
-  const series = empty(() => days.map(() => 0));
-  for (const row of stats.daily) {
-    const group = GROUP_OF.get(row.state);
-    const i = index.get(row.d);
-    if (group && i !== undefined) series[group][i] += row.n;
-  }
-  const rangeTotals = empty(() => 0);
-  const counts = empty(() => 0);
-  for (const g of GROUPS) {
-    rangeTotals[g.key] = series[g.key].reduce((a, b) => a + b, 0);
-    counts[g.key] = g.states.reduce((a, s) => a + Number(stats.counts[s] ?? 0), 0);
-  }
-  const daily = days.map((_, i) => GROUPS.reduce((a, g) => a + series[g.key][i], 0));
-  const sum = daily.reduce((a, b) => a + b, 0);
-  const peak = Math.max(0, ...daily);
-  const avg = days.length ? sum / days.length : 0;
-  return {
-    days, series, rangeTotals, counts,
-    total: GROUPS.reduce((a, g) => a + counts[g.key], 0),
-    avg: avg >= 10 ? Math.round(avg) : Math.round(avg * 10) / 10,
-    peak,
-    peakDay: peak > 0 ? days[daily.indexOf(peak)] : '',
-  };
-}
 
 /* ---------------- 每日趋势 ---------------- */
 
 interface TooltipParam { axisValue: string; seriesName: string; value: number; color: string }
 
-function TrendChart({ view, hidden, height }: { view: View; hidden: Set<GroupKey>; height: number }) {
+function TrendChart({ view, hidden, height }: { view: StatsView; hidden: Set<GroupKey>; height: number }) {
   const palette = useChartPalette();
   const option = useMemo<EChartsOption>(() => {
     const c = palette.colors;
@@ -239,7 +118,7 @@ function TrendChart({ view, hidden, height }: { view: View; hidden: Set<GroupKey
   return <ReactEChartsCore echarts={echarts} notMerge lazyUpdate option={option} style={{ height }} opts={{ renderer: 'canvas' }} />;
 }
 
-function TrendTable({ view }: { view: View }) {
+function TrendTable({ view }: { view: StatsView }) {
   const rows = view.days
     .map((d, i) => ({ d, values: GROUPS.map((g) => view.series[g.key][i]) }))
     .filter((row) => row.values.some(Boolean))
@@ -271,32 +150,7 @@ function TrendTable({ view }: { view: View }) {
   );
 }
 
-function Segmented<T extends string | number>({ value, options, onChange, label }: {
-  value: T; options: Array<{ value: T; label: ReactNode; title?: string }>; onChange: (value: T) => void; label: string;
-}) {
-  return (
-    <div role="radiogroup" aria-label={label} className="inline-flex rounded-lg bg-muted p-0.5">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={value === option.value}
-          title={option.title}
-          onClick={() => onChange(option.value)}
-          className={cn(
-            'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
-            value === option.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function TrendPanel({ view, range }: { view: View; range: Range }) {
+function TrendPanel({ view, range }: { view: StatsView; range: Range }) {
   const [mode, setMode] = useState<'chart' | 'table'>('chart');
   const [hidden, setHidden] = useState<Set<GroupKey>>(() => new Set());
   const isMobile = useIsMobile();
@@ -340,7 +194,7 @@ function TrendPanel({ view, range }: { view: View; range: Range }) {
                     disabled={mode === 'table'}
                     onClick={() => toggle(g.key)}
                     className={cn(
-                      'inline-flex min-h-8 items-center gap-2 rounded-md px-2 text-xs transition-colors enabled:hover:bg-muted',
+                      'inline-flex min-h-9 items-center gap-2 rounded-md px-2 text-xs transition-colors enabled:hover:bg-muted sm:min-h-8',
                       off && mode === 'chart' && 'opacity-45',
                     )}
                   >
@@ -371,9 +225,9 @@ function TrendPanel({ view, range }: { view: View; range: Range }) {
 /* ---------------- 片名排行与状态分布 ---------------- */
 
 function TopTitles({ titles }: { titles: IStatsResp['top_titles'] }) {
-  const max = Math.max(1, ...titles.map((x) => x.n));
+  const max = Math.max(1, ...titles.map((x) => x.count));
   return (
-    <Panel title="出现最多的片名" description="全部任务按片名合并后的次数" icon={Trophy} bodyClassName="p-3 sm:p-4">
+    <Panel title="出现最多的片名" description="全部任务按片名合并后的次数，深色部分是已入库的" icon={Trophy} bodyClassName="p-3 sm:p-4">
       {titles.length ? (
         <ol className="space-y-0.5 lg:columns-2 lg:gap-8">
           {titles.map((x, i) => (
@@ -388,11 +242,14 @@ function TopTitles({ titles }: { titles: IStatsResp['top_titles'] }) {
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="truncate text-[13px] font-medium" title={x.title}>{x.title}</span>
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                    <b className="font-semibold text-foreground">{x.n}</b> 次
+                    <b className="font-semibold text-foreground">{x.count}</b> 次 · 入库 {x.done}
                   </span>
                 </div>
+                {/* 整条是出现次数，深色部分是其中已入库的 */}
                 <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-primary/10">
-                  <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max((x.n / max) * 100, 3)}%` }} />
+                  <div className="h-full rounded-full bg-primary/35" style={{ width: `${Math.max((x.count / max) * 100, 3)}%` }}>
+                    <div className="h-full rounded-full bg-primary" style={{ width: `${x.count ? (x.done / x.count) * 100 : 0}%` }} />
+                  </div>
                 </div>
               </div>
             </li>
@@ -405,7 +262,7 @@ function TopTitles({ titles }: { titles: IStatsResp['top_titles'] }) {
   );
 }
 
-function Distribution({ view, stats }: { view: View; stats: IStatsResp }) {
+function Distribution({ view, stats }: { view: StatsView; stats: IStatsResp }) {
   return (
     <Panel
       title="状态分布"
@@ -471,9 +328,6 @@ function StatsSkeleton() {
 
 export default function StatsPage() {
   const [range, setRange] = useState<Range>(30);
-  const [stats, setStats] = useState<{ range: Range; data: IStatsResp } | null>(null);
-  const [error, setError] = useState('');
-  const [reload, setReload] = useState(0);
   const [search, setSearch] = useSearchParams();
   const requested = search.get('tab');
   const tab: TabKey = isTab(requested) ? requested : 'overview';
@@ -483,17 +337,10 @@ export default function StatsPage() {
     return next;
   }, { replace: true });
 
-  useEffect(() => {
-    let active = true;
-    extras.stats(range)
-      .then((data) => { if (active) { setStats({ range, data }); setError(''); } })
-      .catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : '统计数据加载失败'); });
-    return () => { active = false; };
-  }, [range, reload]);
-
-  const view = useMemo(() => (stats ? buildView(stats.data, stats.range) : null), [stats]);
-  const retry = useCallback(() => { setError(''); setReload((n) => n + 1); }, []);
-  const refreshing = stats !== null && stats.range !== range && !error;
+  const stats = useAsync(() => statsApi.get(range).then((data) => ({ range, data })), [range], '统计数据加载失败');
+  const view = useMemo(() => (stats.data ? buildView(stats.data.data, stats.data.range) : null), [stats.data]);
+  // 换时间范围时先淡化旧数据，新数据到了再替换
+  const refreshing = stats.stale && !stats.error;
 
   const actions = TABS.find((t) => t.value === tab)?.ranged === false ? null : (
     <Segmented<Range>
@@ -505,30 +352,18 @@ export default function StatsPage() {
   );
 
   let body: ReactNode;
-  if (error && !stats) {
-    body = (
-      <EmptyState
-        icon={CircleAlert}
-        title="统计数据加载失败"
-        description={error}
-        action={<Button variant="outline" onClick={retry}><RefreshCw />重试</Button>}
-      />
-    );
-  } else if (!stats || !view) {
-    body = <StatsSkeleton />;
+  if (!stats.data || !view) {
+    body = stats.error
+      ? <ErrorState title="统计数据加载失败" error={stats.error} onRetry={stats.reload} retrying={stats.loading} />
+      : <StatsSkeleton />;
   } else {
     const { counts } = view;
-    const data = stats.data;
+    const data = stats.data.data;
     const rate = view.total ? Math.round((counts.done / view.total) * 100) : 0;
     const gb = data.estimated_done_gb;
     body = (
       <div className={cn('space-y-5 transition-opacity', refreshing && 'opacity-60')}>
-        {error ? (
-          <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-sm text-destructive">
-            <span className="min-w-0">{error}</span>
-            <Button variant="outline" size="sm" onClick={retry}>重试</Button>
-          </div>
-        ) : null}
+        {stats.error ? <RefreshError error={stats.error} onRetry={stats.reload} className="mb-0" /> : null}
         <Tabs value={tab} onValueChange={setTab} className="gap-5">
           <TabsList className="grid h-auto w-full grid-cols-4 rounded-lg bg-muted p-1 sm:inline-flex sm:w-fit">
             {TABS.map((t) => <TabsTrigger key={t.value} value={t.value} className={TRIGGER_CLASS}>{t.label}</TabsTrigger>)}
@@ -561,7 +396,7 @@ export default function StatsPage() {
                 to="/tasks?group=failed"
               />
             </div>
-            <TrendPanel view={view} range={stats.range} />
+            <TrendPanel view={view} range={stats.data.range} />
             <Distribution view={view} stats={data} />
           </TabsContent>
           <TabsContent value="titles">

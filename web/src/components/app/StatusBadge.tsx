@@ -1,4 +1,4 @@
-import { STATE_META, TONE_CLASS, type Tone } from '@/lib/status';
+import { ACTIVE_STATES, STATE_META, TONE_CLASS, type Tone } from '@/lib/status';
 import type { TaskState } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -14,10 +14,8 @@ export function ToneBadge({ tone, children, className, pulse = false }: {
   );
 }
 
-const MOVING: TaskState[] = ['received', 'parsed', 'queued', 'saving', 'stored', 'organizing'];
-
 /** 任务状态徽标；进行中的状态带呼吸点。 */
 export function StatusBadge({ state, className }: { state: TaskState; className?: string }) {
   const meta = STATE_META[state];
-  return <ToneBadge tone={meta.tone} pulse={MOVING.includes(state)} className={className}>{meta.label}</ToneBadge>;
+  return <ToneBadge tone={meta.tone} pulse={ACTIVE_STATES.includes(state)} className={className}>{meta.label}</ToneBadge>;
 }

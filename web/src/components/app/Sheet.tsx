@@ -37,7 +37,7 @@ export function Sheet({ open, onOpenChange, title, description, children, footer
                 <DialogPrimitive.Description className="mt-0.5 text-xs text-muted-foreground">{description}</DialogPrimitive.Description>
               ) : <DialogPrimitive.Description className="sr-only">详情</DialogPrimitive.Description>}
             </div>
-            <DialogPrimitive.Close className="-mr-1 grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+            <DialogPrimitive.Close className="-mr-1 grid size-9 shrink-0 sm:size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
               <X className="size-4" />
               <span className="sr-only">关闭</span>
             </DialogPrimitive.Close>

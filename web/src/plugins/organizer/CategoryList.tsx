@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
 import { Film, Lock, Tv } from 'lucide-react';
-import { api } from '@/api/client';
+import { configApi } from '@/api/config';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAsync } from '@/hooks/useAsync';
 import { cn } from '@/lib/utils';
 import { Branch, FolderNode, GraphCanvas, NodeCard, RootNode, RuleNode } from './FlowGraph';
 import type { ICategoryGroup } from './types';
@@ -36,17 +37,17 @@ function MediaNode({ group }: { group: ICategoryGroup }) {
 /** 二级分类只读展示：规则随插件发布（category.yaml）。从左往右读：作品按 TMDB 类型分流，
  *  再按编号从上到下逐条比对条件，归入第一个满足的文件夹。 */
 export function CategoryList() {
-  const [groups, setGroups] = useState<ICategoryGroup[] | null>(null);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    let active = true;
-    api.extensionAction<{ media: ICategoryGroup[] }>('organizer', 'category_rules')
-      .then(r => { if (active) setGroups(r.media); })
-      .catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : '读取分类规则失败'); });
-    return () => { active = false; };
-  }, []);
-  if (error) return <p className="text-xs text-destructive">{error}</p>;
-  if (!groups) return <Skeleton className="h-96 rounded-xl" />;
+  const rules = useAsync(() => configApi.extensionAction<{ media: ICategoryGroup[] }>('organizer', 'category_rules'), [],
+    '读取分类规则失败');
+  const groups = rules.data?.media;
+  if (!groups) {
+    return rules.error ? (
+      <p className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+        {rules.error}
+        <Button size="sm" variant="outline" disabled={rules.loading} onClick={rules.reload}>重试</Button>
+      </p>
+    ) : <Skeleton className="h-96 rounded-xl" />;
+  }
   const paths = groups.flatMap(g => g.categories.map(c => c.path));
   const roots = new Set(paths.map(p => p.split('/')[0]));
   return (

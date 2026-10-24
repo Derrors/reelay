@@ -1,32 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ChevronDown, Plus, Radio, Regex, ScanSearch, SlidersHorizontal, Sparkles, Trash2, TrendingUp } from 'lucide-react';
-import { ai, PARSE_RULE_FIELDS, PARSE_RULE_LABELS, percent, type ISourceInsight } from '@/api/ai';
+import { sourceApi, type ISourceInsight } from '@/api/sources';
 import { EmptyState } from '@/components/app/EmptyState';
+import { Field } from '@/components/app/Field';
+import { Notice } from '@/components/app/Notice';
 import { Panel } from '@/components/app/Panel';
-import { Select, type SelectOption } from '@/components/app/Select';
+import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { approvalLabels, approvalShortLabels } from '@/lib/status';
+import { useAsync } from '@/hooks/useAsync';
+import { percent } from '@/lib/format';
+import { approvalLabels, PARSE_RULE_FIELDS, PARSE_RULE_LABELS, SLOT_LABELS } from '@/lib/status';
 import { cn } from '@/lib/utils';
-import { Field, LinesField, Notice } from './fields';
+import { obj, prune, rows, strings, text, type Obj } from '@/lib/values';
+import { LinesField } from './fields';
 import { ParseRulesDialog } from './ParseRulesDialog';
 import { ParseTestDialog } from './ParseTestDialog';
 import { SourceWizard } from './SourceWizard';
-import {
-  APPROVAL_OPTIONS, NOTIFY_OPTIONS, SLOT_LABELS, notifyValue, obj, providerLabel, prune, rows, strings, text, type Catalog,
-  type Obj,
-} from './shared';
+import { APPROVAL_OPTIONS, NOTIFY_OPTIONS, notifyValue, providerLabel, type Catalog } from './shared';
 
 /** 识别方式与转存方式只在来源上设置（defaults 里的值只是没写时的兜底）；网盘有多个可选时才出现在高级设置里。 */
 const MAIN_SLOTS = ['parser', 'decision'];
 const ADVANCED_SLOTS = ['storage'];
 const multiple = (catalog: Catalog | null, slot: string) => (catalog?.providers[slot]?.length ?? 0) > 1;
-
-/** 当前值不在可选项里（目录被删、扩展被卸载）时补一项，避免下拉框悄悄显示成别的值。 */
-function withCurrent(options: SelectOption[], value: string): SelectOption[] {
-  return !value || options.some(o => o.value === value) ? options : [...options, { value, label: `${value}（已失效）` }];
-}
 
 interface SourceCardProps {
   index: number;
@@ -35,7 +32,7 @@ interface SourceCardProps {
   aliases: string[];
   catalog: Catalog | null;
   open: boolean;
-  /** 人工裁决统计与「改为自动转存」建议。 */
+  /** 人工裁决统计与「改为 AI 处理」建议。 */
   insight?: ISourceInsight;
   onToggle: () => void;
   onChange: (patch: Obj) => void;
@@ -61,19 +58,18 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
     const next = prune({ ...filters, [key]: list.length ? list : undefined });
     onChange({ filters: Object.keys(next).length ? next : undefined });
   };
-  const providerOptions = (slot: string) => withCurrent(
-    (catalog?.providers[slot] ?? []).map(x => ({ value: x.name, label: providerLabel(slot, x.name, catalog) })),
-    text(source[slot]),
-  );
+  // 当前值不在可选项里（扩展被卸载、目录被删）时，Select 会单独标出来，不会悄悄显示成别的值
+  const providerOptions = (slot: string) =>
+    (catalog?.providers[slot] ?? []).map(x => ({ value: x.name, label: providerLabel(slot, x.name, catalog) }));
 
   return (
     <Panel
       icon={Radio}
       title={name || <span className="text-muted-foreground">未命名来源</span>}
-      description={`${approvalShortLabels[mode] ?? '确认方式未设置'} · ${notify ? 'Bot 通知' : '不发 Bot 通知'} · 保存到「${saveTo || '未设置'}」`}
+      description={`${approvalLabels[mode] ?? '确认方式未设置'} · ${notify ? 'Bot 通知' : '不发 Bot 通知'} · 保存到「${saveTo || '未设置'}」`}
       actions={(
         <Button
-          variant="ghost" size="icon" className="size-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          variant="ghost" size="icon" className="size-9 text-muted-foreground hover:bg-destructive/10 hover:text-destructive sm:size-8"
           aria-label={`删除监听来源${name || index + 1}`} title="删除来源" onClick={onRemove}
         >
           <Trash2 />
@@ -107,7 +103,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
             <Select
               value={text(source[slot] || defaults[slot])}
               onValueChange={v => onChange({ [slot]: v || undefined })}
-              options={withCurrent(providerOptions(slot), text(source[slot] || defaults[slot]))}
+              options={providerOptions(slot)}
             />
           </Field>
         ))}
@@ -124,7 +120,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
             value={text(source.save_to)}
             onValueChange={v => onChange({ save_to: v || undefined })}
             placeholder="未设置" fallback={{ value: text(defaults.save_to) }}
-            options={withCurrent(aliases.map(a => ({ value: a, label: a })), text(source.save_to))}
+            options={aliases.map(a => ({ value: a, label: a }))}
           />
         </Field>
       </div>
@@ -227,14 +223,9 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
   const aliases = Object.keys(obj(config.save_dirs));
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [wizard, setWizard] = useState(false);
-  const [insights, setInsights] = useState<Record<string, ISourceInsight>>({});
-  useEffect(() => {
-    let active = true;
-    ai.insights()
-      .then((r) => { if (active) setInsights(Object.fromEntries(r.sources.map((x) => [x.source.toLowerCase(), x]))); })
-      .catch(() => undefined);  // 只影响提示
-    return () => { active = false; };
-  }, []);
+  // 人工裁决统计只影响提示，读取失败时不显示
+  const loaded = useAsync(() => sourceApi.insights(), []);
+  const insights: Record<string, ISourceInsight> = Object.fromEntries((loaded.data?.sources ?? []).map((x) => [x.source.toLowerCase(), x]));
   // 新来源直接写明识别方式与转存方式（取推荐值），卡片上看到的就是它实际用的
   const engines = { parser: text(defaults.parser) || 'llm', decision: text(defaults.decision) || 'subscription' };
   const addDraft = (draft: Obj) => {

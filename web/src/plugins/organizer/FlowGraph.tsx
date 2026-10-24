@@ -118,7 +118,7 @@ export function FolderInputNode({ label, value, placeholder, onChange }: {
       <Folder className="size-3.5 shrink-0 text-primary" />
       <Input
         aria-label={label} value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)}
-        className="h-7 border-transparent bg-transparent px-1.5 text-[13px] font-medium shadow-none hover:border-border focus-visible:border-ring md:text-[13px]"
+        className="h-9 border-transparent bg-transparent px-1.5 sm:h-7 text-[13px] font-medium shadow-none hover:border-border focus-visible:border-ring md:text-[13px]"
       />
     </NodeCard>
   );

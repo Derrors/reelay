@@ -46,8 +46,9 @@ export interface IDashboard {
   active: number;
   failed: number;
   done: number;
-  simulation: boolean;
-  mode: 'simulation' | 'live' | 'not_configured' | 'not_running';
+  mode: 'live' | 'not_configured' | 'not_running';
+  /** 后端版本号，反馈问题时需要。 */
+  version: string;
   connections: Record<string, IConnection>;
   runtime: Record<string, IRuntimeHealth>;
   deliveries: Record<string, number>;
@@ -57,6 +58,13 @@ export interface IDashboard {
   recent?: { received_24h: number; done_24h: number };
   config_revision: string;
 }
+
+/** 服务端给出的、任务此刻允许的操作（任务详情与收件箱条目都带）。
+ *  correct 是修正识别结果，resolve_conflict 是整理冲突时选择删除转存文件或覆盖保存，
+ *  dismiss 是忽略失败或待人工的任务，subscribe 是订阅这部剧这一季。 */
+export type TaskActionName =
+  | 'approve' | 'reject' | 'retry' | 'reparse' | 'correct' | 'reorganize' | 'resolve_conflict'
+  | 'reconcile' | 'accept_partial' | 'abandon' | 'dismiss' | 'subscribe';
 
 export interface IAlert {
   key: string;
@@ -166,6 +174,7 @@ export interface IInboxItem {
   advice?: IAdvice | null;
   /** 待人工任务的失败解释（失败解释扩展写入）。 */
   explanation?: IExplanation | null;
+  actions: TaskActionName[];
 }
 
 export interface IRelease {
@@ -233,6 +242,7 @@ export interface ITaskDetail extends ITaskSummary {
   auto_path?: string | null;
   /** 失败或待人工任务的原因与建议操作。 */
   explanation?: IExplanation | null;
+  actions: TaskActionName[];
 }
 
 export interface IExtensionField {
@@ -244,7 +254,11 @@ export interface IExtensionField {
 export interface IExtension {
   name: string; kind: 'provider' | 'hook' | 'event'; slot: string; label: string;
   description: string; enabled: boolean; order: number | null;
-  fields: IExtensionField[]; config_section: string | null; config_type?: string | null; required_storage: string | null;
+  fields: IExtensionField[];
+  /** 扩展设置在配置里的位置，如 plugins.organizer。 */
+  config_section: string; config_type?: string | null;
+  /** 不能配合使用的存储（缺少这个扩展要求的网盘接口）。 */
+  unsupported_storage: string[];
   /** 插件声明的动作（POST /api/extensions/<name>/actions/<action>） */
   actions?: string[];
 }
@@ -260,9 +274,17 @@ export interface IConfigResponse {
   secrets: ISecretStatus;
   extensions: IExtensionCatalog;
   config: Record<string, unknown>;
-  text: string;
+  /** 保存目录别名 → 网盘里的真实路径（后台转存时记录，还没记录的别名没有这一项）。 */
+  save_dir_paths: Record<string, string>;
   connections: Record<string, IConnection>;
   config_error: string | null;
+}
+
+/** 规则改动的一项：section 如「默认规则」「剧集分类」「版本偏好」。 */
+export interface IRuleChange {
+  section: string;
+  kind: 'add' | 'remove' | 'change';
+  text: string;
 }
 
 export interface IConflictFile {

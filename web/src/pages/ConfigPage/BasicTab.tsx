@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { CircleAlert, Folder, FolderPlus, FolderSearch, Plus, Send, ShieldCheck, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import DirectoryPicker from '@/components/DirectoryPicker';
+import { Field } from '@/components/app/Field';
 import { Panel } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
@@ -10,9 +11,10 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { approvalLabels } from '@/lib/status';
 import { cn } from '@/lib/utils';
-import { Field, RadioCards, SwitchRow } from './fields';
+import { obj, rows, text, type Obj } from '@/lib/values';
+import { RadioCards, SwitchRow } from './fields';
 import { RuleComposer } from './RuleComposer';
-import { APPROVAL_HINTS, APPROVAL_OPTIONS, obj, providerLabel, rows, text, type Catalog, type Obj } from './shared';
+import { APPROVAL_HINTS, APPROVAL_OPTIONS, providerLabel, type Catalog } from './shared';
 
 const FORWARD_TOKENS: Array<[string, string]> = [
   ['{title}', '片名'], ['{year}', '年份'], ['{resolution}', '清晰度'], ['{size}', '大小'], ['{link}', '链接'],
@@ -23,8 +25,8 @@ interface BasicTabProps {
   catalog: Catalog | null;
   update: (key: string, value: unknown) => void;
   setField: (key: string, name: string, value: unknown) => void;
-  /** 目录编号 → 名称；null 表示读取失败，缺省表示读取中。 */
-  dirNames: Record<string, string | null>;
+  /** 目录编号 → 网盘路径；没有的是后台还没记录过的目录。 */
+  dirNames: Record<string, string>;
   rememberDir: (id: string, name: string) => void;
   /** 页面上是否有未保存的修改。 */
   dirty: boolean;
@@ -53,7 +55,7 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
   const [picker, setPicker] = useState<{ alias?: string; cid: string; name: string } | null>(null);
   const templateRef = useRef<HTMLTextAreaElement>(null);
 
-  const dirLabel = (cid: string) => (cid === '0' ? '根目录' : dirNames[cid]);
+  const dirLabel = (cid: string): string | undefined => (cid === '0' ? '根目录' : dirNames[cid]);
   const usage = (alias: string) => ({
     isDefault: text(defaults.save_to) === alias,
     sources: sources.filter(s => s.save_to === alias).length,
@@ -110,22 +112,19 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
                     {u.sources ? <Tag muted>{u.sources} 个来源</Tag> : null}
                   </div>
                   <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground" title={`115 目录编号 ${text(cid)}`}>
-                    {name === null ? <CircleAlert className="size-3 shrink-0 text-warning" /> : null}
-                    <span className="truncate">
-                      {name === undefined ? '正在读取目录名称…' : name === null ? '未能读取目录名称' : `115 / ${name}`}
-                    </span>
+                    <span className="truncate">{name === undefined ? `目录编号 ${text(cid)}` : `115 / ${name}`}</span>
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center">
                   <Button
-                    variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-primary"
+                    variant="ghost" size="icon" className="size-9 text-muted-foreground hover:text-primary sm:size-8"
                     aria-label={`更换「${alias}」对应的目录`} title="更换目录"
-                    onClick={() => setPicker({ alias, cid: text(cid), name: name || alias })}
+                    onClick={() => setPicker({ alias, cid: text(cid), name: name?.split(' / ').at(-1) || alias })}
                   >
                     <FolderSearch />
                   </Button>
                   <Button
-                    variant="ghost" size="icon" className="size-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    variant="ghost" size="icon" className="size-9 text-muted-foreground hover:bg-destructive/10 hover:text-destructive sm:size-8"
                     aria-label={`删除目录「${alias}」`} title="删除"
                     onClick={() => removeDir(alias)}
                   >
@@ -136,11 +135,10 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
             );
           })}
         </div>
-        {Object.values(dirs).some(cid => dirLabel(text(cid)) === null) ? (
+        {Object.values(dirs).some(cid => dirLabel(text(cid)) === undefined) ? (
           <p className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
-            <CircleAlert className="size-3.5 text-warning" />
-            部分目录名称读取失败，通常是 115 尚未连接。
-            <Link to="/config?tab=connections" className="text-primary hover:underline">去连接 115</Link>
+            <CircleAlert className="size-3.5 text-muted-foreground" />
+            只显示编号的目录还没有转存过，后台第一次存入时会记下它在网盘里的路径；也可以点「更换目录」重新选一次。
           </p>
         ) : null}
 
@@ -193,7 +191,6 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
                 value={text(defaults.save_to)}
                 onValueChange={v => setField('defaults', 'save_to', v)}
                 options={aliases.map(a => ({ value: a, label: a }))}
-                placeholder={aliases.includes(text(defaults.save_to)) ? undefined : '请选择保存目录'}
               />
             </Field>
             <Field
@@ -238,7 +235,7 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
                 {FORWARD_TOKENS.map(([token, label]) => (
                   <button
                     key={token} type="button" onClick={() => insertToken(token)}
-                    className="rounded-md border border-border bg-muted/60 px-2 py-1.5 transition-colors hover:border-primary/40 hover:text-primary sm:px-1.5 sm:py-0.5"
+                    className="min-h-9 rounded-md border border-border bg-muted/60 px-2 py-1.5 transition-colors hover:border-primary/40 hover:text-primary sm:min-h-0 sm:px-1.5 sm:py-0.5"
                   >
                     {label} <code className="font-mono text-[11px]">{token}</code>
                   </button>
@@ -256,9 +253,9 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
           initialName={picker.name}
           onOpenChange={open => { if (!open) setPicker(null); }}
           onSelect={dir => {
-            rememberDir(dir.id, dir.name);
+            rememberDir(dir.id, dir.path);
             if (picker.alias) setField('save_dirs', picker.alias, dir.id);
-            else { setNewDir(dir); setAddError(''); }
+            else { setNewDir({ id: dir.id, name: dir.path }); setAddError(''); }
           }}
         />
       ) : null}

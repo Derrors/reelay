@@ -1,38 +1,23 @@
 import { Ban, BellPlus, BellRing, CircleAlert, Flag, Lightbulb, Loader2, Search, Trash2, Undo2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ai, type IIgnoredWork, type IResolveResp, type IShowCandidate, type ISubscription, type ISubscriptionsResp } from '@/api/ai';
-import { extras } from '@/api/extras';
-import { EmptyState } from '@/components/app/EmptyState';
+import { subscriptionApi, type IIgnoredWork, type IResolveResp, type IShowCandidate, type ISubscription } from '@/api/subscriptions';
+import { ErrorState } from '@/components/app/ErrorState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { Page } from '@/components/app/Page';
 import { Panel } from '@/components/app/Panel';
+import { Segmented } from '@/components/app/Segmented';
 import { Select } from '@/components/app/Select';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAsync } from '@/hooks/useAsync';
 import { compactEpisodes } from '@/lib/format';
-import { cn } from '@/lib/utils';
-
-const message = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback);
-
-/** 订阅后待审批里同一部剧的条目可以一并转存。 */
-function announce(title: string, season: number, pending: string[]) {
-  toast.success(`已订阅《${title}》第 ${season} 季，之后的新集会自动转存`, pending.length ? {
-    description: `待审批里还有 ${pending.length} 条属于这部剧`,
-    action: {
-      label: `一并转存 ${pending.length} 条`,
-      onClick: () => {
-        extras.batch(pending, 'approve')
-          .then((r) => toast.success(`已批准 ${r.done} 条，开始转存`))
-          .catch((e: unknown) => toast.error(message(e, '批量转存失败')));
-      },
-    },
-    duration: 10000,
-  } : undefined);
-}
+import { MEDIA_TYPE_LABELS } from '@/lib/status';
+import { announceSubscription } from '@/lib/subscriptions';
+import { cn, errorMessage } from '@/lib/utils';
 
 function CandidateCard({ candidate, wanted, onSubscribe, busy }: {
   candidate: IShowCandidate; wanted: number | null; busy: boolean;
@@ -103,7 +88,7 @@ function SubscriptionRow({ item, busy, onRemove, onReopen }: {
       ) : null}
       <Button variant="ghost" size="icon" disabled={busy} onClick={onRemove} aria-label={`删除订阅《${item.title}》`}
         title={finished ? '删除订阅' : '取消订阅'}
-        className="size-8 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+        className="size-9 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive sm:size-8">
         <Trash2 />
       </Button>
     </div>
@@ -111,29 +96,39 @@ function SubscriptionRow({ item, busy, onRemove, onReopen }: {
 }
 
 export default function SubscriptionsPage() {
-  const [data, setData] = useState<ISubscriptionsResp | null>(null);
-  const [loadError, setLoadError] = useState('');
+  const subs = useAsync(() => subscriptionApi.list(), [], '读取订阅失败');
+  const ignoredWorks = useAsync(() => subscriptionApi.ignoredWorks(), [], '读取不再接收的作品失败');
+  const data = subs.data;
+  const ignored = ignoredWorks.data?.items;
   const [query, setQuery] = useState('');
   const [resolved, setResolved] = useState<IResolveResp | null>(null);
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [ignored, setIgnored] = useState<IIgnoredWork[] | null>(null);
   const [category, setCategory] = useState('');  // 空 = 全部类型
 
-  const load = useCallback(() => Promise.all([
-    ai.subscriptions().then((r) => { setData(r); setLoadError(''); })
-      .catch((e: unknown) => setLoadError(message(e, '读取订阅失败'))),
-    ai.ignoredWorks().then((r) => setIgnored(r.items)).catch(() => setIgnored([])),
-  ]), []);
-  useEffect(() => { void load(); }, [load]);
+  /** 操作后两份列表都重新读取。 */
+  const load = () => { subs.reload(); ignoredWorks.reload(); };
+  /** 执行一个会改订阅的操作：成功提示后刷新，失败给出原因。 */
+  const run = async (fn: () => Promise<unknown>, done: string, failed: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      toast.success(done);
+      load();
+    } catch (e) {
+      toast.error(errorMessage(e, failed));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const search = async () => {
     if (!query.trim()) return;
     setSearching(true);
     try {
-      setResolved(await ai.resolveShow(query.trim()));
+      setResolved(await subscriptionApi.resolve(query.trim()));
     } catch (e) {
-      toast.error(message(e, '查找失败'));
+      toast.error(errorMessage(e, '查找失败'));
     } finally {
       setSearching(false);
     }
@@ -142,56 +137,27 @@ export default function SubscriptionsPage() {
   const subscribe = async (item: { title: string; season: number; tmdbid?: number | null; total?: number | null }) => {
     setBusy(true);
     try {
-      const r = await ai.subscribe(item);
-      announce(r.subscription.title, r.subscription.season, r.pending);
+      const r = await subscriptionApi.add(item);
+      announceSubscription(r.subscription, r.pending);
       setResolved(null);
       setQuery('');
-      await load();
+      load();
     } catch (e) {
-      toast.error(message(e, '订阅失败'));
+      toast.error(errorMessage(e, '订阅失败'));
     } finally {
       setBusy(false);
     }
   };
 
-  const dismiss = async (item: { title: string; season: number; tmdbid: number | null }) => {
-    setBusy(true);
-    try {
-      await ai.dismissSuggestion(item);
-      toast.success(`不再建议订阅《${item.title}》第 ${item.season} 季`);
-      await load();
-    } catch (e) {
-      toast.error(message(e, '操作失败'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (item: ISubscription) => {
-    setBusy(true);
-    try {
-      await ai.unsubscribe({ title: item.title, season: item.season, tmdbid: item.tmdbid });
-      toast.success(`已取消订阅《${item.title}》第 ${item.season} 季`);
-      await load();
-    } catch (e) {
-      toast.error(message(e, '取消订阅失败'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const reopen = async (item: ISubscription) => {
-    setBusy(true);
-    try {
-      await ai.reopenSubscription({ title: item.title, season: item.season, tmdbid: item.tmdbid });
-      toast.success(`已继续订阅《${item.title}》第 ${item.season} 季`);
-      await load();
-    } catch (e) {
-      toast.error(message(e, '操作失败'));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const dismiss = (item: { title: string; season: number; tmdbid: number | null }) => run(
+    () => subscriptionApi.dismissSuggestion(item), `不再建议订阅《${item.title}》第 ${item.season} 季`, '操作失败');
+  const remove = (item: ISubscription) => run(
+    () => subscriptionApi.remove({ title: item.title, season: item.season, tmdbid: item.tmdbid }),
+    `已取消订阅《${item.title}》第 ${item.season} 季`, '取消订阅失败');
+  const reopen = (item: ISubscription) => run(
+    () => subscriptionApi.reopen({ title: item.title, season: item.season, tmdbid: item.tmdbid }),
+    `已继续订阅《${item.title}》第 ${item.season} 季`, '操作失败');
+  const restore = (item: IIgnoredWork) => run(() => subscriptionApi.unignoreWork(item), `已恢复接收《${item.title}》`, '恢复失败');
 
   const categories = [...new Set((data?.items ?? []).map((i) => i.category))];
   const shown = (data?.items ?? []).filter((i) => !category || i.category === category);
@@ -202,27 +168,13 @@ export default function SubscriptionsPage() {
       onRemove={() => void remove(item)} onReopen={() => void reopen(item)} />
   );
 
-  const restore = async (item: IIgnoredWork) => {
-    setBusy(true);
-    try {
-      await ai.unignoreWork(item);
-      toast.success(`已恢复接收《${item.title}》`);
-      await load();
-    } catch (e) {
-      toast.error(message(e, '恢复失败'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <Page
       title="追剧订阅"
       description="订阅的剧之后的新集直接转存，不再逐条等你确认；过滤规则、置信度、TMDB 匹配与分享清单校验照常生效。每日缺集巡检也会检查订阅的剧。"
     >
-      {loadError ? (
-        <EmptyState icon={CircleAlert} title="订阅读取失败" description={loadError}
-          action={<Button variant="outline" onClick={() => void load()}>重试</Button>} />
+      {subs.error && !data ? (
+        <ErrorState title="订阅读取失败" error={subs.error} onRetry={subs.reload} retrying={subs.loading} className="mb-5" />
       ) : null}
 
       {data?.inactive.length ? (
@@ -271,22 +223,17 @@ export default function SubscriptionsPage() {
           <Panel icon={BellRing} title="已订阅"
             description={data ? `共 ${data.items.length} 部${data.items.some((i) => i.finished)
               ? `，其中 ${data.items.filter((i) => i.finished).length} 部已完结` : ''}` : undefined}>
-            {!data ? <div className="space-y-3">{[0, 1].map((i) => <Skeleton key={i} className="h-12" />)}</div>
+            {!data ? (subs.error ? <p className="text-sm text-muted-foreground">读取失败，见页面上方。</p>
+              : <div className="space-y-3">{[0, 1].map((i) => <Skeleton key={i} className="h-12" />)}</div>)
               : data.items.length ? (
                 <div className="space-y-4">
                   {categories.length > 1 ? (
-                    <div role="radiogroup" aria-label="类型" className="inline-flex flex-wrap gap-1 rounded-lg bg-muted p-1">
-                      {['', ...categories].map((c) => (
-                        <button key={c || 'all'} type="button" role="radio" aria-checked={category === c} onClick={() => setCategory(c)}
-                          className={cn('rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:py-1',
-                            category === c ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground')}>
-                          {c || '全部'}
-                          <span className="ml-1 text-xs tabular-nums text-muted-foreground">
-                            {(data.items.filter((i) => !c || i.category === c)).length}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    <Segmented label="类型" size="md" value={category} onChange={setCategory}
+                      options={['', ...categories].map((c) => ({
+                        value: c,
+                        label: <>{c || '全部'}<span className="text-xs tabular-nums text-muted-foreground">
+                          {data.items.filter((i) => !c || i.category === c).length}</span></>,
+                      }))} />
                   ) : null}
                   {active.length ? <div className="divide-y divide-border/70">{active.map(row)}</div>
                     : <p className="text-sm text-muted-foreground">这个类型没有在追的剧。</p>}
@@ -304,7 +251,7 @@ export default function SubscriptionsPage() {
         <div className="min-w-0 space-y-5 lg:col-span-2">
           <Panel icon={Lightbulb} title="订阅建议"
             description="同一部剧同一季批准过至少 3 条、还没订阅的剧；满 3 条时也会在 Telegram 上问你一次。">
-            {!data ? <Skeleton className="h-20" /> : data.suggestions.length ? (
+            {!data ? (subs.error ? null : <Skeleton className="h-20" />) : data.suggestions.length ? (
               <div className="space-y-3">
                 {data.suggestions.map((s) => (
                   <div key={`${s.tmdbid ?? s.title}-${s.season}`} className="rounded-lg border border-border bg-background/60 p-3">
@@ -315,7 +262,7 @@ export default function SubscriptionsPage() {
                         <BellPlus />订阅第 {s.season} 季
                       </Button>
                       <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={busy}
-                        onClick={() => void dismiss({ title: s.title, season: s.season, tmdbid: s.tmdbid ?? null })}>
+                        onClick={() => void dismiss({ title: s.title, season: s.season, tmdbid: s.tmdbid })}>
                         不用了
                       </Button>
                     </div>
@@ -327,14 +274,16 @@ export default function SubscriptionsPage() {
 
           <Panel icon={Ban} title="不再接收"
             description="在 Telegram 审批卡片点「不再接收」的作品：之后的消息识别完直接忽略。">
-            {!ignored ? <Skeleton className="h-12" /> : ignored.length ? (
+            {!ignored ? (ignoredWorks.error
+              ? <ErrorState title="读取失败" error={ignoredWorks.error} onRetry={ignoredWorks.reload} retrying={ignoredWorks.loading} className="border-none py-6" />
+              : <Skeleton className="h-12" />) : ignored.length ? (
               <div className="divide-y divide-border/70">
                 {ignored.map((item) => (
                   <div key={`${item.kind ?? ''}-${item.tmdbid ?? item.title}`} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{item.title}</p>
                       <p className="text-xs text-muted-foreground">
-                        {item.kind === 'movie' ? '电影' : item.kind === 'tv' ? '剧集' : '按片名'}
+                        {item.kind ? MEDIA_TYPE_LABELS[item.kind] : '按片名'}
                         {item.tmdbid ? ` · TMDB ${item.tmdbid}` : ''}
                       </p>
                     </div>

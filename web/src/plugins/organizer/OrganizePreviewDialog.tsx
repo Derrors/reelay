@@ -1,12 +1,16 @@
 import { CircleAlert, FilePlay, FolderOpen, FolderRoot, FolderTree, LoaderCircle, Play } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api } from '@/api/client';
+import { configApi } from '@/api/config';
 import { EmptyState } from '@/components/app/EmptyState';
+import { Field } from '@/components/app/Field';
+import { Segmented } from '@/components/app/Segmented';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { useAsync } from '@/hooks/useAsync';
+import { MEDIA_TYPE_LABELS } from '@/lib/status';
 import { cn } from '@/lib/utils';
 import type { IOrganizePreviewItem } from './types';
 
@@ -24,10 +28,7 @@ const SOURCE_NOTE: Record<Recognized['tmdb'], string> = {
   failed: 'TMDB 查询失败，按文件名猜测，可手动修改',
 };
 
-const KINDS: Array<{ value: Kind; label: string }> = [
-  { value: 'tv', label: '剧集' },
-  { value: 'movie', label: '电影' },
-];
+const KINDS = (['tv', 'movie'] as const).map((value) => ({ value, label: MEDIA_TYPE_LABELS[value] }));
 
 // 像网盘里的原始文件名：带视频后缀，或带 S01E02、1080p 这类标记
 function looksLikeFileName(value: string): boolean {
@@ -38,21 +39,6 @@ function looksLikeFileName(value: string): boolean {
 
 function numbers(value: string): number[] {
   return value.split(/[，,\s]+/).map(Number).filter((item) => Number.isInteger(item) && item > 0);
-}
-
-function Field({ label, htmlFor, hint, extra, children }: {
-  label: string; htmlFor?: string; hint?: ReactNode; extra?: ReactNode; children: ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex min-h-5 items-center justify-between gap-2">
-        <label htmlFor={htmlFor} className="text-[13px] font-medium">{label}</label>
-        {extra}
-      </div>
-      {children}
-      {hint ? <p className="text-xs leading-5 text-muted-foreground">{hint}</p> : null}
-    </div>
-  );
 }
 
 /* ---------------- 目录树 ---------------- */
@@ -140,6 +126,14 @@ function PlanTree({ items }: { items: IOrganizePreviewItem[] }) {
 
 /* ---------------- 弹窗 ---------------- */
 
+/** 一次预览请求（preview_plan 的参数）；n 让同样的表单也能再生成一次。 */
+interface PlanRequest {
+  n: number;
+  parsed: Record<string, unknown>;
+  landed: Array<{ id: string; name: string }>;
+  naming: { movie?: string; tv?: string };
+}
+
 interface OrganizePreviewDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -156,13 +150,20 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
   const [season, setSeason] = useState('');
   const [episodes, setEpisodes] = useState('');
   const [files, setFiles] = useState('');
-  const [items, setItems] = useState<IOrganizePreviewItem[] | null>(null);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
   // 识别结果连同它对应的文件名一起存：文件名变了，旧结果自然失效
   const [recognition, setRecognition] = useState<{ names: string; result: Recognized | null } | null>(null);
   const [pending, setPending] = useState('');
-  const [autoRun, setAutoRun] = useState(0);
+  const [autoRun, setAutoRun] = useState({ requested: 0, handled: 0 });
+  const [request, setRequest] = useState<PlanRequest | null>(null);
+  // 媒体库整理插件的动作 preview_plan：按正在编辑的命名模板算出整理后的位置，不碰网盘
+  const plan = useAsync(() => {
+    if (!request) return Promise.resolve(null);
+    const { n: _n, ...payload } = request;
+    return configApi.extensionAction<{ items: IOrganizePreviewItem[] }>('organizer', 'preview_plan', payload);
+  }, [request], '无法生成整理方案');
+  const items = plan.data?.items ?? null;
+  const busy = request !== null && plan.loading;
+  const error = busy ? '' : plan.error;
   const resultRef = useRef<HTMLDivElement>(null);
 
   const landed = files.split('\n').map((name) => name.trim()).filter(Boolean)
@@ -177,7 +178,7 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
     let active = true;
     const timer = window.setTimeout(() => {
       setPending(names);
-      api.extensionAction<Recognized>('organizer', 'parse_names', { names: names.split('\n') }).then((g) => {
+      configApi.extensionAction<Recognized>('organizer', 'parse_names', { names: names.split('\n') }).then((g) => {
         if (!active) return;
         const fill = (field: string, set: (value: string) => void, value: string) => {
           if (!touched.current.has(field) && value) set(value);
@@ -188,7 +189,7 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
         fill('season', setSeason, g.season ? String(g.season) : '');
         fill('episodes', setEpisodes, g.episodes.join(', '));
         setRecognition({ names, result: g });
-        setAutoRun((n) => n + 1);
+        setAutoRun((run) => ({ ...run, requested: run.requested + 1 }));
       }).catch(() => {
         if (active) setRecognition({ names, result: null });  // 识别不出就让用户自己填
       });
@@ -214,13 +215,11 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
     edit('title', setTitle)(value);
   };
 
-  const preview = async () => {
-    if (!ready || busy) return;
-    setBusy(true);
-    setError('');
-    try {
-      const tv = kind === 'tv';
-      const parsed = {
+  const buildRequest = (): PlanRequest => {
+    const tv = kind === 'tv';
+    return {
+      n: (request?.n ?? 0) + 1,
+      parsed: {
         is_media: true,
         media_type: kind,
         title: title.trim(),
@@ -228,29 +227,25 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
         season: tv ? Number(season) || null : null,
         episodes: tv ? numbers(episodes) : [],
         raw_fields: tmdbid ? { tmdbid } : {},
-      };
-      // 媒体库整理插件的动作 preview_plan：按正在编辑的命名模板算出整理后的位置，不碰网盘
-      const result = await api.extensionAction<{ items: IOrganizePreviewItem[] }>('organizer', 'preview_plan', { parsed, landed, naming });
-      setItems(result.items);
-      // 窄屏下结果在表单下方，生成后自动滚过去。
-      if (window.matchMedia('(max-width: 1023px)').matches) {
-        requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-      }
-    } catch (err) {
-      setItems(null);
-      setError(err instanceof Error ? err.message : '无法生成整理方案');
-    } finally {
-      setBusy(false);
-    }
+      },
+      landed,
+      naming,
+    };
   };
+  const preview = () => { if (ready && !busy) setRequest(buildRequest()); };
 
+  // 识别完成、表单填好后自动跑一次；之后改了表单由用户点「生成预览」。在渲染时处理，表单已是识别后的值
+  if (autoRun.requested !== autoRun.handled) {
+    setAutoRun({ ...autoRun, handled: autoRun.requested });
+    if (ready) setRequest(buildRequest());
+  }
+
+  // 窄屏下结果在表单下方，生成后自动滚过去。
   useEffect(() => {
-    if (!autoRun) return;
-    // 识别完成、表单填好后自动跑一次；之后改了表单由用户点「生成预览」
-    const timer = window.setTimeout(() => void preview(), 0);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRun]);
+    if (!plan.data || !window.matchMedia('(max-width: 1023px)').matches) return;
+    const frame = requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    return () => cancelAnimationFrame(frame);
+  }, [plan.data]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -262,15 +257,13 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
           </DialogDescription>
         </DialogHeader>
         <div className="grid min-h-0 flex-1 grid-cols-1 items-start gap-5 overflow-y-auto px-5 pb-5 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
-          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void preview(); }}>
+          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); preview(); }}>
             <Field
               label="转存后的文件名"
-              htmlFor="organize-files"
               hint="每行一个，就是网盘里转存下来的原始文件名；贴进来后自动识别片名与季集并生成预览。"
               extra={<span className="text-xs tabular-nums text-muted-foreground">{landed.length} 个文件</span>}
             >
               <Textarea
-                id="organize-files"
                 value={files}
                 onChange={(e) => setFiles(e.target.value)}
                 placeholder={'在这里粘贴文件名，每行一个，例如：\n[死刑将至].Death.is.Coming.2026.S01E25.2160p…mp4'}
@@ -279,28 +272,13 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
                 className="min-h-36 resize-y bg-card font-mono text-xs leading-6"
               />
             </Field>
-            <Field label="资源类型">
-              <div role="radiogroup" aria-label="资源类型" className="grid grid-cols-2 rounded-lg bg-muted p-0.5">
-                {KINDS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={kind === option.value}
-                    onClick={() => { touched.current.add('kind'); setKind(option.value); }}
-                    className={cn(
-                      'min-h-8 rounded-md text-sm font-medium transition-colors',
-                      kind === option.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </Field>
+            <div className="space-y-1.5">
+              <p className="text-[13px] font-medium leading-5">资源类型</p>
+              <Segmented<Kind> label="资源类型" size="md" fill value={kind} options={KINDS}
+                onChange={(value) => { touched.current.add('kind'); setKind(value); }} />
+            </div>
             <Field
               label="片名"
-              htmlFor="organize-title"
               extra={recognizing
                 ? <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />识别中…</span>
                 : null}
@@ -308,21 +286,21 @@ export function OrganizePreviewDialog({ open, onOpenChange, naming }: OrganizePr
                 ? <>{SOURCE_NOTE[recognized.tmdb]}{tmdbid ? <span className="font-mono"> · tmdbid {tmdbid}</span> : null}</>
                 : null}
             >
-              <Input id="organize-title" className="bg-card" autoComplete="off" value={title} onChange={(e) => changeTitle(e.target.value)} placeholder="整理后的片名，如：死刑将至" />
+              <Input className="bg-card" autoComplete="off" value={title} onChange={(e) => changeTitle(e.target.value)} placeholder="整理后的片名，如：死刑将至" />
             </Field>
             <div className={cn('grid gap-3', kind === 'tv' && 'grid-cols-2')}>
-              <Field label="年份" htmlFor="organize-year">
-                <Input id="organize-year" className="bg-card" inputMode="numeric" value={year} onChange={(e) => edit('year', setYear)(e.target.value.replace(/\D/g, ''))} autoComplete="off" placeholder="选填" />
+              <Field label="年份">
+                <Input className="bg-card" inputMode="numeric" value={year} onChange={(e) => edit('year', setYear)(e.target.value.replace(/\D/g, ''))} autoComplete="off" placeholder="选填" />
               </Field>
               {kind === 'tv' ? (
-                <Field label="第几季" htmlFor="organize-season">
-                  <Input id="organize-season" className="bg-card" inputMode="numeric" value={season} onChange={(e) => edit('season', setSeason)(e.target.value.replace(/\D/g, ''))} autoComplete="off" placeholder="不填为 1" />
+                <Field label="第几季">
+                  <Input className="bg-card" inputMode="numeric" value={season} onChange={(e) => edit('season', setSeason)(e.target.value.replace(/\D/g, ''))} autoComplete="off" placeholder="不填为 1" />
                 </Field>
               ) : null}
             </div>
             {kind === 'tv' ? (
-              <Field label="包含哪几集" htmlFor="organize-episodes" hint="用逗号或空格分隔，例如 1, 2, 3。">
-                <Input id="organize-episodes" className="bg-card" value={episodes} autoComplete="off" onChange={(e) => edit('episodes', setEpisodes)(e.target.value)} placeholder="不填则按文件名识别" />
+              <Field label="包含哪几集" hint="用逗号或空格分隔，例如 1, 2, 3。">
+                <Input className="bg-card" value={episodes} autoComplete="off" onChange={(e) => edit('episodes', setEpisodes)(e.target.value)} placeholder="不填则按文件名识别" />
               </Field>
             ) : null}
             <Button type="submit" className="h-10 w-full" disabled={busy || !ready}>

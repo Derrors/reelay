@@ -4,10 +4,10 @@ import Auth115Card from '@/components/Auth115Card';
 import { Panel } from '@/components/app/Panel';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { fullTime, relativeTime } from '@/lib/format';
-import { connectionLabels } from '@/lib/status';
+import { connectionMeta } from '@/lib/status';
 import type { IConnection } from '@/lib/types';
+import type { Obj } from '@/lib/values';
 import { P115LimitsPanel } from './ServiceTabs';
-import { CONNECTION_TONE, type Obj } from './shared';
 
 const ICONS: Record<string, LucideIcon> = { telegram: Send, control_bot: Bot, llm: Sparkles, tmdb: Film };
 
@@ -31,9 +31,7 @@ export function ConnectionsTab({ connections, config, setField }: {
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium leading-6">{c.label}</p>
-                    <ToneBadge tone={CONNECTION_TONE[c.status] ?? 'neutral'} className="mt-1">
-                      {connectionLabels[c.status] ?? '状态未知'}
-                    </ToneBadge>
+                    <ToneBadge tone={connectionMeta(c.status).tone} className="mt-1">{connectionMeta(c.status).label}</ToneBadge>
                     <p className="mt-1.5 text-xs text-muted-foreground">
                       {c.observed_at
                         ? <span title={fullTime(c.observed_at)}>更新于 {relativeTime(c.observed_at)}</span>

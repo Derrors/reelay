@@ -1,30 +1,14 @@
 import { BrainCircuit, Clock3, Gauge, Layers } from 'lucide-react';
 import { Panel, PanelColumns } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
+import { Field } from '@/components/app/Field';
 import { Input } from '@/components/ui/input';
-import { llmFormatLabels, timeoutActionLabels } from '@/lib/status';
+import { llmFormatLabels, RELEASE_OPTIONS, timeoutActionLabels } from '@/lib/status';
 import { cn } from '@/lib/utils';
-import { Field, SwitchRow } from './fields';
-import { obj, strings, text, type Obj } from './shared';
-
-const numberOrBlank = (raw: string) => (raw === '' ? '' : Number(raw));
+import { numberOrBlank, obj, strings, text, type Obj } from '@/lib/values';
+import { SwitchRow } from './fields';
 
 type Option = { value: string; label: string };
-const SUBTITLES: Option[] = [
-  { value: 'chs', label: '简体中字' }, { value: 'cht', label: '繁体中字' }, { value: 'eng', label: '英字' },
-  { value: 'jpn', label: '日字' }, { value: 'kor', label: '韩字' },
-];
-const AUDIO: Option[] = [
-  { value: 'mandarin', label: '国语' }, { value: 'cantonese', label: '粤语' }, { value: 'english', label: '英语' },
-  { value: 'japanese', label: '日语' }, { value: 'korean', label: '韩语' },
-];
-const SOURCES: Option[] = [
-  { value: 'remux', label: 'Remux' }, { value: 'bluray', label: '蓝光' }, { value: 'web-dl', label: 'WEB-DL' },
-  { value: 'webrip', label: 'WEBRip' }, { value: 'hdtv', label: 'HDTV' }, { value: 'dvd', label: 'DVD' },
-];
-const HDR: Option[] = [
-  { value: 'any', label: '不在意' }, { value: 'prefer', label: '优先 HDR / 杜比视界' }, { value: 'avoid', label: '避开 HDR（设备不支持）' },
-];
 
 /** 有序多选：点选的顺序就是优先级，再点一次取消。 */
 function OrderedChips({ label, options, value, onChange }: {
@@ -37,7 +21,7 @@ function OrderedChips({ label, options, value, onChange }: {
         return (
           <button key={option.value} type="button" aria-pressed={rank >= 0}
             onClick={() => onChange(rank >= 0 ? value.filter((v) => v !== option.value) : [...value, option.value])}
-            className={cn('inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-xs transition-colors',
+            className={cn('inline-flex h-9 items-center gap-1 rounded-full border px-2.5 text-xs transition-colors sm:h-7',
               rank >= 0 ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/60')}>
             {rank >= 0 ? <span className="grid size-4 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">{rank + 1}</span> : null}
             {option.label}
@@ -96,19 +80,19 @@ export function RecognitionTab({ config, setField }: {
           bodyClassName="p-4 sm:p-5">
           <div className="space-y-4">
             <Field label="优先的字幕" hint="按点选顺序排优先级；都不选表示不看字幕。">
-              <OrderedChips label="优先的字幕" options={SUBTITLES} value={strings(release.prefer_subtitles)}
+              <OrderedChips label="优先的字幕" options={RELEASE_OPTIONS.subtitles} value={strings(release.prefer_subtitles)}
                 onChange={v => setField('release', 'prefer_subtitles', v)} />
             </Field>
             <Field label="优先的音轨">
-              <OrderedChips label="优先的音轨" options={AUDIO} value={strings(release.prefer_audio)}
+              <OrderedChips label="优先的音轨" options={RELEASE_OPTIONS.audio} value={strings(release.prefer_audio)}
                 onChange={v => setField('release', 'prefer_audio', v)} />
             </Field>
             <Field label="优先的片源">
-              <OrderedChips label="优先的片源" options={SOURCES} value={strings(release.prefer_sources)}
+              <OrderedChips label="优先的片源" options={RELEASE_OPTIONS.sources} value={strings(release.prefer_sources)}
                 onChange={v => setField('release', 'prefer_sources', v)} />
             </Field>
             <Field label="HDR">
-              <Select value={text(release.hdr) || 'any'} onValueChange={v => setField('release', 'hdr', v)} options={HDR} />
+              <Select value={text(release.hdr) || 'any'} onValueChange={v => setField('release', 'hdr', v)} options={RELEASE_OPTIONS.hdr} />
             </Field>
           </div>
         </Panel>

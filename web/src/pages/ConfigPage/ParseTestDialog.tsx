@@ -1,8 +1,9 @@
 import { CircleCheck, CircleX, ListFilter, LoaderCircle, Play, ScanSearch } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
-import { extras } from '@/api/extras';
+import { sourceApi, type IConfidence, type ITestParseResp } from '@/api/sources';
 import { EmptyState } from '@/components/app/EmptyState';
+import { Field } from '@/components/app/Field';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
 import { ToneBadge } from '@/components/app/StatusBadge';
@@ -10,54 +11,18 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { CONFIDENCE_CAP_LABELS, decisionLabels, TONE_CLASS, type Tone } from '@/lib/status';
-import type { IParsedResource } from '@/lib/types';
-import { cn } from '@/lib/utils';
-import type { Obj } from './shared';
+import { CONFIDENCE_CAP_LABELS, CONFIDENCE_CHECK_LABELS, DECISION_META, TONE_CLASS, type Tone } from '@/lib/status';
+import { cn, errorMessage } from '@/lib/utils';
+import type { Obj } from '@/lib/values';
 
 const SAMPLE = '📺 示例剧名 (2026) S01E01 ✨4K WEB-DL\n💾 大小：1.2 GB\n🔗 链接：https://115cdn.com/s/swabc123?password=x1y2';
 
-/** /api/sources/test-parse 的完整返回；extras.ts 里的类型只声明了前两项。 */
-interface IConfidence {
-  score: number;
-  checks?: Record<string, boolean>;
-  caps?: string[];
-  note?: string;
-}
-interface ITestParseResult {
-  parsed: IParsedResource | null;
-  decision: string;
-  confidence: IConfidence | null;
-  trail?: string[];
-}
-
-const DECISION_META: Record<string, { tone: Tone; hint: string }> = {
-  save: { tone: 'success', hint: '符合当前规则，会直接进入转存。' },
-  ask: { tone: 'warning', hint: '会进入「待审批」，等你确认后再转存。' },
-  skip: { tone: 'neutral', hint: '不符合当前规则，会被忽略，不会转存。' },
+/** 每种决策在这里的说明（标签与色调见 DECISION_META）。 */
+const DECISION_HINTS: Record<string, string> = {
+  save: '符合当前规则，会直接进入转存。',
+  ask: '会进入「待审批」，等你确认后再转存。',
+  skip: '不符合当前规则，会被忽略，不会转存。',
 };
-
-const CHECK_LABELS: Record<string, string> = {
-  title: '片名',
-  type: '类型与集数',
-  year: '年份',
-  tmdb: 'TMDB 匹配',
-};
-
-function Field({ label, htmlFor, hint, extra, children }: {
-  label: string; htmlFor: string; hint?: ReactNode; extra?: ReactNode; children: ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex min-h-5 items-center justify-between gap-2">
-        <label htmlFor={htmlFor} className="text-[13px] font-medium">{label}</label>
-        {extra}
-      </div>
-      {children}
-      {hint ? <p className="text-xs leading-5 text-muted-foreground">{hint}</p> : null}
-    </div>
-  );
-}
 
 function Section({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
@@ -90,7 +55,7 @@ function ConfidenceBlock({ confidence }: { confidence: IConfidence }) {
               {ok
                 ? <CircleCheck className="size-3.5 shrink-0 text-success" />
                 : <CircleX className="size-3.5 shrink-0 text-destructive" />}
-              <span className={ok ? 'text-foreground/80' : 'text-muted-foreground'}>{CHECK_LABELS[key] ?? key}</span>
+              <span className={ok ? 'text-foreground/80' : 'text-muted-foreground'}>{CONFIDENCE_CHECK_LABELS[key] ?? key}</span>
             </li>
           ))}
         </ul>
@@ -125,7 +90,7 @@ function Trail({ entries }: { entries: string[] }) {
   );
 }
 
-function ResultView({ result }: { result: ITestParseResult }) {
+function ResultView({ result }: { result: ITestParseResp }) {
   const p = result.parsed;
   const posterPath = typeof p?.raw_fields?.poster_path === 'string' ? p.raw_fields.poster_path : null;
   const hasLink = Boolean(p?.share_code);
@@ -193,7 +158,7 @@ export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogP
   const [text, setText] = useState(SAMPLE);
   const [urls, setUrls] = useState('');
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ITestParseResult | null>(null);
+  const [result, setResult] = useState<ITestParseResp | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const bot = String(source.bot ?? '').trim();
 
@@ -201,20 +166,19 @@ export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogP
     if (!text.trim() || busy) return;
     setBusy(true);
     try {
-      const r = (await extras.testParse(text, urls.split(/[\s,，]+/).filter(Boolean), bot, source)) as ITestParseResult;
-      setResult(r);
+      setResult(await sourceApi.testParse(text, urls.split(/[\s,，]+/).filter(Boolean), bot, source));
       // 窄屏下结果在表单下方，识别完自动滚过去。
       if (window.matchMedia('(max-width: 1023px)').matches) {
         requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '识别失败');
+      toast.error(errorMessage(e, '识别失败'));
     } finally {
       setBusy(false);
     }
   };
 
-  const decisionMeta = result ? DECISION_META[result.decision] : null;
+  const decision = result ? DECISION_META[result.decision] : undefined;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -229,7 +193,6 @@ export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogP
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void run(); }}>
             <Field
               label="消息正文"
-              htmlFor="test-text"
               extra={text !== SAMPLE ? (
                 <button type="button" onClick={() => setText(SAMPLE)} className="text-xs font-medium text-primary hover:underline">
                   填入示例
@@ -237,7 +200,6 @@ export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogP
               ) : null}
             >
               <Textarea
-                id="test-text"
                 className="min-h-48 bg-card text-[13px] leading-6"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
@@ -245,9 +207,8 @@ export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogP
                 placeholder="把资源 Bot 发来的消息原样粘贴到这里"
               />
             </Field>
-            <Field label="跳转链接（可选）" htmlFor="test-urls" hint="消息按钮背后的真实链接；多个用空格或逗号分隔。">
+            <Field label="跳转链接（可选）" hint="消息按钮背后的真实链接；多个用空格或逗号分隔。">
               <Input
-                id="test-urls"
                 className="bg-card"
                 placeholder="https://115cdn.com/s/…"
                 value={urls}
@@ -270,10 +231,10 @@ export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogP
             <div className="mb-3 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="text-[13px] font-medium">识别结果</h3>
-                <p className="mt-0.5 text-xs text-muted-foreground">{decisionMeta?.hint ?? '与真实流程一致，但只用于预览，不会保存'}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{(result && DECISION_HINTS[result.decision]) ?? '与真实流程一致，但只用于预览，不会保存'}</p>
               </div>
-              {result && decisionMeta ? (
-                <ToneBadge tone={decisionMeta.tone} className="shrink-0 px-2.5 py-1 text-[13px]">{decisionLabels[result.decision]}</ToneBadge>
+              {decision ? (
+                <ToneBadge tone={decision.tone} className="shrink-0 px-2.5 py-1 text-[13px]">{decision.label}</ToneBadge>
               ) : null}
             </div>
             {result ? (

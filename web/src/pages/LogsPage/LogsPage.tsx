@@ -1,15 +1,19 @@
 import { ArrowDown, CircleAlert, Pause, Play, RefreshCw, ScrollText, Search, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { extras } from '@/api/extras';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { logApi } from '@/api/logs';
 import { EmptyState } from '@/components/app/EmptyState';
+import { ErrorState } from '@/components/app/ErrorState';
 import { Page } from '@/components/app/Page';
 import { Panel } from '@/components/app/Panel';
+import { Segmented, SegmentCount } from '@/components/app/Segmented';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAsync } from '@/hooks/useAsync';
+import { useDebounced } from '@/hooks/useDebounced';
 import { confirmDialog } from '@/lib/confirm';
-import { cn } from '@/lib/utils';
+import { cn, errorMessage } from '@/lib/utils';
 
 const FETCH_LIMIT = 600;
 const REFRESH_MS = 5000;
@@ -65,49 +69,30 @@ function highlight(text: string, query: string): ReactNode {
 }
 
 export default function LogsPage() {
-  const [lines, setLines] = useState<string[] | null>(null);
-  const [path, setPath] = useState('');
-  const [missing, setMissing] = useState(false);
-  const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [submitted, setSubmitted] = useState('');
+  const submitted = useDebounced(query);
   const [filter, setFilter] = useState<LevelFilter>('all');
   const [auto, setAuto] = useState(true);
-  const [loading, setLoading] = useState(false);
-  /** 当前显示的日志对应的搜索词；与输入不一致时说明结果还在路上。 */
-  const [shownQuery, setShownQuery] = useState('');
   const [atBottom, setAtBottom] = useState(true);
   const viewport = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
 
-  // 搜索输入防抖
+  // 换了搜索词时旧结果直接作废；自动刷新的多个请求按发出顺序生效（见 useAsync）
+  const logs = useAsync(() => logApi.list(FETCH_LIMIT, submitted || undefined).then((r) => ({ ...r, query: submitted })),
+    [submitted], '读取日志失败');
+  const { reload } = logs;
   useEffect(() => {
-    const timer = window.setTimeout(() => setSubmitted(query.trim()), 300);
-    return () => window.clearTimeout(timer);
-  }, [query]);
+    if (!auto) return;
+    const timer = window.setInterval(() => { if (!document.hidden) reload(); }, REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [auto, reload]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await extras.logs(FETCH_LIMIT, submitted || undefined);
-      setLines(r.exists ? r.lines : []);
-      setMissing(!r.exists);
-      setPath(r.path);
-      setShownQuery(submitted);
-      setError('');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '读取日志失败');
-    } finally {
-      setLoading(false);
-    }
-  }, [submitted]);
-
-  useEffect(() => {
-    const initial = window.setTimeout(() => void load(), 0);
-    if (!auto) return () => window.clearTimeout(initial);
-    const timer = window.setInterval(() => { if (!document.hidden) void load(); }, REFRESH_MS);
-    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
-  }, [auto, load]);
+  const lines = useMemo(() => (logs.data ? (logs.data.exists ? logs.data.lines : []) : null), [logs.data]);
+  const missing = logs.data ? !logs.data.exists : false;
+  const path = logs.data?.path ?? '';
+  const error = logs.error;
+  /** 当前显示的日志对应的搜索词；stale 时新搜索词的结果还在路上。 */
+  const shownQuery = logs.data?.query ?? '';
 
   const [clearing, setClearing] = useState(false);
   const clear = async () => {
@@ -118,11 +103,11 @@ export default function LogsPage() {
     }))) return;
     setClearing(true);
     try {
-      const r = await extras.clearLogs();
+      const r = await logApi.clear();
       toast.success(`日志已清空，释放 ${(r.freed / 1024 / 1024).toFixed(1)} MB`);
-      await load();
+      reload();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '清空日志失败');
+      toast.error(errorMessage(e, '清空日志失败'));
     } finally {
       setClearing(false);
     }
@@ -163,23 +148,15 @@ export default function LogsPage() {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   };
 
-  const filters: Array<{ value: LevelFilter; label: string; count: number }> = [
+  const filters: Array<{ value: LevelFilter; label: string; count: number; tone?: 'warning' | 'danger' }> = [
     { value: 'all', label: '全部', count: counts.all },
-    { value: 'warning', label: '警告及以上', count: counts.warning },
-    { value: 'error', label: '错误', count: counts.error },
+    { value: 'warning', label: '警告及以上', count: counts.warning, tone: 'warning' },
+    { value: 'error', label: '错误', count: counts.error, tone: 'danger' },
   ];
 
   let body: ReactNode;
   if (error && lines === null) {
-    body = (
-      <EmptyState
-        icon={CircleAlert}
-        title="读取日志失败"
-        description={error}
-        action={<Button variant="outline" onClick={() => void load()}><RefreshCw />重试</Button>}
-        className="m-4 border-none"
-      />
-    );
+    body = <ErrorState title="读取日志失败" error={error} onRetry={reload} retrying={logs.loading} className="m-4 border-none" />;
   } else if (lines === null) {
     body = <div className="space-y-2 p-4">{[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-4" style={{ width: `${90 - i * 9}%` }} />)}</div>;
   } else if (missing) {
@@ -202,7 +179,7 @@ export default function LogsPage() {
           aria-label="运行日志"
           className={cn(
             'h-[62vh] min-h-[360px] overflow-auto bg-muted/35 py-2 font-mono text-xs leading-5 transition-opacity',
-            shownQuery !== submitted && 'opacity-60',
+            logs.stale && 'opacity-60',
           )}
         >
           {visible.length ? visible.map((line) => {
@@ -243,12 +220,12 @@ export default function LogsPage() {
       description="监听、识别、转存和通知的运行记录，用来排查问题。"
       actions={(
         <>
-          <Button variant="outline" className="bg-card" onClick={() => setAuto((v) => !v)} aria-pressed={auto}>
+          <Button variant="outline" className="bg-card" onClick={() => { if (!auto) reload(); setAuto(!auto); }} aria-pressed={auto}>
             {auto ? <Pause /> : <Play />}
             {auto ? '暂停刷新' : '自动刷新'}
           </Button>
-          <Button variant="outline" className="bg-card" disabled={loading} onClick={() => void load()}>
-            <RefreshCw className={cn(loading && 'animate-spin')} />刷新
+          <Button variant="outline" className="bg-card" disabled={logs.loading} onClick={reload}>
+            <RefreshCw className={cn(logs.loading && 'animate-spin')} />刷新
           </Button>
           <Button variant="outline" className="bg-card hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
             disabled={clearing || missing} onClick={() => void clear()}>
@@ -273,37 +250,16 @@ export default function LogsPage() {
                 type="button"
                 onClick={() => setQuery('')}
                 aria-label="清空搜索"
-                className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                className="absolute right-1 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground sm:right-1.5 sm:size-7"
               >
                 <X className="size-3.5" />
               </button>
             ) : null}
           </div>
-          <div role="radiogroup" aria-label="日志级别" className="inline-flex shrink-0 self-start rounded-lg bg-muted p-0.5 sm:self-auto">
-            {filters.map((f) => (
-              <button
-                key={f.value}
-                type="button"
-                role="radio"
-                aria-checked={filter === f.value}
-                onClick={() => setFilter(f.value)}
-                className={cn(
-                  'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
-                  filter === f.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {f.label}
-                <span className={cn(
-                  'rounded-full px-1.5 text-[11px] tabular-nums',
-                  f.value === 'error' && f.count ? 'bg-destructive/10 text-destructive'
-                    : f.value === 'warning' && f.count ? 'bg-warning/12 text-warning'
-                      : 'bg-background text-muted-foreground',
-                )}>
-                  {f.count}
-                </span>
-              </button>
-            ))}
-          </div>
+          <Segmented<LevelFilter>
+            label="日志级别" value={filter} onChange={setFilter} className="shrink-0 self-start sm:self-auto"
+            options={filters.map((f) => ({ value: f.value, label: <>{f.label}<SegmentCount count={f.count} tone={f.tone} /></> }))}
+          />
         </div>
 
         {error && lines !== null ? (

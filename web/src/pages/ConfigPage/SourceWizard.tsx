@@ -1,17 +1,17 @@
-import { Loader2, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { ai, type ISourceDraft } from '@/api/ai';
+import { sourceApi, type ISourceDraft } from '@/api/sources';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { compactEpisodes } from '@/lib/format';
-import { approvalLabels, decisionLabels, type Tone } from '@/lib/status';
-import { obj, strings, text, type Obj } from './shared';
+import { approvalLabels, DECISION_META, PROVIDER_LABELS } from '@/lib/status';
+import { errorMessage } from '@/lib/utils';
+import { obj, strings, text, type Obj } from '@/lib/values';
+import { SampleList } from './SampleList';
 
-const DECISION_TONE: Record<string, Tone> = { save: 'success', ask: 'warning', skip: 'neutral' };
 const MAX_SAMPLES = 10;
 
 interface SourceWizardProps {
@@ -35,9 +35,9 @@ export function SourceWizard({ open, onOpenChange, onAdd }: SourceWizardProps) {
     setBusy(true);
     setResult(null);
     try {
-      setResult(await ai.draftSource(bot.trim(), filled));
+      setResult(await sourceApi.draft(bot.trim(), filled));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '起草失败');
+      toast.error(errorMessage(e, '起草失败'));
     } finally {
       setBusy(false);
     }
@@ -62,19 +62,7 @@ export function SourceWizard({ open, onOpenChange, onAdd }: SourceWizardProps) {
           </label>
           <div className="space-y-2">
             <span className="text-[13px] font-medium">样例消息</span>
-            {samples.map((sample, i) => (
-              <div key={i} className="flex gap-2">
-                <Textarea value={sample} className="min-h-16 bg-card text-xs" placeholder={`第 ${i + 1} 条消息`}
-                  onChange={(e) => setSamples((prev) => prev.map((s, n) => (n === i ? e.target.value : s)))} />
-                {samples.length > 1 ? (
-                  <Button variant="ghost" size="icon" className="size-8 shrink-0 text-muted-foreground" aria-label="删除这条样例"
-                    onClick={() => setSamples((prev) => prev.filter((_, n) => n !== i))}><Trash2 /></Button>
-                ) : null}
-              </div>
-            ))}
-            {samples.length < MAX_SAMPLES ? (
-              <Button variant="outline" size="sm" onClick={() => setSamples((prev) => [...prev, ''])}><Plus />再加一条</Button>
-            ) : null}
+            <SampleList samples={samples} onChange={setSamples} max={MAX_SAMPLES} />
           </div>
 
           {result ? (
@@ -82,7 +70,7 @@ export function SourceWizard({ open, onOpenChange, onAdd }: SourceWizardProps) {
               <p className="text-sm font-medium leading-6">{result.summary}</p>
               <dl className="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-[13px] leading-5">
                 <dt className="text-muted-foreground">确认方式</dt><dd>{approvalLabels[text(rule.approval_mode)] ?? text(rule.approval_mode)}</dd>
-                <dt className="text-muted-foreground">识别方式</dt><dd>{text(rule.parser) === 'regex' ? '规则识别' : 'AI 识别'}</dd>
+                <dt className="text-muted-foreground">识别方式</dt><dd>{PROVIDER_LABELS.parser[text(rule.parser) || 'llm'] ?? text(rule.parser)}</dd>
                 <dt className="text-muted-foreground">保存到</dt><dd>{text(rule.save_to)}</dd>
                 <dt className="text-muted-foreground">集数依据</dt><dd>{text(rule.episodes_from) === 'message' ? '只转存消息写明的集' : '以分享里的文件为准'}</dd>
                 <dt className="text-muted-foreground">必须包含</dt><dd>{strings(filters.must_have).join('、') || '不限'}</dd>
@@ -96,7 +84,7 @@ export function SourceWizard({ open, onOpenChange, onAdd }: SourceWizardProps) {
                 <ul className="space-y-1.5">
                   {result.results.map((r, i) => (
                     <li key={i} className="flex items-start gap-2 rounded-md bg-card px-2.5 py-1.5 text-xs leading-5">
-                      <ToneBadge tone={DECISION_TONE[r.decision] ?? 'neutral'}>{decisionLabels[r.decision] ?? r.decision}</ToneBadge>
+                      <ToneBadge tone={DECISION_META[r.decision]?.tone ?? 'neutral'}>{DECISION_META[r.decision]?.label ?? r.decision}</ToneBadge>
                       <span className="min-w-0">
                         <span className="block truncate">{r.title ? `《${r.title}》` : r.preview || '（空消息）'}
                           {r.episodes?.length ? ` ${compactEpisodes(r.episodes)}` : ''}{r.resolution ? ` · ${r.resolution}` : ''}</span>

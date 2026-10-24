@@ -1,12 +1,12 @@
 import type { ReactNode } from 'react';
 import { ArrowDown, ArrowRight, CheckCircle2, Clock3, Waypoints } from 'lucide-react';
 import { Panel } from '@/components/app/Panel';
+import { STAGE_LABELS } from '@/lib/status';
 import type { IExtension } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { LAYOUT_LABELS } from '@/plugins/organizer/layouts';
-import {
-  PER_SOURCE_SLOTS, STAGE_LABELS, isEnabled, obj, providerLabel, rows, stageNames, strings, text, type Catalog, type Obj,
-} from './shared';
+import { getPath, obj, rows, strings, text, type Obj } from '@/lib/values';
+import { PLUGIN_UI } from '@/plugins';
+import { PER_SOURCE_SLOTS, isEnabled, providerLabel, stageNames, type Catalog } from './shared';
 
 interface FlowOverviewProps {
   catalog: Catalog;
@@ -109,9 +109,9 @@ export function FlowOverview({ catalog, hooks, events, config }: FlowOverviewPro
   const at = (stage: string) => hooks.filter(x => slotsOf(x).includes(stage));
   // 不认识的环节（外部插件）放在最后，至少能在图上看到
   const other = hooks.filter(x => !slotsOf(x).some(s => HOOK_STAGES.includes(s)));
-  // 媒体库整理在转存前选目录：标出当前的目录方式
-  const layout = LAYOUT_LABELS[text(obj(plugins.organizer).layout)];
-  const metaAt = (stage: string, x: IExtension) => (stage === 'before_save' && x.name === 'organizer' ? layout : undefined);
+  // 插件可以在节点旁补一句当前设置（如媒体库整理的目录方式），见 plugins/index.ts
+  const metaAt = (stage: string, x: IExtension) =>
+    (x.config_type ? PLUGIN_UI[x.config_type]?.flowNote?.(obj(getPath(config, x.config_section)), stage) : undefined);
   const nodes = (items: IExtension[], stage = '') =>
     items.map(x => <PluginNode key={x.name} x={x} enabled={isEnabled(x, plugins)} meta={metaAt(stage, x)} />);
   const group = (stage: string, items = at(stage)) =>

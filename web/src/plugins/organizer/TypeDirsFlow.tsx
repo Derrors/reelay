@@ -1,4 +1,5 @@
-import { at, text, type PluginEditorProps } from '../types';
+import { at, text } from '@/lib/values';
+import type { PluginEditorProps } from '../types';
 import { Branch, FolderInputNode, GraphCanvas, RootNode, RuleNode } from './FlowGraph';
 
 const CHIP = 'rounded bg-muted px-1.5 py-px text-[11px] text-foreground/85';

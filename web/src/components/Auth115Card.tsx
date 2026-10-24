@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   AlertTriangle, ChevronDown, CircleAlert, FolderCog, KeyRound, Link2, Loader2, QrCode, RefreshCw,
@@ -9,23 +9,15 @@ import { Panel } from '@/components/app/Panel';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { extras, type IAuth115Side, type IAuth115Status } from '@/api/extras';
+import { storageApi, type IAuth115Side, type QrMode } from '@/api/storage';
+import { useAsync } from '@/hooks/useAsync';
 import { fullTime, relativeTime } from '@/lib/format';
 import { confirmDialog } from '@/lib/confirm';
-import type { Tone } from '@/lib/status';
-
-type QrMode = 'cookie' | 'oauth';
-
-const STATE_META: Record<string, { label: string; tone: Tone }> = {
-  active: { label: '连接正常', tone: 'success' },
-  expired: { label: '凭证失效', tone: 'danger' },
-  error: { label: '连接异常', tone: 'danger' },
-  unknown: { label: '等待检测', tone: 'info' },
-};
+import { connectionMeta } from '@/lib/status';
+import { errorMessage } from '@/lib/utils';
 
 function SideBadge({ side }: { side?: IAuth115Side }) {
-  if (!side?.configured) return <ToneBadge tone="neutral">未配置</ToneBadge>;
-  const meta = STATE_META[side.state] ?? STATE_META.unknown;
+  const meta = connectionMeta(side?.configured ? side.state : 'not_configured');
   return <ToneBadge tone={meta.tone}>{meta.label}</ToneBadge>;
 }
 
@@ -60,8 +52,10 @@ function MethodCard({ icon: Icon, step, title, side, description, detail, childr
 }
 
 export default function Auth115Card() {
-  const [status, setStatus] = useState<IAuth115Status | null>(null);
-  const [statusError, setStatusError] = useState('');
+  const loaded = useAsync(() => storageApi.auth115Status(), [], '读取 115 连接状态失败');
+  const { reload: loadStatus, mutate } = loaded;
+  const status = loaded.data;
+  const statusError = loaded.error;
   const [cookieText, setCookieText] = useState('');
   const [savingCookie, setSavingCookie] = useState(false);
   const [pinging, setPinging] = useState(false);
@@ -71,29 +65,15 @@ export default function Auth115Card() {
   const [qrMsg, setQrMsg] = useState('');
   const [qrBusy, setQrBusy] = useState<QrMode | null>(null);
 
-  const loadStatus = useCallback(async () => {
-    try {
-      setStatusError('');
-      setStatus(await extras.auth115Status());
-    } catch (err) {
-      setStatusError(err instanceof Error ? err.message : '读取 115 连接状态失败');
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => void loadStatus(), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadStatus]);
-
   const ping = async () => {
     setPinging(true);
     try {
-      const r = await extras.auth115Ping();
-      setStatus(r.status);
+      const r = await storageApi.auth115Ping();
+      mutate(() => r.status);
       toast.success('检测完成');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '检测失败');
-      await loadStatus();
+      toast.error(errorMessage(err, '检测失败'));
+      loadStatus();
     } finally {
       setPinging(false);
     }
@@ -104,12 +84,12 @@ export default function Auth115Card() {
     if (!cookies) { toast.error('请先粘贴登录信息'); return; }
     setSavingCookie(true);
     try {
-      const r = await extras.auth115SetCookie(cookies);
+      const r = await storageApi.auth115SetCookie(cookies);
       toast.success(r.state === 'active' ? '登录信息已保存，检测通过' : '登录信息已保存');
       setCookieText('');
-      await loadStatus();
+      loadStatus();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '登录信息保存失败');
+      toast.error(errorMessage(err, '登录信息保存失败'));
     } finally {
       setSavingCookie(false);
     }
@@ -121,7 +101,7 @@ export default function Auth115Card() {
     setQrBusy(mode);
     setQrMsg('');
     try {
-      const info = mode === 'cookie' ? await extras.auth115CookieQrStart() : await extras.auth115QrStart();
+      const info = await storageApi.qrStart(mode);
       setQrMode(mode);
       setQrUrl(info.qrcode_url);
       setQrUid(info.uid);
@@ -129,7 +109,7 @@ export default function Auth115Card() {
         ? '请在 115 App 中确认登录，完成后会自动保存'
         : '请在 115 App 中确认授权文件管理');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '申请授权二维码失败');
+      toast.error(errorMessage(err, '申请授权二维码失败'));
       stopQr();
     } finally {
       setQrBusy(null);
@@ -142,16 +122,14 @@ export default function Auth115Card() {
     let timeout: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const r = qrMode === 'cookie'
-          ? await extras.auth115CookieQrStatus(qrUid)
-          : await extras.auth115QrStatus(qrUid);
+        const r = await storageApi.qrStatus(qrMode, qrUid);
         if (cancelled) return;
         setQrMsg(r.message);
         if (r.authenticated) {
           const label = qrMode === 'cookie' ? '115 登录成功' : '文件管理授权成功';
           setQrMode(null); setQrUrl(null); setQrUid(null);
           toast.success(label);
-          await loadStatus();
+          loadStatus();
           return;
         }
         if (r.status === -1 || r.status === -2) {
@@ -161,7 +139,7 @@ export default function Auth115Card() {
         timeout = setTimeout(() => void poll(), 2500);
       } catch (err) {
         if (cancelled) return;
-        setQrMsg(err instanceof Error ? err.message : '查询扫码状态失败');
+        setQrMsg(errorMessage(err, '查询扫码状态失败'));
         setQrMode(null); setQrUrl(null); setQrUid(null);
       }
     };
@@ -176,18 +154,16 @@ export default function Auth115Card() {
       confirmText: '取消授权', cancelText: '保留授权', destructive: true,
     }))) return;
     try {
-      await extras.auth115ClearOauth();
+      await storageApi.auth115ClearOauth();
       toast.success('已取消文件管理授权');
-      await loadStatus();
+      loadStatus();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '取消授权失败');
+      toast.error(errorMessage(err, '取消授权失败'));
     }
   };
 
   const readyCount = Number(Boolean(status?.cookie.configured)) + Number(Boolean(status?.oauth.configured));
-  const qrImage = qrMode === 'cookie' && qrUid
-    ? extras.auth115CookieQrImageUrl(qrUid)
-    : qrUid ? extras.auth115QrImageUrl(qrUid) : '';
+  const qrImage = qrMode && qrUid ? storageApi.qrImageUrl(qrMode, qrUid) : '';
   const scanDisabled = Boolean(qrMode) || qrBusy !== null;
   const scanButton = (mode: QrMode, configured: boolean, label: string, again: string) => (
     <Button size="sm" variant={configured ? 'outline' : 'default'} disabled={scanDisabled} onClick={() => void startQr(mode)}>
@@ -212,7 +188,7 @@ export default function Auth115Card() {
         <div role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive">
           <CircleAlert className="size-4 shrink-0" />
           <span className="min-w-0 flex-1">{statusError}</span>
-          <Button size="sm" variant="outline" className="bg-card" onClick={() => void loadStatus()}>重新加载</Button>
+          <Button size="sm" variant="outline" className="bg-card" onClick={loadStatus}>重新加载</Button>
         </div>
       ) : null}
 
@@ -278,7 +254,7 @@ export default function Auth115Card() {
         <Button size="sm" variant="outline" disabled={pinging} onClick={() => void ping()}>
           {pinging ? <Loader2 className="animate-spin" /> : <RefreshCw />}检测连接是否正常
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => void loadStatus()}>刷新状态</Button>
+        <Button size="sm" variant="ghost" onClick={loadStatus}>刷新状态</Button>
         <span className="text-xs text-muted-foreground sm:ml-auto">建议先扫码登录，再授权文件管理</span>
       </div>
 

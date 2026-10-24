@@ -1,10 +1,10 @@
 import { ChevronRight, EyeOff, Link2Off, ListChecks, MessageSquareText, RefreshCw, Search } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { api } from '@/api/client';
-import { extras } from '@/api/extras';
+import { taskApi } from '@/api/tasks';
 import { EmptyState } from '@/components/app/EmptyState';
+import { ErrorState, RefreshError } from '@/components/app/ErrorState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
 import { Page } from '@/components/app/Page';
@@ -13,25 +13,29 @@ import { TaskDetailSheet } from '@/components/TaskDetailSheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAsync } from '@/hooks/useAsync';
+import { useDebounced } from '@/hooks/useDebounced';
+import { useDashboard } from '@/hooks/useDashboard';
 import { fullTime, relativeTime } from '@/lib/format';
 import { Realtime } from '@/lib/realtime';
 import { STATE_GROUPS } from '@/lib/status';
 import type { ITaskSummary, TaskState } from '@/lib/types';
-import { cn } from '@/lib/utils';
+import { cn, errorMessage } from '@/lib/utils';
 
 const PAGE_SIZE = 50;
+/** 列表接口单次最多 500 条：实时刷新时按已加载的条数重取，超过的部分等用户再点「加载更多」。 */
+const MAX_LIMIT = 500;
 
 /** 分享已失效（取消、过期）的失败任务：来源不会再修好这条链接，只能忽略。 */
 const isShareGone = (item: ITaskSummary) => item.state === 'failed' && (item.error ?? '').startsWith('分享不可用');
 
 interface ListResult {
-  key: string;
   items: ITaskSummary[];
   hasMore: boolean;
 }
 
 function fetchTasks(states: TaskState[], query: string, limit: number, offset = 0) {
-  return api.tasks({ state: states.join(','), query: query || undefined, limit, offset });
+  return taskApi.list({ state: states.join(','), query, limit, offset }).then(({ items }) => items);
 }
 
 function TaskRow({ item, onOpen }: { item: ITaskSummary; onOpen: () => void }) {
@@ -77,64 +81,40 @@ export default function TasksPage() {
   const [params, setParams] = useSearchParams();
   const group = STATE_GROUPS.find((g) => g.key === params.get('group')) ?? STATE_GROUPS[0];
   const [query, setQuery] = useState('');
-  const [submitted, setSubmitted] = useState('');
-  const [result, setResult] = useState<ListResult | null>(null);
+  const submitted = useDebounced(query);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [counts, setCounts] = useState<Partial<Record<TaskState, number>>>({});
   const [openId, setOpenId] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
+  const counts = useDashboard().dashboard?.counts ?? {};
 
+  // 已加载的页数：换了筛选回到第一页；实时刷新时按已加载的条数重取，不打断阅读
   const key = `${group.key}|${submitted}`;
-  // 实时刷新时需要读取最新的筛选与已加载条数
-  const current = useRef({ key, states: group.states, query: submitted, size: PAGE_SIZE });
-  useEffect(() => {
-    current.current = { key, states: group.states, query: submitted, size: Math.max(PAGE_SIZE, result?.key === key ? result.items.length : 0) };
-  }, [key, group.states, submitted, result]);
+  const [pages, setPages] = useState({ key, count: 1 });
+  if (pages.key !== key) setPages({ key, count: 1 });
+  const list = useAsync<ListResult>(() => {
+    const limit = Math.min(MAX_LIMIT, (pages.key === key ? pages.count : 1) * PAGE_SIZE);
+    return fetchTasks(group.states, submitted, limit).then((items) => ({ items, hasMore: items.length === limit }));
+  }, [group.key, submitted], '读取任务失败');
+  const { reload, mutate } = list;
 
-  // 搜索输入防抖
   useEffect(() => {
-    const timer = window.setTimeout(() => setSubmitted(query.trim()), 300);
-    return () => window.clearTimeout(timer);
-  }, [query]);
-
-  // 筛选变化时加载第一页
-  useEffect(() => {
-    let active = true;
-    fetchTasks(group.states, submitted, PAGE_SIZE)
-      .then(({ items }) => { if (active) setResult({ key, items, hasMore: items.length === PAGE_SIZE }); })
-      .catch((err: unknown) => toast.error(err instanceof Error ? err.message : '读取任务失败'));
-    return () => { active = false; };
-  }, [key, group.states, submitted, reloadToken]);
-
-  // 状态计数 + 实时刷新（保持已加载的条数，不打断阅读）
-  useEffect(() => {
-    let active = true;
-    const refreshCounts = () => api.dashboard().then((d) => { if (active) setCounts(d.counts); }).catch(() => undefined);
-    void refreshCounts();
-    const realtime = new Realtime({
-      scopes: ['tasks', 'counts'],
-      onChange: () => {
-        void refreshCounts();
-        const { key: k, states, query: q, size } = current.current;
-        fetchTasks(states, q, Math.min(size, 500))
-          .then(({ items }) => { if (active) setResult((prev) => (prev?.key === k ? { key: k, items, hasMore: prev.hasMore } : prev)); })
-          .catch(() => undefined);
-      },
-    });
+    const realtime = new Realtime({ scopes: ['tasks'], onChange: reload });
     realtime.start();
-    return () => { active = false; realtime.stop(); };
-  }, []);
+    return () => realtime.stop();
+  }, [reload]);
 
+  const result = list.stale ? undefined : list.data;
   const loadMore = async () => {
     if (!result) return;
     setLoadingMore(true);
     try {
-      const { items } = await fetchTasks(group.states, submitted, PAGE_SIZE, result.items.length);
-      setResult((prev) => (prev && prev.key === key
-        ? { key, items: [...prev.items, ...items.filter((i) => !prev.items.some((p) => p.task_id === i.task_id))], hasMore: items.length === PAGE_SIZE }
-        : prev));
+      const page = await fetchTasks(group.states, submitted, PAGE_SIZE, result.items.length);
+      mutate((prev) => prev && {
+        items: [...prev.items, ...page.filter((i) => !prev.items.some((p) => p.task_id === i.task_id))],
+        hasMore: page.length === PAGE_SIZE,
+      });
+      setPages((prev) => ({ key, count: prev.count + 1 }));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '加载失败');
+      toast.error(errorMessage(err, '加载失败'));
     } finally {
       setLoadingMore(false);
     }
@@ -142,19 +122,18 @@ export default function TasksPage() {
 
   const countOf = (states: TaskState[]) => (states.length ? states : (Object.keys(counts) as TaskState[]))
     .reduce((sum, s) => sum + (counts[s] ?? 0), 0);
-  const loading = result?.key !== key;
-  const items = loading ? [] : result.items;
+  const items = result?.items ?? [];
   const shareGone = items.filter(isShareGone);
   const [ignoring, setIgnoring] = useState(false);
   const ignoreShareGone = async () => {
     setIgnoring(true);
     try {
-      const r = await extras.batch(shareGone.map((i) => i.task_id), 'reject');
+      const r = await taskApi.batch(shareGone.map((i) => i.task_id), 'reject');
       if (r.failed.length) toast.error(`${r.failed.length} 条没能忽略：${r.failed[0].error}`);
       if (r.done) toast.success(`已忽略 ${r.done} 条分享失效的任务`);
-      setReloadToken((t) => t + 1);
+      reload();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '忽略失败');
+      toast.error(errorMessage(err, '忽略失败'));
     } finally {
       setIgnoring(false);
     }
@@ -164,8 +143,9 @@ export default function TasksPage() {
     <Page
       title="任务"
       description="每条消息从接收到入库的完整记录。点开任务可查看识别结果、处理过程，并修正、重试或重新整理。"
-      actions={<Button variant="outline" size="sm" onClick={() => setReloadToken((t) => t + 1)}><RefreshCw />刷新</Button>}
+      actions={<Button variant="outline" size="sm" onClick={reload}><RefreshCw />刷新</Button>}
     >
+      {result && list.error ? <RefreshError error={`刷新失败：${list.error}`} onRetry={reload} /> : null}
       <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center">
         <div className="flex flex-wrap gap-1.5">
           {STATE_GROUPS.map((g) => {
@@ -178,7 +158,7 @@ export default function TasksPage() {
                 aria-pressed={active}
                 onClick={() => setParams(g.key === 'all' ? {} : { group: g.key }, { replace: true })}
                 className={cn(
-                  'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-medium transition-colors sm:py-1',
+                  'flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] font-medium transition-colors sm:min-h-0 sm:py-1',
                   active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground hover:text-foreground',
                 )}
               >
@@ -219,8 +199,12 @@ export default function TasksPage() {
           <span className="w-20 shrink-0 text-right">更新</span>
           <span className="w-4 shrink-0" />
         </div>
-        {loading ? (
-          <div className="space-y-px p-2">{[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>
+        {!result ? (
+          list.error ? (
+            <ErrorState title="读取任务失败" error={list.error} onRetry={reload} retrying={list.loading} className="m-4 border-0" />
+          ) : (
+            <div className="space-y-px p-2">{[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>
+          )
         ) : items.length === 0 ? (
           <EmptyState
             icon={submitted ? Search : ListChecks}
@@ -235,7 +219,7 @@ export default function TasksPage() {
         )}
       </div>
 
-      {!loading && result.hasMore ? (
+      {result?.hasMore ? (
         <div className="mt-4 flex justify-center">
           <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
             {loadingMore ? '加载中…' : '加载更多'}
@@ -243,7 +227,7 @@ export default function TasksPage() {
         </div>
       ) : null}
 
-      <TaskDetailSheet taskId={openId} onClose={() => setOpenId(null)} onChanged={() => setReloadToken((t) => t + 1)} />
+      <TaskDetailSheet taskId={openId} onClose={() => setOpenId(null)} onChanged={reload} />
     </Page>
   );
 }

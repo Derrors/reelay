@@ -3,17 +3,17 @@ import {
   ListChecks, LogOut, Menu, Puzzle, ScrollText, Settings2, Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { toast } from 'sonner';
+import { authApi } from '@/api/auth';
 import { ConfirmHost } from '@/components/app/ConfirmHost';
 import { Toaster } from '@/components/ui/sonner';
 import { Sheet } from '@/components/app/Sheet';
 import { ThemeToggle } from '@/components/app/ThemeToggle';
-import { api } from '@/api/client';
-import { extras } from '@/api/extras';
-import { Realtime } from '@/lib/realtime';
-import type { IDashboard } from '@/lib/types';
-import { cn } from '@/lib/utils';
+import { useAsync } from '@/hooks/useAsync';
+import { useDashboard } from '@/hooks/useDashboard';
+import { cn, errorMessage } from '@/lib/utils';
 
 type BadgeKey = 'pending' | 'failed';
 
@@ -44,24 +44,17 @@ const TOOLS: NavEntry[] = [
 ];
 const MOBILE_TABS: NavEntry[] = [...PRIMARY, MEDIA[0]];
 
-/** 侧边栏徽标与 Worker 状态：订阅实时通道，计数变化时刷新。 */
+/** 侧边栏徽标、Worker 状态与版本号：与总览共用一份运行状态（见 useDashboard）。 */
 function useShellStatus() {
-  const [dashboard, setDashboard] = useState<IDashboard | null>(null);
-  useEffect(() => {
-    let active = true;
-    const load = () => api.dashboard().then((d) => { if (active) setDashboard(d); }).catch(() => undefined);
-    void load();
-    const realtime = new Realtime({ scopes: ['counts', 'runtime'], onChange: () => { void load(); } });
-    realtime.start();
-    return () => { active = false; realtime.stop(); };
-  }, []);
+  const { dashboard } = useDashboard();
   const counts = dashboard?.counts ?? {};
   const worker = dashboard?.runtime.worker;
+  const badges: Record<BadgeKey, number> = { pending: counts.pending_approval ?? 0, failed: counts.failed ?? 0 };
   return {
-    badges: { pending: counts.pending_approval ?? 0, failed: counts.failed ?? 0 } as Record<BadgeKey, number>,
+    badges,
     workerOnline: Boolean(worker && worker.status === 'running' && !worker.stale),
-    alerts: dashboard?.alerts?.length ?? 0,
     loaded: dashboard !== null,
+    version: dashboard?.version ?? '',
   };
 }
 
@@ -149,25 +142,38 @@ function Brand() {
   );
 }
 
-function ShellFooter({ workerOnline, loaded }: { workerOnline: boolean; loaded: boolean }) {
-  const [authEnabled, setAuthEnabled] = useState(false);
-  useEffect(() => {
-    extras.authStatus().then((r) => setAuthEnabled(r.auth_required)).catch(() => undefined);
-  }, []);
+function ShellFooter({ workerOnline, loaded, version }: { workerOnline: boolean; loaded: boolean; version: string }) {
+  const auth = useAsync(() => authApi.status(), []);
+  const logout = async () => {
+    try {
+      await authApi.logout();
+      window.location.reload();
+    } catch (e) {
+      toast.error(errorMessage(e, '退出登录失败'));
+    }
+  };
   return (
     <div className="space-y-3 border-t border-sidebar-border px-3 py-3">
       <div className="flex items-center justify-between gap-2 px-1">
-        <span className="flex items-center gap-2 text-xs text-sidebar-foreground">
-          <span className={cn('size-2 rounded-full', !loaded ? 'bg-muted-foreground/40' : workerOnline ? 'bg-success' : 'bg-warning')} />
-          {!loaded ? '连接中' : workerOnline ? '后台运行中' : '后台未运行'}
+        <span className="flex min-w-0 flex-col text-xs text-sidebar-foreground">
+          <span className="flex items-center gap-2">
+            <span className={cn('size-2 rounded-full', !loaded ? 'bg-muted-foreground/40' : workerOnline ? 'bg-success' : 'bg-warning')} />
+            {!loaded ? '连接中' : workerOnline ? '后台运行中' : '后台未运行'}
+          </span>
+          {/* 反馈问题时需要附上版本号：可选中复制 */}
+          {version ? (
+            <span className="mt-0.5 select-all pl-4 font-mono text-[11px] text-sidebar-foreground/55" title="当前版本，反馈问题时请附上">
+              v{version.replace(/^v/, '')}
+            </span>
+          ) : null}
         </span>
         <ThemeToggle />
       </div>
-      {authEnabled ? (
+      {auth.data?.auth_required ? (
         <button
           type="button"
-          onClick={() => { void extras.logout().then(() => window.location.reload()); }}
-          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+          onClick={() => void logout()}
+          className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground sm:min-h-0"
         >
           <LogOut className="size-3.5" />退出登录
         </button>
@@ -210,7 +216,7 @@ export const Layout = () => {
       <aside className="hidden border-r border-sidebar-border bg-sidebar lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
         <div className="px-5 pb-3 pt-5"><Brand /></div>
         <NavContent badges={status.badges} />
-        <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} />
+        <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} version={status.version} />
       </aside>
 
       {/* 移动端顶栏 */}
@@ -228,7 +234,7 @@ export const Layout = () => {
       <Sheet open={drawer} onOpenChange={setDrawer} title="导航" side="left" className="bg-sidebar p-0">
         <div className="-mx-5 -my-5 flex h-[calc(100%+2.5rem)] flex-col">
           <NavContent badges={status.badges} onNavigate={() => setDrawer(false)} mobile />
-          <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} />
+          <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} version={status.version} />
         </div>
       </Sheet>
 

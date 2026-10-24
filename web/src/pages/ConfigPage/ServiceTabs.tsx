@@ -1,21 +1,25 @@
 /** 系统配置里的服务与运行参数：AI 与 TMDB、Telegram、115 请求限速、运行与安全。 */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Bot, CircleAlert, CircleCheck, Film, Gauge, Info, Loader2, PlugZap, RefreshCw, Send, ServerCog, ShieldCheck, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
-import { ai, type ILlmEfforts, type ILlmTest } from '@/api/ai';
+import { aiApi, type ILlmEfforts, type ILlmTest } from '@/api/ai';
+import { appUrl } from '@/api/request';
+import { Field } from '@/components/app/Field';
+import { Notice } from '@/components/app/Notice';
 import { Panel, PanelColumns } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CHOICE_LABELS, LOG_LEVELS, REASONING_EFFORTS } from '@/lib/status';
 import type { ISecretStatus } from '@/lib/types';
-import { Field, Notice } from './fields';
+import { errorMessage } from '@/lib/utils';
+import { numberOrBlank, obj, text, type Obj } from '@/lib/values';
 import { PasswordField, SecretField } from './SecretField';
-import { CHOICE_LABELS, obj, text, type Obj } from './shared';
+import { normalizeUrl } from './shared';
 
 type SetField = (key: string, name: string, value: unknown) => void;
 type SecretProps = { secrets: ISecretStatus; onSecrets: (status: ISecretStatus) => void };
 
-const numberOrBlank = (raw: string) => (raw === '' ? '' : Number(raw));
 const RESTART_HINT = '修改后需要重启主进程（Docker：docker compose restart worker）才生效。';
 
 function NumberField({ label, hint, unit, value, onChange, min, max, step }: {
@@ -33,57 +37,56 @@ function NumberField({ label, hint, unit, value, onChange, min, max, step }: {
   );
 }
 
-const EFFORTS = [
-  { value: '', label: '默认（不传，由模型决定）' }, { value: 'none', label: '关闭推理（none）' },
-  { value: 'minimal', label: '最低（minimal）' }, { value: 'low', label: '低（low）' },
-  { value: 'medium', label: '中（medium）' }, { value: 'high', label: '高（high）' },
-  { value: 'xhigh', label: '更高（xhigh）' }, { value: 'max', label: '最高（max）' },
-];
-const errorText = (e: unknown) => (e instanceof Error ? e.message : '请求失败');
+const errorText = (e: unknown) => errorMessage(e, '请求失败');
 
-/** 模型：只能从接口返回的列表里选。打开页面时用已保存的密钥自动获取一次；改了接口地址后点「刷新列表」。
- * 测试用表单里当前的地址、模型与推理强度（不必先保存）。 */
-function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; keySet: boolean }) {
+/** 模型：只能从接口返回的列表里选。打开页面时用已保存的地址与密钥自动获取一次；改了接口地址后点「刷新列表」。
+ * 测试用表单里当前的地址、模型与推理强度（不必先保存）。地址和已保存的不同时，密钥属于原来的地址，
+ * 要用 apiKey（「这个地址的密钥」）调用；没填就不能获取与测试。 */
+function ModelFields({ llm, savedUrl, setField, keySet, apiKey, moved }: {
+  llm: Obj; savedUrl: string; setField: SetField; keySet: boolean; apiKey: string; moved: boolean;
+}) {
   // url：这份列表是用哪个接口地址取的；地址改了就提示刷新
   const [list, setList] = useState<{ url: string; models: string[]; error?: string } | null>(null);
   const [loading, setLoading] = useState<'models' | 'test' | null>(null);
   const [result, setResult] = useState<ILlmTest | null>(null);
-  const form = { base_url: text(llm.base_url).trim(), model: text(llm.model).trim(), reasoning_effort: text(llm.reasoning_effort) };
+  const form = { base_url: text(llm.base_url).trim(), model: text(llm.model).trim(), reasoning_effort: text(llm.reasoning_effort), api_key: apiKey };
   const current = form.model;
+  const usable = moved ? Boolean(apiKey.trim()) : keySet;
+  const unusable = moved ? '先填写这个地址的密钥' : '请先保存 AI 接口密钥';
 
-  const load = (url: string) => ai.llmModels({ base_url: url })
+  const load = (url: string, key = '') => aiApi.models({ base_url: url, api_key: key })
     .then(r => setList({ url, models: r.models }))
     .catch((e: unknown) => setList({ url, models: [], error: errorText(e) }));
 
-  const initialUrl = useRef(form.base_url);
-  useEffect(() => {
-    if (keySet) void load(initialUrl.current);
-  }, [keySet]);
+  // 已保存的地址与密钥：打开页面、保存了新地址的密钥后各取一次
+  const loadSaved = useEffectEvent(() => { if (keySet) void load(savedUrl); });
+  useEffect(() => { loadSaved(); }, [keySet, savedUrl]);
 
   const refresh = async () => {
     setLoading('models');
-    await load(form.base_url);
+    await load(form.base_url, form.api_key);
     setLoading(null);
   };
   // 推理强度：每个模型检测一次（结果由后端记住），不支持的选项不能选
   const [efforts, setEfforts] = useState<(ILlmEfforts & { probing?: boolean }) | null>(null);
-  const probe = (model: string, url: string) => {
+  const probe = (model: string, url: string, key = '') => {
     setEfforts({ model, efforts: null, probing: true });
-    return ai.probeLlmEfforts({ base_url: url, model })
+    return aiApi.probeEfforts({ base_url: url, model, api_key: key })
       .then(r => setEfforts(r))
       .catch((e: unknown) => setEfforts({ model, efforts: null, note: errorText(e) }));
   };
+  const probeSaved = useEffectEvent((model: string) => probe(model, savedUrl));
   useEffect(() => {
     if (!keySet || !current) return;
     let active = true;
-    ai.llmEfforts({ base_url: initialUrl.current, model: current })
-      .then(r => { if (active) { if (r.efforts) setEfforts(r); else void probe(current, initialUrl.current); } })
+    aiApi.efforts({ base_url: savedUrl, model: current })
+      .then(r => { if (active) { if (r.efforts) setEfforts(r); else void probeSaved(current); } })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [keySet, current]);
+  }, [keySet, current, savedUrl]);
   const known = efforts?.model === current ? efforts.efforts : null;
   const effort = text(llm.reasoning_effort);
-  const effortOptions = EFFORTS.map(o => {
+  const effortOptions = REASONING_EFFORTS.map(o => {
     const state = o.value ? known?.[o.value] : 'supported';
     return { ...o, disabled: state === 'unsupported' && o.value !== effort,
              label: state === 'unsupported' ? `${o.label} · 此模型不支持` : state === 'unknown' ? `${o.label} · 未能确认` : o.label };
@@ -95,7 +98,7 @@ function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; 
 
   const test = async () => {
     setLoading('test'); setResult(null);
-    try { setResult(await ai.llmTest(form)); } catch (e) { toast.error(errorText(e)); } finally { setLoading(null); }
+    try { setResult(await aiApi.test(form)); } catch (e) { toast.error(errorText(e)); } finally { setLoading(null); }
   };
 
   const models = list?.models ?? [];
@@ -106,8 +109,9 @@ function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; 
     ...models.map(m => ({ value: m, label: m })),
   ];
   const stale = list !== null && list.url !== form.base_url;
-  const hint = !keySet ? '先保存 AI 接口密钥，再从接口获取可用的模型。'
-    : list === null ? '正在获取模型列表…'
+  const hint = moved && !usable ? '接口地址改了：填写这个地址的密钥后，才能获取它的模型列表与测试。'
+    : !keySet && !moved ? '先保存 AI 接口密钥，再从接口获取可用的模型。'
+    : list === null ? (moved ? '点「刷新列表」获取这个地址的模型。' : '正在获取模型列表…')
     : list.error ? `获取模型列表失败：${list.error}`
     : stale ? '接口地址改了，点「刷新列表」获取这个地址的模型。'
     : models.length ? `接口提供 ${models.length} 个模型，从中选择。` : '接口没有返回任何模型。';
@@ -119,8 +123,8 @@ function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; 
           <Select className="min-w-0 flex-1" value={current} options={options} disabled={!models.length}
             placeholder={current ? undefined : '请选择模型'}
             onValueChange={v => { setField('llm', 'model', v); setResult(null); }} />
-          <Button variant="outline" disabled={!keySet || loading !== null} onClick={() => void refresh()}
-            title={keySet ? undefined : '请先保存 AI 接口密钥'}>
+          <Button variant="outline" disabled={!usable || loading !== null} onClick={() => void refresh()}
+            title={usable ? undefined : unusable}>
             {loading === 'models' ? <Loader2 className="animate-spin" /> : <RefreshCw />}刷新列表
           </Button>
         </div>
@@ -129,15 +133,16 @@ function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; 
         <div className="flex gap-2">
           <Select className="min-w-0 flex-1" value={effort} options={effortOptions}
             onValueChange={v => { setField('llm', 'reasoning_effort', v); setResult(null); }} />
-          <Button variant="outline" disabled={!keySet || !current || Boolean(efforts?.probing)}
-            onClick={() => void probe(current, form.base_url)}>
+          <Button variant="outline" disabled={!usable || !current || Boolean(efforts?.probing)}
+            title={usable ? undefined : unusable}
+            onClick={() => void probe(current, form.base_url, form.api_key)}>
             {efforts?.probing ? <Loader2 className="animate-spin" /> : <RefreshCw />}重新检测
           </Button>
         </div>
       </Field>
       <div className="space-y-2">
-        <Button variant="outline" size="sm" disabled={!keySet || !form.model || loading !== null} onClick={() => void test()}
-          title={keySet ? undefined : '请先保存 AI 接口密钥'}>
+        <Button variant="outline" size="sm" disabled={!usable || !form.model || loading !== null} onClick={() => void test()}
+          title={usable ? undefined : unusable}>
           {loading === 'test' ? <Loader2 className="animate-spin" /> : <PlugZap />}测试连通性
         </Button>
         {result ? (
@@ -158,9 +163,18 @@ function ModelFields({ llm, setField, keySet }: { llm: Obj; setField: SetField; 
   );
 }
 
-export function ServicesTab({ config, setField, secrets, onSecrets }: { config: Obj; setField: SetField } & SecretProps) {
+export function ServicesTab({ config, saved, setField, secrets, onSecrets, pendingSecrets, setPendingSecret }: {
+  config: Obj; saved: Obj; setField: SetField;
+  /** 改了接口地址时填的新密钥，保存设置后写入（见 useConfigDraft）。 */
+  pendingSecrets: Record<string, string>; setPendingSecret: (name: string, value: string) => void;
+} & SecretProps) {
   const llm = obj(config.llm);
   const tmdb = obj(config.tmdb);
+  const savedLlmUrl = text(obj(saved.llm).base_url);
+  const llmMoved = normalizeUrl(llm.base_url) !== normalizeUrl(savedLlmUrl);
+  const tmdbMoved = normalizeUrl(tmdb.base_url) !== normalizeUrl(obj(saved.tmdb).base_url);
+  const llmKeySet = Boolean(secrets.llm_api_key?.set);
+  const newKey = pendingSecrets.llm_api_key ?? '';
   return (
     <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
       <Panel icon={Sparkles} title="AI 服务" description="OpenAI 兼容接口，用于识别消息、转人工前的方案、审批建议与对话式控制 Bot。" bodyClassName="p-4 sm:p-5">
@@ -171,7 +185,17 @@ export function ServicesTab({ config, setField, secrets, onSecrets }: { config: 
             <Input className="bg-card" placeholder="https://api.openai.com/v1" value={text(llm.base_url)}
               onChange={e => setField('llm', 'base_url', e.target.value)} />
           </Field>
-          <ModelFields llm={llm} setField={setField} keySet={Boolean(secrets.llm_api_key?.set)} />
+          {llmMoved ? (
+            <Field label="这个地址的密钥"
+              hint={llmKeySet
+                ? '已保存的密钥属于原来的地址，保存设置时会被清除；在这里填新地址的密钥，保存设置后一并写入（选填）。'
+                : '保存设置后一并写入（选填）；也用于下面获取模型与测试。'}>
+              <Input type="password" autoComplete="new-password" className="bg-card" placeholder="sk-…"
+                value={newKey} onChange={e => setPendingSecret('llm_api_key', e.target.value)} />
+            </Field>
+          ) : null}
+          <ModelFields llm={llm} savedUrl={savedLlmUrl} setField={setField} keySet={llmKeySet}
+            moved={llmMoved} apiKey={llmMoved ? newKey : ''} />
         </div>
       </Panel>
 
@@ -179,7 +203,10 @@ export function ServicesTab({ config, setField, secrets, onSecrets }: { config: 
         <div className="space-y-4">
           <SecretField name="tmdb_api_key" secrets={secrets} onSaved={onSecrets}
             hint="v3 API Key 或 v4 Read Access Token（eyJ 开头）均可；未设置时沿用 AI 识别的片名。" />
-          <Field label="接口地址" hint="留空使用官方地址；国内网络连不上时可改用 https://api.tmdb.org/3 或自己的反向代理。">
+          <Field label="接口地址"
+            hint={tmdbMoved && secrets.tmdb_api_key?.set
+              ? <span className="text-warning">地址改了：已保存的 TMDB 密钥属于原来的地址，保存设置时会被清除，之后需要重新填写。</span>
+              : '留空使用官方地址；国内网络连不上时可改用 https://api.tmdb.org/3 或自己的反向代理。'}>
             <Input className="bg-card" placeholder="https://api.themoviedb.org/3" value={text(tmdb.base_url)}
               onChange={e => setField('tmdb', 'base_url', e.target.value)} />
           </Field>
@@ -256,11 +283,6 @@ export function P115LimitsPanel({ config, setField }: { config: Obj; setField: S
 
 const CODE = 'mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px] break-all';
 
-const LOG_LEVELS = [
-  { value: 'DEBUG', label: '调试（DEBUG）' }, { value: 'INFO', label: '一般（INFO）' },
-  { value: 'WARNING', label: '警告（WARNING）' }, { value: 'ERROR', label: '错误（ERROR）' },
-];
-
 export function SystemTab({ config, setField, secrets, onSecrets }: { config: Obj; setField: SetField } & SecretProps) {
   const runtime = obj(config.runtime);
   return (
@@ -292,7 +314,7 @@ export function SystemTab({ config, setField, secrets, onSecrets }: { config: Ob
             <SecretField name="mcp_readonly_token" secrets={secrets} onSaved={onSecrets} generate placeholder="至少 24 个字符"
               hint="只能查询，看不到写操作工具。" />
             <p className="text-xs leading-5 text-muted-foreground">
-              地址 <code className={CODE}>{window.location.origin}/mcp</code>，请求头
+              地址 <code className={CODE}>{window.location.origin}{appUrl('mcp')}</code>，请求头
               <code className={CODE}>Authorization: Bearer 令牌</code>。令牌保存后读不回原值，生成后先复制再保存；两个都没设置时
               /mcp 不可用。与 Reelay 同机时也可以用 stdio 方式（reelay-mcp），见 README。
             </p>

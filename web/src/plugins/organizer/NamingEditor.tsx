@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { ExternalLink, Eye, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/api/client';
+import { configApi } from '@/api/config';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { cn } from '@/lib/utils';
+import { MEDIA_TYPE_LABELS } from '@/lib/status';
+import { cn, errorMessage } from '@/lib/utils';
 import { EditorHeading } from '../EditorHeading';
-import { at, text, type PluginEditorProps } from '../types';
+import { at, text } from '@/lib/values';
+import type { PluginEditorProps } from '../types';
 
 type Kind = 'movie' | 'tv';
-const KIND_LABEL: Record<Kind, string> = { movie: '电影', tv: '剧集' };
+
 // 变量与 MoviePilot 的重命名格式一致，可直接粘贴其模板
 const NAMING_VARS: Array<[string, string]> = [
   ['title', '片名'], ['original_title', '原名'], ['name', '文件名里的片名'], ['en_name', '文件名里的英文名'],
@@ -30,10 +32,10 @@ export function NamingEditor({ section, setSection }: PluginEditorProps) {
   const test = async (kind: Kind) => {
     setTesting(kind);
     try {
-      const r = await api.extensionAction<{ path: string }>('organizer', 'preview_naming', { kind, template: text(naming[kind]) });
+      const r = await configApi.extensionAction<{ path: string }>('organizer', 'preview_naming', { kind, template: text(naming[kind]) });
       setPreview(p => ({ ...p, [kind]: r.path }));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '模板预览失败');
+      toast.error(errorMessage(e, '模板预览失败'));
     } finally {
       setTesting(null);
     }
@@ -53,9 +55,9 @@ export function NamingEditor({ section, setSection }: PluginEditorProps) {
       {(['movie', 'tv'] as const).map(kind => (
         <div key={kind} className="space-y-2.5 rounded-lg border border-border bg-card p-3 sm:p-4">
           <label className="block space-y-1.5">
-            <span className="block text-[13px] font-medium">{KIND_LABEL[kind]}</span>
+            <span className="block text-[13px] font-medium">{MEDIA_TYPE_LABELS[kind]}</span>
             <Textarea
-              aria-label={`${KIND_LABEL[kind]}命名模板`} spellCheck={false}
+              aria-label={`${MEDIA_TYPE_LABELS[kind]}命名模板`} spellCheck={false}
               className="min-h-20 break-all font-mono text-xs leading-5 md:text-xs"
               value={text(naming[kind])} onChange={e => update(kind, e.target.value)}
             />

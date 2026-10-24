@@ -1,10 +1,13 @@
 import {
   Activity, AlertTriangle, ArrowRight, Check, CheckCircle2, Clock3, Inbox, LibraryBig, Loader, RefreshCw, Send, X, XCircle,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { api } from '@/api/client';
+import { dashboardApi } from '@/api/dashboard';
+import { inboxApi, type IInboxResp } from '@/api/inbox';
+import { taskApi } from '@/api/tasks';
+import { RefreshError } from '@/components/app/ErrorState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
 import { Page } from '@/components/app/Page';
@@ -14,43 +17,36 @@ import { ToneBadge } from '@/components/app/StatusBadge';
 import { TaskDetailSheet } from '@/components/TaskDetailSheet';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAsync } from '@/hooks/useAsync';
+import { refreshDashboard, useDashboard } from '@/hooks/useDashboard';
 import { episodeLabel, fullTime, relativeTime } from '@/lib/format';
 import { Realtime } from '@/lib/realtime';
-import { connectionLabels, modeLabels, TONE_CLASS, type Tone } from '@/lib/status';
-import type { IDashboard, IInboxItem, ITaskSummary } from '@/lib/types';
-import { cn } from '@/lib/utils';
+import { connectionMeta, modeLabels, REALTIME_LABELS, TONE_CLASS } from '@/lib/status';
+import { allows } from '@/lib/taskActions';
+import type { IInboxItem, ITaskSummary } from '@/lib/types';
+import { cn, errorMessage } from '@/lib/utils';
 import { AiSuggestions } from './AiSuggestions';
 
-interface Snapshot {
-  dashboard: IDashboard;
-  pending: IInboxItem[];
+/** 首页只显示几条待确认与最近入库；计数来自共用的运行状态。 */
+const PENDING_ROWS = 4;
+
+interface Lists {
+  pending: IInboxResp;
   recent: ITaskSummary[];
 }
 
-function fetchSnapshot(): Promise<Snapshot> {
-  return Promise.all([api.dashboard(), api.inbox('pending_approval'), api.tasks({ state: 'done', limit: 8 })])
-    .then(([dashboard, inbox, done]) => ({ dashboard, pending: inbox.items, recent: done.items }));
-}
-
-const LIVE_LABEL: Record<'live' | 'polling' | 'offline', string> = { live: '实时', polling: '自动刷新', offline: '重新连接中' };
-
-function connectionTone(status: string): Tone {
-  if (status === 'connected' || status === 'active' || status === 'running') return 'success';
-  if (status === 'not_configured' || status === 'unverified' || status === 'unobserved') return 'neutral';
-  if (status === 'connecting') return 'info';
-  return 'warning';
-}
+const fetchLists = (): Promise<Lists> => Promise.all([
+  inboxApi.list('pending_approval', PENDING_ROWS), taskApi.list({ state: 'done', limit: 8 }),
+]).then(([pending, done]) => ({ pending, recent: done.items }));
 
 function HealthRow({ label, status, detail }: { label: string; status: string; detail?: string }) {
-  const tone = connectionTone(status);
+  const meta = connectionMeta(status);
   return (
     <div className="flex items-center justify-between gap-3 py-2.5 text-sm first:pt-0 last:pb-0">
       <span className="min-w-0 truncate text-foreground/90">{label}</span>
       {/* 状态长短不一：用徽标右对齐，比裸露的圆点更整齐 */}
       <span title={detail} className="shrink-0">
-        <ToneBadge tone={tone}>
-          {connectionLabels[status] ?? (status === 'active' ? '有效' : status === 'running' ? '运行中' : status)}
-        </ToneBadge>
+        <ToneBadge tone={meta.tone}>{meta.label}</ToneBadge>
       </span>
     </div>
   );
@@ -74,50 +70,42 @@ function PendingRow({ item, busy, onOpen, onAct }: {
         <div className="mt-0.5 truncate text-xs text-muted-foreground">{item.source} · {relativeTime(item.created_at)}</div>
       </button>
       <div className="flex shrink-0 gap-1.5">
-        <Button size="icon" variant="ghost" disabled={busy} onClick={() => onAct('reject')} aria-label="忽略" title="忽略"
-          className="size-8 text-muted-foreground hover:text-destructive"><X /></Button>
-        <Button size="sm" disabled={busy} onClick={() => onAct('approve')} aria-label="转存"><Check /><span className="max-sm:hidden">转存</span></Button>
+        {allows(item.actions, 'reject') ? (
+          <Button size="icon" variant="ghost" disabled={busy} onClick={() => onAct('reject')} aria-label="忽略" title="忽略"
+            className="size-9 text-muted-foreground hover:text-destructive sm:size-8"><X /></Button>
+        ) : null}
+        {allows(item.actions, 'approve') ? (
+          <Button size="sm" disabled={busy} onClick={() => onAct('approve')} aria-label="转存"><Check /><span className="max-sm:hidden">转存</span></Button>
+        ) : null}
       </div>
     </div>
   );
 }
 
 export default function DashboardPage() {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [error, setError] = useState('');
-  const [mode, setMode] = useState<'live' | 'polling' | 'offline'>('offline');
+  const { dashboard: d, error: statusError, mode } = useDashboard();
+  const lists = useAsync(fetchLists, [], '读取待确认与最近入库失败');
+  const { reload, mutate } = lists;
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [retrying, setRetrying] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
-  const realtimeRef = useRef<Realtime | null>(null);
 
-  const refresh = useCallback(() => fetchSnapshot()
-    .then((next) => { setSnapshot(next); setError(''); })
-    .catch((err: unknown) => setError(err instanceof Error ? err.message : '读取运行状态失败')), []);
-
+  // 运行状态由 useDashboard 统一刷新；这里只跟随任务变化刷新两个列表
   useEffect(() => {
-    let active = true;
-    fetchSnapshot()
-      .then((next) => { if (active) setSnapshot(next); })
-      .catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : '读取运行状态失败'); });
-    const realtime = new Realtime({
-      scopes: ['counts', 'deliveries', 'runtime', 'tasks'],
-      onChange: () => { if (active) void refresh(); },
-      onMode: (next) => { if (active) setMode(next); },
-    });
-    realtimeRef.current = realtime;
+    const realtime = new Realtime({ scopes: ['counts', 'tasks'], onChange: reload });
     realtime.start();
-    return () => { active = false; realtime.stop(); realtimeRef.current = null; };
-  }, [refresh]);
+    return () => realtime.stop();
+  }, [reload]);
+  const refresh = () => { void refreshDashboard(); reload(); };
 
   const act = async (item: IInboxItem, action: 'approve' | 'reject') => {
     setBusy((prev) => new Set(prev).add(item.task_id));
     try {
-      await api.action(item.task_id, action);
-      setSnapshot((prev) => (prev ? { ...prev, pending: prev.pending.filter((i) => i.task_id !== item.task_id) } : prev));
+      await taskApi.act(item.task_id, action);
+      mutate((prev) => prev && { ...prev, pending: { ...prev.pending, items: prev.pending.items.filter((i) => i.task_id !== item.task_id) } });
       toast.success(action === 'approve' ? `已转存「${item.title ?? '资源'}」` : '已忽略');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '操作失败');
+      toast.error(errorMessage(err, '操作失败'));
     } finally {
       setBusy((prev) => { const next = new Set(prev); next.delete(item.task_id); return next; });
     }
@@ -126,21 +114,22 @@ export default function DashboardPage() {
   const retryDeliveries = async () => {
     setRetrying(true);
     try {
-      const { items } = await api.deliveries();
+      const { items } = await dashboardApi.failedDeliveries();
       let accepted = 0;
       for (const item of items) {
-        try { await api.retryDelivery(item.id); accepted += 1; } catch { /* 已被其他管理端重试 */ }
+        try { await dashboardApi.retryDelivery(item.id); accepted += 1; } catch { /* 已被其他管理端重试 */ }
       }
       toast.success(`已重新发送 ${accepted} 条通知`);
-      realtimeRef.current?.flush();
+      void refreshDashboard();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '重试失败');
+      toast.error(errorMessage(err, '重试失败'));
     } finally {
       setRetrying(false);
     }
   };
 
-  const d = snapshot?.dashboard;
+  const snapshot = lists.data;
+  const error = statusError || lists.error;
   const counts = d?.counts ?? {};
   const pendingCount = counts.pending_approval ?? 0;
   const manualCount = counts.need_manual ?? 0;
@@ -157,17 +146,13 @@ export default function DashboardPage() {
           <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium',
             mode === 'live' ? TONE_CLASS.success.badge : TONE_CLASS.neutral.badge)}>
             <span className={cn('size-1.5 rounded-full', mode === 'live' ? 'animate-pulse bg-success' : 'bg-muted-foreground/60')} />
-            {LIVE_LABEL[mode]}
+            {REALTIME_LABELS[mode]}
           </span>
-          <Button variant="outline" size="sm" onClick={() => { void refresh(); }}><RefreshCw />刷新</Button>
+          <Button variant="outline" size="sm" onClick={refresh}><RefreshCw />刷新</Button>
         </>
       }
     >
-      {error ? (
-        <div className="mb-5 flex items-center gap-2.5 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          <AlertTriangle className="size-4 shrink-0" />{error}
-        </div>
-      ) : null}
+      {error ? <RefreshError error={error} onRetry={refresh} className="mb-5 rounded-xl py-3" /> : null}
       {d?.alerts?.map((alert) => (
         <div key={alert.key} role="alert" className="mb-5 flex items-start gap-3 rounded-xl border border-warning/35 bg-warning/8 px-4 py-3">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
@@ -205,9 +190,9 @@ export default function DashboardPage() {
           >
             {!snapshot ? (
               <div className="space-y-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-16" />)}</div>
-            ) : snapshot.pending.length ? (
+            ) : snapshot.pending.items.length ? (
               <div className="divide-y divide-border/70">
-                {snapshot.pending.slice(0, 4).map((item) => (
+                {snapshot.pending.items.map((item) => (
                   <PendingRow key={item.task_id} item={item} busy={busy.has(item.task_id)}
                     onOpen={() => setOpenId(item.task_id)} onAct={(action) => void act(item, action)} />
                 ))}
@@ -294,7 +279,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <TaskDetailSheet taskId={openId} onClose={() => setOpenId(null)} onChanged={() => void refresh()} />
+      <TaskDetailSheet taskId={openId} onClose={() => setOpenId(null)} onChanged={refresh}
+        saveDirs={snapshot ? { dirs: snapshot.pending.save_dirs, paths: snapshot.pending.save_dir_paths } : undefined} />
     </Page>
   );
 }

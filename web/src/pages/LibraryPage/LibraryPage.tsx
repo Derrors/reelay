@@ -1,36 +1,39 @@
 import { FolderTree, LayoutGrid, LibraryBig, List, Search } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
-import { extras, type ITitleGroup } from '@/api/extras';
+import { useMemo, useState } from 'react';
+import { libraryApi, type ITitleGroup } from '@/api/library';
 import { EmptyState } from '@/components/app/EmptyState';
+import { ErrorState } from '@/components/app/ErrorState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { Page } from '@/components/app/Page';
+import { Segmented } from '@/components/app/Segmented';
 import { Select } from '@/components/app/Select';
 import { Sheet } from '@/components/app/Sheet';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAsync } from '@/hooks/useAsync';
+import { useDebounced } from '@/hooks/useDebounced';
 import { compactEpisodes, fullTime, mediaTypeLabel, relativeTime, seasonsLabel } from '@/lib/format';
-import { cn } from '@/lib/utils';
+import { MEDIA_TYPE_LABELS } from '@/lib/status';
 
 type Sort = 'recent' | 'title' | 'size';
 type View = 'grid' | 'list';
 
 const TYPES = [
   { value: '', label: '全部' },
-  { value: 'tv', label: '剧集' },
-  { value: 'movie', label: '电影' },
-  { value: 'anime', label: '动漫' },
+  ...['tv', 'movie', 'anime'].map((value) => ({ value, label: MEDIA_TYPE_LABELS[value] })),
 ];
 const SORTS: Array<{ value: Sort; label: string }> = [
   { value: 'recent', label: '最近入库' },
   { value: 'title', label: '按片名' },
   { value: 'size', label: '按体积' },
 ];
+const VIEWS = [
+  { value: 'grid' as const, title: '海报墙', label: <><LayoutGrid className="size-4" /><span className="sr-only">海报墙</span></> },
+  { value: 'list' as const, title: '列表', label: <><List className="size-4" /><span className="sr-only">列表</span></> },
+];
 
-interface LibraryResult {
-  key: string;
-  groups: ITitleGroup[];
-  gb: number;
-}
+/** 同名作品（如翻拍）按 TMDB 编号区分。 */
+const groupKey = (group: ITitleGroup) => `${group.media_type ?? ''}:${group.tmdbid ?? group.title}`;
 
 function gbText(bytes: number): string {
   const gb = bytes / 1024 ** 3;
@@ -71,12 +74,20 @@ function GroupSheet({ group, onClose }: { group: ITitleGroup | null; onClose: ()
             <MediaCover title={group.title} posterPath={group.poster_path} mediaType={group.media_type} className="w-28 shrink-0" />
             <dl className="grid content-start gap-x-4 gap-y-2 text-sm [grid-template-columns:auto_1fr]">
               <dt className="text-muted-foreground">保存目录</dt><dd>{group.save_dir_alias ?? '—'}</dd>
+              {group.resolution ? <><dt className="text-muted-foreground">清晰度</dt><dd>{group.resolution}</dd></> : null}
               <dt className="text-muted-foreground">估算体积</dt><dd className="tabular-nums">{gbText(group.bytes)}</dd>
               <dt className="text-muted-foreground">转存次数</dt><dd className="tabular-nums">{group.tasks}</dd>
               <dt className="text-muted-foreground">最近入库</dt>
               <dd title={fullTime(group.updated_at)}>{relativeTime(group.updated_at)}</dd>
             </dl>
           </div>
+          {group.release.length ? (
+            <div className="flex flex-wrap gap-1">
+              {group.release.map((tag) => (
+                <span key={tag} className="rounded bg-muted px-1.5 text-[11px] leading-[18px] text-muted-foreground">{tag}</span>
+              ))}
+            </div>
+          ) : null}
           {group.media_type !== 'movie' && group.episodes.length ? (
             <section className="space-y-2">
               <h3 className="text-[13px] font-semibold">已收录 {episodeCount(group)} 集</h3>
@@ -120,26 +131,14 @@ function GroupSheet({ group, onClose }: { group: ITitleGroup | null; onClose: ()
 
 export default function LibraryPage() {
   const [query, setQuery] = useState('');
-  const [submitted, setSubmitted] = useState('');
+  const submitted = useDebounced(query);
   const [type, setType] = useState('');
   const [sort, setSort] = useState<Sort>('recent');
   const [view, setView] = useState<View>(() => (localStorage.getItem('reelay-library-view') as View) || 'grid');
-  const [result, setResult] = useState<LibraryResult | null>(null);
   const [open, setOpen] = useState<ITitleGroup | null>(null);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSubmitted(query.trim()), 300);
-    return () => window.clearTimeout(timer);
-  }, [query]);
-
-  const key = `${type}|${submitted}`;
-  useEffect(() => {
-    let active = true;
-    extras.advancedTasks(submitted || undefined, type || undefined)
-      .then((r) => { if (active) setResult({ key, groups: r.groups, gb: r.estimated_gb }); })
-      .catch(() => { if (active) setResult({ key, groups: [], gb: 0 }); });
-    return () => { active = false; };
-  }, [key, submitted, type]);
+  const library = useAsync(() => libraryApi.list(submitted || undefined, type || undefined), [submitted, type], '读取媒体库失败');
+  const result = library.stale ? undefined : library.data;
 
   const groups = useMemo(() => {
     const list = [...(result?.groups ?? [])];
@@ -149,58 +148,39 @@ export default function LibraryPage() {
     return list;
   }, [result, sort]);
 
-  const loading = result?.key !== key;
   const switchView = (next: View) => { setView(next); localStorage.setItem('reelay-library-view', next); };
 
   return (
     <Page
       title="媒体库"
       description="已入库的影视作品，按片名汇总。"
-      actions={result && !loading ? (
+      actions={result ? (
         <span className="text-sm text-muted-foreground">
           <b className="font-semibold tabular-nums text-foreground">{result.groups.length}</b> 部 ·
-          约 <b className="font-semibold tabular-nums text-foreground">{result.gb}</b> GB
+          约 <b className="font-semibold tabular-nums text-foreground">{result.estimated_gb}</b> GB
         </span>
       ) : null}
     >
       <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center">
-        <div role="radiogroup" aria-label="类型" className="inline-flex shrink-0 self-start rounded-lg bg-muted p-1">
-          {TYPES.map((t) => (
-            <button
-              key={t.value || 'all'}
-              type="button"
-              role="radio"
-              aria-checked={type === t.value}
-              onClick={() => setType(t.value)}
-              className={cn('rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:py-1',
-                type === t.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground')}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <Segmented label="类型" size="md" value={type} onChange={setType} options={TYPES} className="shrink-0 self-start" />
         <div className="flex flex-1 gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索片名" className="h-9 bg-card pl-9 shadow-xs" />
           </div>
           <Select value={sort} onValueChange={(v) => setSort(v as Sort)} options={SORTS} aria-label="排序" className="w-28 shrink-0" />
-          <div className="hidden shrink-0 rounded-lg bg-muted p-1 sm:inline-flex">
-            {([['grid', LayoutGrid, '海报墙'], ['list', List, '列表']] as const).map(([value, Icon, label]) => (
-              <button key={value} type="button" title={label} aria-pressed={view === value} onClick={() => switchView(value)}
-                className={cn('grid size-7 place-items-center rounded-md text-muted-foreground',
-                  view === value && 'bg-card text-foreground shadow-xs')}>
-                <Icon className="size-4" /><span className="sr-only">{label}</span>
-              </button>
-            ))}
-          </div>
+          <Segmented label="显示方式" size="md" value={view} onChange={switchView} options={VIEWS} className="hidden shrink-0 sm:inline-flex" />
         </div>
       </div>
 
-      {loading ? (
-        <div className="grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
-          {Array.from({ length: 12 }, (_, i) => <Skeleton key={i} className="aspect-[2/3] rounded-lg" />)}
-        </div>
+      {!result ? (
+        library.error ? (
+          <ErrorState title="读取媒体库失败" error={library.error} onRetry={library.reload} retrying={library.loading} />
+        ) : (
+          <div className="grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+            {Array.from({ length: 12 }, (_, i) => <Skeleton key={i} className="aspect-[2/3] rounded-lg" />)}
+          </div>
+        )
       ) : groups.length === 0 ? (
         <EmptyState
           icon={submitted || type ? Search : LibraryBig}
@@ -210,7 +190,7 @@ export default function LibraryPage() {
       ) : view === 'grid' ? (
         <div className="grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-4 sm:gap-x-4 md:grid-cols-5 lg:grid-cols-6">
           {groups.map((g) => (
-            <button key={g.title} type="button" onClick={() => setOpen(g)} className="group min-w-0 text-left">
+            <button key={groupKey(g)} type="button" onClick={() => setOpen(g)} className="group min-w-0 text-left">
               <MediaCover title={g.title} posterPath={g.poster_path} mediaType={g.media_type}
                 className="transition-all duration-200 group-hover:-translate-y-1 group-hover:shadow-lg" />
               <div className="mt-2 truncate text-[13px] font-medium group-hover:text-primary">{g.title}</div>
@@ -221,7 +201,7 @@ export default function LibraryPage() {
       ) : (
         <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-card-border bg-card shadow-xs">
           {groups.map((g) => (
-            <button key={g.title} type="button" onClick={() => setOpen(g)}
+            <button key={groupKey(g)} type="button" onClick={() => setOpen(g)}
               className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50">
               <MediaCover title={g.title} posterPath={g.poster_path} mediaType={g.media_type} quality="w185" className="w-9 shrink-0 rounded-md" />
               <div className="min-w-0 flex-1">
@@ -229,7 +209,7 @@ export default function LibraryPage() {
                   {g.title}{g.year ? <span className="ml-1.5 text-xs font-normal text-muted-foreground">{g.year}</span> : null}
                 </div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {mediaTypeLabel(g.media_type)}
+                  {mediaTypeLabel(g.media_type)}{g.resolution ? ` · ${g.resolution}` : ''}
                   {g.media_type !== 'movie' && g.episodes.length
                     ? ` · ${g.episode_pairs ? seasonsLabel(g.episode_pairs) : `${g.episodes.length} 集：${compactEpisodes(g.episodes, 4)}`}` : ''}
                 </div>

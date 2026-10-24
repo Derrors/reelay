@@ -1,4 +1,5 @@
-/** 展示用格式化：时间、季集、媒体类型、海报地址。 */
+/** 展示用格式化：时间、季集、媒体类型、比例、海报地址。 */
+import { MEDIA_TYPE_LABELS } from './status';
 
 const RTF = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' });
 
@@ -65,11 +66,13 @@ export function episodeLabel(season?: number | null, episodes?: number[] | null,
   return [s, e].filter(Boolean).join(' · ');
 }
 
-export const MEDIA_TYPE_LABELS: Record<string, string> = { movie: '电影', tv: '剧集', anime: '动漫' };
-
 export function mediaTypeLabel(type?: string | null): string {
   return (type && MEDIA_TYPE_LABELS[type]) || '未知类型';
 }
+
+/** 比例 → 「95%」；没有数据时为「—」。 */
+export const percent = (value: number | null | undefined) =>
+  value === null || value === undefined ? '—' : `${Math.round(value * 100)}%`;
 
 /** TMDB 海报地址；没有路径时返回 null，由调用方显示生成封面。 */
 export function posterUrl(path?: string | null, size: 'w185' | 'w342' | 'w500' = 'w342'): string | null {
@@ -79,6 +82,6 @@ export function posterUrl(path?: string | null, size: 'w185' | 'w342' | 'w500' =
 /** 由字符串得到稳定的色相，用于生成封面配色。 */
 export function hueOf(text: string): number {
   let hash = 0;
-  for (const ch of text) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
+  for (const ch of text) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
   return hash % 360;
 }

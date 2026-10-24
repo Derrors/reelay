@@ -1,5 +1,5 @@
 import { Minus, PencilLine, Plus } from 'lucide-react';
-import type { IRuleChange } from '@/api/ai';
+import type { IRuleChange } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 const KIND = {

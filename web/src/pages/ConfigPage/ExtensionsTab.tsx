@@ -3,18 +3,21 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, ChevronDown, Clock3, Puzzle, RotateCcw, Workflow, Zap } from 'lucide-react';
 import PluginConfigEditor from '@/components/PluginConfigEditor';
 import { EmptyState } from '@/components/app/EmptyState';
+import { Field } from '@/components/app/Field';
+import { Notice } from '@/components/app/Notice';
 import { Panel } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { CHOICE_LABELS, SLOT_LABELS } from '@/lib/status';
 import type { IExtension, IExtensionField } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { Field, Notice, SectionHeading, SwitchRow } from './fields';
+import { equal, getPath, numberOrBlank, obj, setPath, strings, text, type Obj } from '@/lib/values';
+import { SectionHeading, SwitchRow } from './fields';
 import { FlowOverview } from './FlowOverview';
 import {
-  CHOICE_LABELS, PER_SOURCE_SLOTS, SLOT_LABELS, SLOT_ORDER, equal, extensionKeys, fieldDefault, getPath, isEnabled, obj, providerHint,
-  providerLabel, setPath, stageNames, storagesInUse, strings, text, type Catalog, type Obj,
+  PER_SOURCE_SLOTS, SLOT_ORDER, isEnabled, providerHint, providerLabel, stageNames, storagesInUse, type Catalog,
 } from './shared';
 
 interface ExtensionsTabProps {
@@ -36,7 +39,8 @@ const DirtyTag = () => (
 
 function SchemaField({ field, config, setConfig }: { field: IExtensionField; config: Obj; setConfig: Dispatch<SetStateAction<Obj>> }) {
   const value = getPath(config, field.path);
-  const fallback = fieldDefault(field);
+  // 未写入配置时后端实际使用的值（插件在 ui_fields 里声明）
+  const fallback = field.default;
   const set = (v: unknown) => setConfig(c => setPath(c, field.path, v));
   if (field.type === 'boolean') {
     return <SwitchRow className="sm:col-span-2 bg-card" title={field.label} checked={Boolean(value ?? fallback)} onCheckedChange={set} />;
@@ -61,7 +65,7 @@ function SchemaField({ field, config, setConfig }: { field: IExtensionField; con
       <Input
         className="bg-card" type={isNumber ? 'number' : 'text'} min={field.min} max={field.max}
         value={text(value)} placeholder={fallback === undefined ? undefined : `默认 ${text(fallback)}`}
-        onChange={e => set(isNumber ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value)}
+        onChange={e => set(isNumber ? numberOrBlank(e.target.value) : e.target.value)}
       />
     </Field>
   );
@@ -83,9 +87,8 @@ interface ExtensionCardProps {
 function ExtensionCard({ x, config, saved, setConfig, busy, open, catalog, onOpenChange, onToggle, onRestore }: ExtensionCardProps) {
   const configurable = x.fields.length > 0 || Boolean(x.config_type);
   const enabled = isEnabled(x, obj(config.plugins));
-  const dirty = extensionKeys(x).some(path => !equal(getPath(config, path), getPath(saved, path)));
-  const mismatched = x.required_storage
-    ? storagesInUse(config).filter(s => s !== x.required_storage) : [];
+  const dirty = !equal(getPath(config, x.config_section), getPath(saved, x.config_section));
+  const mismatched = storagesInUse(config).filter(s => x.unsupported_storage.includes(s));
   const expanded = configurable && open;
   return (
     <article id={`ext-${x.name}`} tabIndex={-1} className={cn(
@@ -109,7 +112,7 @@ function ExtensionCard({ x, config, saved, setConfig, busy, open, catalog, onOpe
       </div>
       {mismatched.length ? (
         <Notice tone="warning" icon={AlertTriangle} className="mx-4 mb-4 rounded-lg py-2.5 sm:mx-5">
-          仅支持「{providerLabel('storage', x.required_storage ?? '', catalog)}」，当前有规则使用「{mismatched.map(s => providerLabel('storage', s, catalog)).join('、')}」。请统一改用 {providerLabel('storage', x.required_storage ?? '', catalog)}，或关闭此功能。
+          不支持「{mismatched.map(s => providerLabel('storage', s, catalog)).join('、')}」，当前有规则使用它转存。请改用其他转存方式，或关闭此功能。
         </Notice>
       ) : null}
       <div className="mt-auto flex min-h-12 items-center justify-between gap-3 border-t border-border/70 px-4 py-2 sm:px-5">
@@ -178,7 +181,7 @@ export function ExtensionsTab({ catalog, hooks, events, config, saved, setConfig
         return next;
       })}
       onToggle={enabled => onToggle(x, enabled)}
-      onRestore={() => onRestore(extensionKeys(x))}
+      onRestore={() => onRestore([x.config_section])}
     />
   );
 

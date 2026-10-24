@@ -1,14 +1,15 @@
-import { Download, Eraser, Loader2, Play, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { Download, Eraser, Loader2, Play, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { ai, PARSE_RULE_FIELDS, PARSE_RULE_LABELS, type IParseRulesPreview, type ParseRuleField } from '@/api/ai';
+import { sourceApi, type IParseRulesPreview } from '@/api/sources';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { compactEpisodes } from '@/lib/format';
-import { cn } from '@/lib/utils';
-import { text, type Obj } from './shared';
+import { PARSE_RULE_FIELDS, PARSE_RULE_LABELS, type ParseRuleField } from '@/lib/status';
+import { cn, errorMessage } from '@/lib/utils';
+import { text, type Obj } from '@/lib/values';
+import { SampleList } from './SampleList';
 
 const MAX_SAMPLES = 20;
 const PLACEHOLDERS: Record<ParseRuleField, string> = {
@@ -52,14 +53,14 @@ export function ParseRulesDialog({ open, onOpenChange, bot, parser, rules: saved
     try {
       await fn();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '操作失败');
+      toast.error(errorMessage(e, '操作失败'));
     } finally {
       setBusy(null);
     }
   };
 
   const fetchMessages = () => run('fetch', async () => {
-    const r = await ai.sourceMessages(bot.trim(), 10);
+    const r = await sourceApi.messages(bot.trim(), 10);
     setSamples(r.messages.map(m => m.text));
     setOrigin(r.origin === 'telegram'
       ? `已从 ${bot.trim()} 读取最近 ${r.messages.length} 条消息`
@@ -67,13 +68,13 @@ export function ParseRulesDialog({ open, onOpenChange, bot, parser, rules: saved
     setResult(null);
   });
   const draft = () => run('draft', async () => {
-    const r = await ai.draftParseRules(bot.trim(), texts);
+    const r = await sourceApi.draftParseRules(bot.trim(), texts);
     setRules(Object.fromEntries(PARSE_RULE_FIELDS.map(f => [f, r.rules[f] ?? ''])) as Rules);
     setResult(r);
     setStale(false);
   });
   const preview = () => run('preview', async () => {
-    setResult(await ai.previewParseRules(filled(rules) ?? {}, texts));
+    setResult(await sourceApi.previewParseRules(filled(rules) ?? {}, texts));
     setStale(false);
   });
 
@@ -100,19 +101,7 @@ export function ParseRulesDialog({ open, onOpenChange, bot, parser, rules: saved
               </Button>
             </div>
             {origin ? <p className="text-xs text-muted-foreground">{origin}</p> : null}
-            {samples.map((sample, i) => (
-              <div key={i} className="flex gap-2">
-                <Textarea value={sample} className="min-h-16 bg-card font-mono text-xs" placeholder={`第 ${i + 1} 条消息`}
-                  onChange={(e) => setSamples(prev => prev.map((s, n) => (n === i ? e.target.value : s)))} />
-                {samples.length > 1 ? (
-                  <Button variant="ghost" size="icon" className="size-8 shrink-0 text-muted-foreground" aria-label="删除这条样例"
-                    onClick={() => setSamples(prev => prev.filter((_, n) => n !== i))}><Trash2 /></Button>
-                ) : null}
-              </div>
-            ))}
-            {samples.length < MAX_SAMPLES ? (
-              <Button variant="outline" size="sm" onClick={() => setSamples(prev => [...prev, ''])}><Plus />再加一条</Button>
-            ) : null}
+            <SampleList samples={samples} onChange={setSamples} max={MAX_SAMPLES} mono />
           </section>
 
           <section className="space-y-2">
@@ -127,7 +116,7 @@ export function ParseRulesDialog({ open, onOpenChange, bot, parser, rules: saved
               {PARSE_RULE_FIELDS.map(field => (
                 <label key={field} className="grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-3">
                   <span className="text-xs text-muted-foreground">{PARSE_RULE_LABELS[field]}</span>
-                  <Input value={rules[field] ?? ''} className="h-8 bg-card font-mono text-xs" placeholder={`沿用通用规则；${PLACEHOLDERS[field]}`}
+                  <Input value={rules[field] ?? ''} className="h-9 bg-card font-mono text-xs sm:h-8" placeholder={`沿用通用规则；${PLACEHOLDERS[field]}`}
                     onChange={(e) => { setRules(prev => ({ ...prev, [field]: e.target.value })); setStale(true); }} />
                 </label>
               ))}

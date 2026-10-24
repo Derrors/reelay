@@ -2,16 +2,14 @@ import { ArrowRight, Check, ChevronRight, CircleAlert, Copy, Folder, FolderOpen,
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { extras, type IDirItem } from '@/api/extras';
 import { EmptyState } from '@/components/app/EmptyState';
 import { Page } from '@/components/app/Page';
 import { Panel } from '@/components/app/Panel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useDirListing } from '@/hooks/useDirListing';
 import { cn } from '@/lib/utils';
-
-type Crumb = { id: string; name: string };
 
 /** 复制文本；非 HTTPS 访问时浏览器不提供剪贴板 API，退回到 execCommand。 */
 async function copyText(text: string) {
@@ -46,44 +44,13 @@ function useCopy() {
 }
 
 export default function StoragePage() {
-  const [items, setItems] = useState<IDirItem[]>([]);
-  const [path, setPath] = useState<Crumb[]>([]);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(true);
-  const [next, setNext] = useState<number | null>(null);
+  const dir = useDirListing();
   const [manualCid, setManualCid] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const version = useRef(0);
   const { copied, copy } = useCopy();
-  const current = path.at(-1)?.id ?? '0';
-
-  const load = async (cid: string, target: Crumb[], offset = 0) => {
-    const request = ++version.current;
-    setBusy(true);
-    setError('');
-    try {
-      const result = await extras.dirs(cid, offset);
-      if (request !== version.current) return;
-      // 优先用 115 返回的真实路径（按编号定位时也能显示正确的目录名）。
-      const serverPath = (result.path ?? []).filter((p) => p.id !== '0').map((p) => ({ id: p.id, name: p.name }));
-      setItems((old) => (offset ? [...old, ...result.items] : result.items));
-      setNext(result.next_offset);
-      setPath(serverPath.length ? serverPath : target);
-    } catch (e) {
-      if (request === version.current) setError(e instanceof Error ? e.message : '目录查询失败');
-    } finally {
-      if (request === version.current) setBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    let active = true;
-    extras.dirs('0')
-      .then((r) => { if (active) { setItems(r.items); setNext(r.next_offset); } })
-      .catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : '目录查询失败'); })
-      .finally(() => { if (active) setBusy(false); });
-    return () => { active = false; };
-  }, []);
+  const { cid: current, path, items, next } = dir;
+  const busy = dir.loading || dir.loadingMore;
+  const error = dir.loading ? '' : dir.error;
 
   const jump = () => {
     const cid = manualCid.trim();
@@ -91,17 +58,17 @@ export default function StoragePage() {
       toast.error('目录编号必须是纯数字');
       return;
     }
-    void load(cid, cid === '0' ? [] : [{ id: cid, name: `目录 ${cid}` }]);
+    dir.open(cid, cid === '0' ? [] : [{ id: cid, name: `目录 ${cid}` }]);
   };
 
-  const firstLoad = busy && items.length === 0 && !error;
+  const firstLoad = !dir.ready && items.length === 0 && !error;
 
   return (
     <Page
       title="115 目录"
       description="只读浏览你的 115 网盘，确认保存位置是否正确；不会创建、移动或删除任何文件。"
       actions={(
-        <Button variant="outline" className="bg-card" disabled={busy} onClick={() => void load(current, path)}>
+        <Button variant="outline" className="bg-card" disabled={busy} onClick={dir.reload}>
           <RefreshCw className={cn(busy && 'animate-spin')} />刷新
         </Button>
       )}
@@ -114,9 +81,9 @@ export default function StoragePage() {
                 <button
                   type="button"
                   disabled={busy || path.length === 0}
-                  onClick={() => void load('0', [])}
+                  onClick={() => dir.open('0', [])}
                   className={cn(
-                    'inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 font-medium transition-colors',
+                    'inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 font-medium transition-colors sm:min-h-8',
                     path.length ? 'text-muted-foreground hover:bg-muted hover:text-foreground' : 'text-foreground',
                   )}
                 >
@@ -132,9 +99,9 @@ export default function StoragePage() {
                       type="button"
                       disabled={busy || last}
                       aria-current={last ? 'page' : undefined}
-                      onClick={() => void load(crumb.id, path.slice(0, i + 1))}
+                      onClick={() => dir.open(crumb.id, path.slice(0, i + 1))}
                       className={cn(
-                        'inline-flex min-h-8 max-w-56 items-center rounded-md px-2 font-medium transition-colors',
+                        'inline-flex min-h-9 max-w-56 items-center rounded-md px-2 font-medium transition-colors sm:min-h-8',
                         last ? 'text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                       )}
                     >
@@ -167,7 +134,7 @@ export default function StoragePage() {
             <p className="mt-4 text-sm font-medium">无法读取这个目录</p>
             <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{error}</p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
-              <Button variant="outline" onClick={() => void load(current, path)}><RefreshCw />重新查询</Button>
+              <Button variant="outline" onClick={dir.reload}><RefreshCw />重新查询</Button>
               <Button asChild variant="ghost" className="text-primary">
                 <Link to="/config?tab=connections">检查 115 连接<ArrowRight /></Link>
               </Button>
@@ -191,7 +158,7 @@ export default function StoragePage() {
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void load(item.id, [...path, { id: item.id, name: item.name }])}
+                  onClick={() => dir.open(item.id, [...path, { id: item.id, name: item.name }])}
                   className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-lg px-2.5 text-left"
                 >
                   <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
@@ -219,7 +186,7 @@ export default function StoragePage() {
 
         {next !== null && !error ? (
           <div className="border-t border-border/70 p-3 text-center">
-            <Button variant="outline" disabled={busy} onClick={() => void load(current, path, next)}>加载更多</Button>
+            <Button variant="outline" disabled={busy} onClick={() => void dir.loadMore()}>加载更多</Button>
           </div>
         ) : null}
       </Panel>
@@ -229,7 +196,7 @@ export default function StoragePage() {
           type="button"
           onClick={() => setShowAdvanced((v) => !v)}
           aria-expanded={showAdvanced}
-          className="inline-flex min-h-8 items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+          className="inline-flex min-h-9 items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground sm:min-h-8"
         >
           <Hash className="size-3.5" />{showAdvanced ? '收起按编号定位' : '知道目录编号？直接定位'}
         </button>

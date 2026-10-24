@@ -1,12 +1,16 @@
 import { ArrowRight, BellPlus, Sparkles, TrendingUp } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ai, type ILlmUsage, type ISourceInsight, type ISubscriptionSuggestion } from '@/api/ai';
-import { extras } from '@/api/extras';
+import { aiApi, type ILlmUsage } from '@/api/ai';
+import { sourceApi, type ISourceInsight } from '@/api/sources';
+import { subscriptionApi, type ISubscriptionSuggestion } from '@/api/subscriptions';
 import { Panel } from '@/components/app/Panel';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAsync } from '@/hooks/useAsync';
+import { announceSubscription } from '@/lib/subscriptions';
+import { errorMessage } from '@/lib/utils';
 
 interface State {
   auto: ISourceInsight[];
@@ -14,30 +18,28 @@ interface State {
   usage: ILlmUsage | null;
 }
 
-const message = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback);
+/** 三项各自失败都不影响其他：只是少一类建议。 */
+const fetchSuggestions = (): Promise<State> => Promise.all([
+  sourceApi.insights().catch(() => null), subscriptionApi.list().catch(() => null), aiApi.usage(30).catch(() => null),
+]).then(([insights, subs, usage]) => ({
+  auto: insights?.sources.filter((s) => s.suggest_auto) ?? [],
+  subscriptions: subs?.suggestions.slice(0, 3) ?? [],
+  usage,
+}));
 
-/** 总览的 AI 建议：可以改为自动转存的来源、值得订阅的剧，以及近 30 天的 AI 调用概况。建议都要你点了才生效。 */
+/** 总览的 AI 建议：可以改为 AI 处理的来源、值得订阅的剧，以及近 30 天的 AI 调用概况。建议都要你点了才生效。 */
 export function AiSuggestions() {
-  const [state, setState] = useState<State | null>(null);
+  const { data: state, reload } = useAsync(fetchSuggestions, []);
   const [busy, setBusy] = useState(false);
-
-  const load = useCallback(() => Promise.all([
-    ai.insights().catch(() => null), ai.subscriptions().catch(() => null), ai.usage(30).catch(() => null),
-  ]).then(([insights, subs, usage]) => setState({
-    auto: insights?.sources.filter((s) => s.suggest_auto) ?? [],
-    subscriptions: subs?.suggestions.slice(0, 3) ?? [],
-    usage,
-  })), []);
-  useEffect(() => { void load(); }, [load]);
 
   const enableAuto = async (source: string) => {
     setBusy(true);
     try {
-      await ai.enableAuto(source);
+      await sourceApi.enableAuto(source);
       toast.success(`「${source}」已改为 AI 处理；拿不准的资源仍会交给你确认`);
-      await load();
+      reload();
     } catch (e) {
-      toast.error(message(e, '保存失败'));
+      toast.error(errorMessage(e, '保存失败'));
     } finally {
       setBusy(false);
     }
@@ -46,15 +48,11 @@ export function AiSuggestions() {
   const subscribe = async (s: ISubscriptionSuggestion) => {
     setBusy(true);
     try {
-      const r = await ai.subscribe({ title: s.title, season: s.season, tmdbid: s.tmdbid });
-      toast.success(`已订阅《${s.title}》第 ${s.season} 季`, r.pending.length ? {
-        description: `待审批里还有 ${r.pending.length} 条属于这部剧`,
-        action: { label: `一并转存 ${r.pending.length} 条`, onClick: () => { void extras.batch(r.pending, 'approve'); } },
-        duration: 10000,
-      } : undefined);
-      await load();
+      const r = await subscriptionApi.add({ title: s.title, season: s.season, tmdbid: s.tmdbid });
+      announceSubscription(s, r.pending);
+      reload();
     } catch (e) {
-      toast.error(message(e, '订阅失败'));
+      toast.error(errorMessage(e, '订阅失败'));
     } finally {
       setBusy(false);
     }
@@ -85,7 +83,7 @@ export function AiSuggestions() {
           ))}
           {empty ? <p className="text-xs leading-5 text-muted-foreground">暂时没有建议。你批准、忽略与修正得越多，建议越准。</p> : null}
           {usage ? (
-            <Link to="/stats" className="flex items-center justify-between gap-2 border-t border-border/70 pt-3 text-xs text-muted-foreground hover:text-primary">
+            <Link to="/stats?tab=ai" className="flex items-center justify-between gap-2 border-t border-border/70 pt-3 text-xs text-muted-foreground hover:text-primary">
               <span>
                 近 30 天 AI 调用 {usage.calls} 次
                 {usage.invalid ? `，未通过校验 ${usage.invalid} 次` : ''}

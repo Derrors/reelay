@@ -1,14 +1,15 @@
 import { CircleAlert, Loader2, Wand2 } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { ai, type ICompileResult } from '@/api/ai';
+import { aiApi, type ICompileResult } from '@/api/ai';
 import { ChangeList } from '@/components/app/ChangeList';
+import { Notice } from '@/components/app/Notice';
 import { Panel } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Notice } from './fields';
-import { rows, text, type Obj } from './shared';
+import { errorMessage } from '@/lib/utils';
+import { rows, text, type Obj } from '@/lib/values';
 
 interface RuleComposerProps {
   config: Obj;
@@ -30,9 +31,9 @@ export function RuleComposer({ config, dirty, onApply }: RuleComposerProps) {
     setBusy(true);
     setResult(null);
     try {
-      setResult(await ai.compileRules(request.trim(), scope));
+      setResult(await aiApi.compileRules(request.trim(), scope));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '生成规则失败');
+      toast.error(errorMessage(e, '生成规则失败'));
     } finally {
       setBusy(false);
     }
@@ -60,14 +61,16 @@ export function RuleComposer({ config, dirty, onApply }: RuleComposerProps) {
       bodyClassName="p-4 sm:p-5"
     >
       <div className="space-y-3">
-        <div className="grid gap-2 sm:grid-cols-[12rem_minmax(0,1fr)]">
-          <Select value={scope} onValueChange={setScope} aria-label="规则作用范围"
-            options={[{ value: 'defaults', label: '默认规则（所有来源）' }, ...sources.map((bot) => ({ value: bot, label: `仅来源 ${bot}` }))]} />
-          <Textarea value={request} onChange={(e) => setRequest(e.target.value)} className="min-h-16 bg-card"
-            placeholder="如：只要 1080p 以上的国产剧和日本动画，综艺不要，优先国语中字版本" aria-label="收藏偏好描述" />
-        </div>
-        <div className="flex justify-end">
-          <Button size="sm" disabled={busy || !request.trim()} onClick={() => void compile()}>
+        <Textarea value={request} onChange={(e) => setRequest(e.target.value)} className="min-h-20 bg-card"
+          placeholder="如：只要 1080p 以上的国产剧和日本动画，综艺不要，优先国语中字版本" aria-label="收藏偏好描述" />
+        {/* 作用范围与生成按钮同高、同一行；窄屏上下排列，按钮占满宽度 */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <label className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-[13px] text-muted-foreground">作用于</span>
+            <Select className="min-w-0 flex-1 sm:w-64 sm:flex-none" value={scope} onValueChange={setScope}
+              options={[{ value: 'defaults', label: '所有来源（默认规则）' }, ...sources.map((bot) => ({ value: bot, label: bot }))]} />
+          </label>
+          <Button disabled={busy || !request.trim()} onClick={() => void compile()}>
             {busy && !result ? <Loader2 className="animate-spin" /> : <Wand2 />}生成规则
           </Button>
         </div>

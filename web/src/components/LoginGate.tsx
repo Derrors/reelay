@@ -1,50 +1,53 @@
-import { CircleAlert, Clapperboard, Eye, EyeOff, LoaderCircle, Lock } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
-import { apiUrl } from '@/api/client';
+import { CircleAlert, Clapperboard, Eye, EyeOff, LoaderCircle, Lock, ShieldAlert } from 'lucide-react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { authApi } from '@/api/auth';
+import { ApiError } from '@/api/request';
 import { ThemeToggle } from '@/components/app/ThemeToggle';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-class LoginError extends Error {
-  /** 被限流时，多少秒后可以再试。 */
-  retryAfter: number;
-
-  constructor(message: string, retryAfter = 0) {
-    super(message);
-    this.retryAfter = retryAfter;
-  }
+/** 登录失败的提示，以及被限流时多少秒后可以再试。 */
+function loginError(e: unknown): { message: string; retryAfter: number } {
+  if (!(e instanceof ApiError)) return { message: '登录失败，请稍后重试', retryAfter: 0 };
+  if (e.status === 401) return { message: '访问密码不正确，请重试', retryAfter: 0 };
+  if (e.status === 429) return { message: e.message, retryAfter: Number(/(\d+)\s*秒/.exec(e.message)?.[1] ?? 60) };
+  return { message: e.message, retryAfter: 0 };
 }
 
-/**
- * 直接请求登录接口：extras.req 会把所有 401 统一改写成「登录已失效」，
- * 这里需要区分密码错误（401）和尝试过于频繁（429）。
- */
-async function login(password: string): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(apiUrl('auth/login'), {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-  } catch {
-    throw new LoginError('无法连接到服务，请检查网络后重试');
-  }
-  if (response.ok) return;
-  let detail = '';
-  try {
-    const body = (await response.json()) as { detail?: unknown };
-    if (typeof body.detail === 'string') detail = body.detail;
-  } catch {
-    // 非 JSON 响应，使用下面的通用文案
-  }
-  if (response.status === 401) throw new LoginError('访问密码不正确，请重试');
-  if (response.status === 429) {
-    const seconds = Number(/(\d+)\s*秒/.exec(detail)?.[1] ?? 60);
-    throw new LoginError(detail || '尝试过于频繁，请稍后再试', seconds);
-  }
-  throw new LoginError(detail || `登录失败（${response.status}），请稍后重试`);
+/** 登录页与「无法访问」页共用的外框：品牌标识、一句说明与下方内容。 */
+function GateShell({ subtitle, children }: { subtitle: string; children: ReactNode }) {
+  return (
+    <div className="relative flex min-h-svh flex-col items-center justify-center px-5 py-10">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-[420px]"
+        style={{ background: 'radial-gradient(640px 320px at 50% -60px, color-mix(in oklab, var(--primary) 16%, transparent), transparent 70%)' }}
+      />
+      <main className="relative w-full max-w-[360px]">
+        <div className="flex flex-col items-center text-center">
+          <div className="grid size-12 place-items-center rounded-[14px] bg-gradient-to-br from-[hsl(171_58%_44%)] to-[hsl(178_64%_26%)] text-white shadow-[0_8px_20px_-6px_hsl(173_60%_30%/0.6)]">
+            <Clapperboard className="size-6" />
+          </div>
+          <h1 className="mt-4 text-[22px] font-semibold tracking-tight">Reelay</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+        </div>
+        {children}
+      </main>
+      <ThemeToggle className="absolute bottom-5 right-5" />
+    </div>
+  );
+}
+
+/** 服务端拒绝这次访问（如还没设置登录密码时从其他设备打开）：说明原因，不进入控制台。 */
+export function AccessDenied({ message }: { message: string }) {
+  return (
+    <GateShell subtitle="无法从这里打开控制台">
+      <div role="alert" className="mt-7 flex items-start gap-2.5 rounded-xl border border-card-border bg-card p-5 text-sm leading-6 shadow-lg sm:p-6">
+        <ShieldAlert className="mt-1 size-4 shrink-0 text-warning" />
+        <p>{message}</p>
+      </div>
+    </GateShell>
+  );
 }
 
 export default function LoginGate({ onOk }: { onOk: () => void }) {
@@ -79,10 +82,10 @@ export default function LoginGate({ onOk }: { onOk: () => void }) {
     setBusy(true);
     setError('');
     try {
-      await login(password);
+      await authApi.login(password);
       onOk();
     } catch (e) {
-      const err = e instanceof LoginError ? e : new LoginError('登录失败，请稍后重试');
+      const err = loginError(e);
       setError(err.message);
       if (err.retryAfter) {
         setNow(Date.now());
@@ -95,66 +98,50 @@ export default function LoginGate({ onOk }: { onOk: () => void }) {
   };
 
   return (
-    <div className="relative flex min-h-svh flex-col items-center justify-center px-5 py-10">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[420px]"
-        style={{ background: 'radial-gradient(640px 320px at 50% -60px, color-mix(in oklab, var(--primary) 16%, transparent), transparent 70%)' }}
-      />
-      <main className="relative w-full max-w-[360px]">
-        <div className="flex flex-col items-center text-center">
-          <div className="grid size-12 place-items-center rounded-[14px] bg-gradient-to-br from-[hsl(171_58%_44%)] to-[hsl(178_64%_26%)] text-white shadow-[0_8px_20px_-6px_hsl(173_60%_30%/0.6)]">
-            <Clapperboard className="size-6" />
-          </div>
-          <h1 className="mt-4 text-[22px] font-semibold tracking-tight">Reelay</h1>
-          <p className="mt-1 text-sm text-muted-foreground">输入访问密码进入控制台</p>
+    <GateShell subtitle="输入访问密码进入控制台">
+      <form
+        onSubmit={(e) => void submit(e)}
+        className="mt-7 rounded-xl border border-card-border bg-card p-5 shadow-lg sm:p-6"
+      >
+        <label htmlFor="login-password" className="text-[13px] font-medium">访问密码</label>
+        <div className="relative mt-1.5">
+          <Lock className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            ref={input}
+            id="login-password"
+            type={visible ? 'text' : 'password'}
+            autoComplete="current-password"
+            autoFocus
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            aria-invalid={Boolean(error) || undefined}
+            aria-describedby={error ? 'login-error' : undefined}
+            className="h-10 bg-card pl-9 pr-10"
+          />
+          <button
+            type="button"
+            onClick={() => setVisible((v) => !v)}
+            aria-label={visible ? '隐藏密码' : '显示密码'}
+            className="absolute right-0.5 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+          </button>
         </div>
+        {error ? (
+          <p id="login-error" role="alert" className="mt-2 flex items-start gap-1.5 text-xs leading-5 text-destructive">
+            <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+            <span>{remaining ? `尝试过于频繁，请 ${remaining} 秒后再试` : error}</span>
+          </p>
+        ) : null}
+        <Button type="submit" className="mt-4 h-10 w-full" disabled={busy || !password || remaining > 0}>
+          {busy ? <LoaderCircle className="animate-spin" /> : null}
+          {busy ? '正在验证…' : remaining ? `${remaining} 秒后可重试` : '进入控制台'}
+        </Button>
+      </form>
 
-        <form
-          onSubmit={(e) => void submit(e)}
-          className="mt-7 rounded-xl border border-card-border bg-card p-5 shadow-lg sm:p-6"
-        >
-          <label htmlFor="login-password" className="text-[13px] font-medium">访问密码</label>
-          <div className="relative mt-1.5">
-            <Lock className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              ref={input}
-              id="login-password"
-              type={visible ? 'text' : 'password'}
-              autoComplete="current-password"
-              autoFocus
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              aria-invalid={Boolean(error) || undefined}
-              aria-describedby={error ? 'login-error' : undefined}
-              className="h-10 bg-card pl-9 pr-10"
-            />
-            <button
-              type="button"
-              onClick={() => setVisible((v) => !v)}
-              aria-label={visible ? '隐藏密码' : '显示密码'}
-              className="absolute right-1 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              {visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-            </button>
-          </div>
-          {error ? (
-            <p id="login-error" role="alert" className="mt-2 flex items-start gap-1.5 text-xs leading-5 text-destructive">
-              <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
-              <span>{remaining ? `尝试过于频繁，请 ${remaining} 秒后再试` : error}</span>
-            </p>
-          ) : null}
-          <Button type="submit" className="mt-4 h-10 w-full" disabled={busy || !password || remaining > 0}>
-            {busy ? <LoaderCircle className="animate-spin" /> : null}
-            {busy ? '正在验证…' : remaining ? `${remaining} 秒后可重试` : '进入控制台'}
-          </Button>
-        </form>
-
-        <p className="mt-5 text-center text-xs leading-5 text-muted-foreground">
-          密码在「设置 → 运行与安全」中设置；忘记时删掉 <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">data/secrets.json</code> 里的 web_password
-        </p>
-      </main>
-      <ThemeToggle className="absolute bottom-5 right-5" />
-    </div>
+      <p className="mt-5 text-center text-xs leading-5 text-muted-foreground">
+        密码在「设置 → 运行与安全」中设置；忘记时删掉 <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">data/secrets.json</code> 里的 web_password
+      </p>
+    </GateShell>
   );
 }

@@ -1,14 +1,13 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/api/client';
+import { configApi } from '@/api/config';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { confirmDialog } from '@/lib/confirm';
 import type { ISecretStatus } from '@/lib/types';
-
-const message = (e: unknown) => (e instanceof Error ? e.message : '保存失败');
+import { errorMessage } from '@/lib/utils';
 
 /** 32 字节随机数的 base64url，用作访问令牌。 */
 function randomToken() {
@@ -38,12 +37,12 @@ export function SecretField({ name, secrets, onSaved, hint, placeholder, generat
     }))) return;
     setBusy(true);
     try {
-      onSaved(await api.saveSecrets({ [name]: next }));
+      onSaved(await configApi.saveSecrets({ [name]: next }));
       setValue('');
       setRevealed(false);
       toast.success(next === null ? `已清除「${label}」` : `「${label}」已保存并生效`);
     } catch (e) {
-      toast.error(message(e));
+      toast.error(errorMessage(e, '保存失败'));
     } finally {
       setBusy(false);
     }
@@ -92,11 +91,11 @@ export function PasswordField({ secrets, onSaved }: { secrets: ISecretStatus; on
     }))) return;
     setBusy(true);
     try {
-      onSaved(await api.saveSecrets({ web_password: value }, current));
+      onSaved(await configApi.saveSecrets({ web_password: value }, current));
       setCurrent(''); setNext(''); setConfirm('');
       toast.success(value === null ? '已清除 Web 登录密码' : '密码已更新，其他已登录的页面需要重新登录');
     } catch (e) {
-      toast.error(message(e));
+      toast.error(errorMessage(e, '保存失败'));
     } finally {
       setBusy(false);
     }

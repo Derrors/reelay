@@ -33,7 +33,8 @@ const buttonVariants = cva(
       // but will expand to fit large amounts of content.
       size: {
         default: "min-h-9 px-4 py-2",
-        sm: "min-h-8 rounded-md px-3 text-xs",
+        // 移动端可点区域不低于 36px，桌面端紧凑一些
+        sm: "min-h-9 rounded-md px-3 text-xs sm:min-h-8",
         lg: "min-h-10 rounded-md px-8",
         icon: "h-9 w-9",
       },

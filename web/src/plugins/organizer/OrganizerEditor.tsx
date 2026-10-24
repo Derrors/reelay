@@ -3,16 +3,17 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { EditorHeading } from '../EditorHeading';
-import { obj, text, type PluginEditorProps } from '../types';
+import { obj, text } from '@/lib/values';
+import type { PluginEditorProps } from '../types';
 import { CategoryList } from './CategoryList';
-import { LAYOUTS } from './layouts';
+import { LAYOUTS, layoutOf } from './layouts';
 import { NamingEditor } from './NamingEditor';
 import { OrganizePreviewDialog } from './OrganizePreviewDialog';
 import { TypeDirsFlow } from './TypeDirsFlow';
 
 /** 媒体库整理（organizer）的设置：目录方式、按媒体类型的文件夹名、命名模板。 */
 export function OrganizerEditor({ section, setSection }: PluginEditorProps) {
-  const layout = text(section.layout) || 'category';
+  const layout = layoutOf(section);
   const [previewing, setPreviewing] = useState(false);
   const naming = obj(section.naming);
   return (
