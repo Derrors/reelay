@@ -43,19 +43,19 @@ Set it up once in the web console; after that, approving, correcting, following 
 <td width="33%" valign="top">
 
 ### 🧠 Understands messages
-The LLM extracts title, season, episodes, resolution, subtitles, audio and HDR; TMDB corrects the title. Each source can also have its own recognition rules, drafted by AI from the channel's recent messages, which take over when AI is unavailable.
+AI reads title, episodes and release details; TMDB fixes the title. Rules take over when AI is down.
 
 </td>
 <td width="33%" valign="top">
 
 ### 📱 Done in Telegram
-Approval cards save, reroute or follow a show in one tap; if recognition is wrong, tap **Fix** and send one line. Pending items, failures and subscriptions all have commands that work without AI.
+Save, reroute or follow a show in one tap; fix a wrong match with one line.
 
 </td>
 <td width="33%" valign="top">
 
 ### 🛡️ Transfers you can trust
-A dedicated staging folder, a checkpoint before every API call, and read-back verification by size and SHA1. An uncertain result is only re-checked, never re-sent, and slow 115 landings are re-checked automatically.
+Checkpoint before every call, verify after. Uncertain results are re-checked, never re-sent.
 
 </td>
 </tr>
@@ -63,19 +63,19 @@ A dedicated staging folder, a checkpoint before every API call, and read-back ve
 <td valign="top">
 
 ### 🗂️ Organized on arrival
-Filed by category (e.g. *TV / Chinese TV*), by media type, or flat; names come from templates with `[tmdbid=…]`. Name conflicts can go to you, be skipped, kept side by side, or upgraded.
+Auto-filed and renamed by template; duplicates go to you, are skipped, kept, or upgraded.
 
 </td>
 <td valign="top">
 
 ### 📺 Follows shows for you
-Subscribe once and new episodes go straight through; after you approve 3 items of the same show, Reelay suggests subscribing. A daily report and missing-episode reminder arrive every day, and subscriptions end on their own when a season is complete.
+New episodes save themselves, missing ones are flagged daily, and finished seasons unsubscribe.
 
 </td>
 <td valign="top">
 
 ### 🧩 Works everywhere
-Web console, Telegram control bot, and an MCP server for agents like Claude; three extension points (Provider / Hook / Event), where one folder is one plugin.
+Web console, Telegram bot and MCP; one folder is one plugin.
 
 </td>
 </tr>
