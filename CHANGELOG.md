@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-24
+
 ### 新增
 
 - 日常操作基本都能在 Telegram 上完成：追剧、「不再接收」、修正或重新识别，/pending、/failed、/subs、/ignored 列表与一键全部批准。

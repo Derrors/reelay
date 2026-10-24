@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reelay"
-version = "0.6.2"
+version = "1.0.0"
 description = "自托管的 Telegram → 115 网盘自动转存：AI 识别分享链接，审批后转存并按媒体库规范整理入库。"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Derrors" }]
 keywords = ["telegram", "115", "media-library", "jellyfin", "emby", "llm", "self-hosted"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Web Environment",
     "Framework :: AsyncIO",
     "Framework :: FastAPI",

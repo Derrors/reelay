@@ -216,7 +216,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `REELAY_VERSION` | `latest` | 仅 Docker Compose：使用的镜像版本，如 `0.6.2` |
+| `REELAY_VERSION` | `latest` | 仅 Docker Compose：使用的镜像版本，如 `1.0.0` |
 | `REELAY_WEB_HOST` / `REELAY_WEB_PORT` | `127.0.0.1` / `28080` | 本机运行时管理台的监听地址（Docker 部署改 `compose.yaml` 的 `ports`） |
 | `REELAY_FORWARDED_ALLOW_IPS` | `127.0.0.1` | 管理台信任哪些反向代理转发的客户端地址（`X-Forwarded-For`），逗号分隔，`*` 表示全部；登录失败限流按真实客户端计数。Docker 部署时填反向代理在容器网络里的地址 |
 | `REELAY_MCP_READONLY` | 空 | 设为 `1` 时 MCP 只暴露查询工具（stdio 与 HTTP 都是，HTTP 的读写令牌也降为只读） |

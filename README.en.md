@@ -248,7 +248,7 @@ The documentation is in Chinese.
 ## 📌 Status
 
 > [!NOTE]
-> Beta. The features are complete and the author uses it daily; the full manual-approval flow runs continuously on a real account. Automatic approval, many sources and long-running containers are still being proven, and config and data formats may still change before 1.0. Feedback is welcome. Runs on macOS / Linux; on Windows, use Docker.
+> 1.0. The author uses it daily, and the full manual-approval flow runs continuously on a real account. From 1.0 on the project follows semantic versioning: config and data formats stay compatible within 1.x. Feedback is welcome, especially on automatic approval and running many sources. Runs on macOS / Linux; on Windows, use Docker.
 
 > [!WARNING]
 > Reelay does not provide or index any content. It only processes messages your own account can see and saves to your own drive. Automating a personal Telegram account may get it **banned**, and calling 115 APIs too often may trigger **rate limits or risk control**. Read the [disclaimer](DISCLAIMER.md) (Chinese) before use.

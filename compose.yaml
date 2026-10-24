@@ -1,5 +1,5 @@
 # 默认拉取 GitHub Actions 发布的镜像（ghcr.io/derrors/reelay，支持 amd64 / arm64）。
-# 固定版本：在 .env 里写 REELAY_VERSION=<版本号>（如 0.6.2，见 GitHub Releases）；不写时用 latest（最新正式版）。
+# 固定版本：在 .env 里写 REELAY_VERSION=<版本号>（如 1.0.0，见 GitHub Releases）；不写时用 latest（最新正式版）。
 # 从源码构建：docker compose -f compose.yaml -f compose.build.yaml up -d --build
 services:
   worker:

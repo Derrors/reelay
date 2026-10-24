@@ -34,7 +34,7 @@ docker compose pull
 docker compose up -d web
 ```
 
-管理台在 <http://127.0.0.1:28080>。默认拉取最新正式版；要固定版本，在同目录建一个 `.env` 写上 `REELAY_VERSION=<版本号>`（如 `0.6.2`，见 [Releases](https://github.com/Derrors/reelay/releases)）。
+管理台在 <http://127.0.0.1:28080>。默认拉取最新正式版；要固定版本，在同目录建一个 `.env` 写上 `REELAY_VERSION=<版本号>`（如 `1.0.0`，见 [Releases](https://github.com/Derrors/reelay/releases)）。
 
 ### 本机运行
 
