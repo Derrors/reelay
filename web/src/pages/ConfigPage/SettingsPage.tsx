@@ -3,6 +3,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BasicTab } from './BasicTab';
 import { ConfigFrame } from './ConfigFrame';
 import { ConnectionsTab } from './ConnectionsTab';
+import { ProxyTab } from './ProxyTab';
 import { RecognitionTab } from './RecognitionTab';
 import { ServicesTab, SystemTab, TelegramTab } from './ServiceTabs';
 import { CONFIG_SECTIONS, SYSTEM_KEYS } from './shared';
@@ -16,6 +17,7 @@ const TABS = [
   { value: 'services', label: 'AI 与 TMDB' },
   { value: 'telegram', label: 'Telegram' },
   { value: 'connections', label: '115 网盘' },
+  { value: 'proxy', label: '网络代理' },
   { value: 'system', label: '运行与安全' },
 ];
 const TRIGGER_CLASS = [
@@ -46,7 +48,7 @@ export default function SettingsPage() {
     <ConfigFrame
       draft={draft}
       title="设置"
-      description="系统配置：保存目录、监听来源、确认方式、AI 与 TMDB、Telegram、115 网盘与访问安全。修改后在页面底部保存，与配置文件同步。"
+      description="系统配置：保存目录、监听来源、确认方式、AI 与 TMDB、Telegram、115 网盘、网络代理与访问安全。修改后在页面底部保存，与配置文件同步。"
       dirtyLabels={dirtySections.map(s => s.label)}
       onSave={() => void draft.save('设置已保存并立即生效')}
     >
@@ -82,6 +84,10 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="connections">
             <ConnectionsTab connections={data.connections} config={config} setField={setField} />
+          </TabsContent>
+          <TabsContent value="proxy">
+            <ProxyTab config={config} saved={data.config} setField={setField} {...secretProps}
+              pendingSecrets={draft.pendingSecrets} setPendingSecret={draft.setPendingSecret} />
           </TabsContent>
           <TabsContent value="system">
             <SystemTab config={config} setField={setField} {...secretProps} />

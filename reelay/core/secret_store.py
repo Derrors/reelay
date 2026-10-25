@@ -1,4 +1,4 @@
-"""密钥：AI 接口 / TMDB 的 key、Telegram API、控制 Bot Token、Web 登录密码与 MCP 访问令牌。
+"""密钥：AI 接口 / TMDB 的 key、Telegram API、控制 Bot Token、代理密码、Web 登录密码与 MCP 访问令牌。
 
 存放在 data/secrets.json（权限 600），不进配置文件，配置原文与接口返回里都看不到；管理台只能
 设置、替换或清除，读不回原值。Web 登录密码只存 PBKDF2 摘要。
@@ -26,6 +26,7 @@ NAMES = {
     "telegram_api_id": "Telegram API ID",
     "telegram_api_hash": "Telegram API Hash",
     "control_bot_token": "控制 Bot Token",
+    "proxy_password": "代理密码",
     "web_password": "Web 登录密码",
     "mcp_token": "MCP 访问令牌（读写）",
     "mcp_readonly_token": "MCP 访问令牌（只读）",

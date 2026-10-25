@@ -10,7 +10,7 @@
 - ``catalog``：媒体库与缺集；
 - ``follow``：追剧订阅与不再接收；
 - ``ai_service``：AI 服务设置与一句话生成规则；
-- ``settings``：配置与密钥。
+- ``settings``：配置与密钥，测试网络代理。
 """
 from __future__ import annotations
 

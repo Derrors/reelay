@@ -2,7 +2,7 @@
 
 所有 AI 能力（解析、偏好决策、转人工前的方案兜底、规则起草、建议措辞……）都经过这里：
 
-- ``make_client()``：按系统配置 ``llm``（地址、模型）与密钥创建客户端；未配 key 或未装 SDK 时
+- ``make_client()``：按系统配置 ``llm``（地址、模型）、网络代理与密钥创建客户端；未配 key 或未装 SDK 时
   返回 None，调用方自行降级；使用方继承 ``UsesAI``，每次用到时取，管理台改了立即生效；
 - ``complete_json()``：一次结构化调用 —— JSON schema 约束输出，调用方的 ``validate`` 做本地严格校验；
   瞬时错误退避重试，非法输出重试一次；
@@ -19,7 +19,7 @@ import re
 import time
 from typing import Any, Callable
 
-from . import runtime, secret_store
+from . import proxy, runtime, secret_store
 from .config import DEFAULT_LLM_MODEL as DEFAULT_MODEL
 
 # 瞬时错误（超时、限流、5xx）的退避重试次数与首次间隔（秒）
@@ -39,37 +39,40 @@ class AIError(RuntimeError):
 
 
 log = logging.getLogger("reelay.ai")
-_CLIENTS: dict[tuple[str, str], Any] = {}
+_CLIENTS: dict[tuple[str, str, str | None], Any] = {}
 
 
 def client_for(base_url: str, key: str | None = None) -> Any | None:
-    """用给定地址与密钥（省略时用已保存的）创建客户端；没有密钥或没装 SDK 时为 None。"""
+    """用给定地址与密钥（省略时用已保存的）创建客户端，开了网络代理时经代理连接；没有密钥或没装 SDK 时为 None。"""
     key = key or secret_store.get("llm_api_key")
     if not key:
         return None
     try:
-        from openai import AsyncOpenAI  # 延迟导入
+        from openai import AsyncOpenAI, DefaultAsyncHttpx2Client  # 延迟导入
+        via = proxy.url_for("ai")
+        options = {"http_client": DefaultAsyncHttpx2Client(proxy=via)} if via else {}
         # 关掉 SDK 自带的重试：重试只由 request() 负责，否则两层叠加，超时时一次调用最多要发 9 次请求，
         # 调用记录也对不上实际请求。
-        return AsyncOpenAI(api_key=key, base_url=base_url or None, max_retries=0)
+        return AsyncOpenAI(api_key=key, base_url=base_url or None, max_retries=0, **options)
     except Exception:  # noqa: BLE001 - 未安装 SDK 时按未配置处理
         return None
 
 
 def make_client() -> tuple[Any | None, str]:
-    """返回 (客户端或 None, 模型名)；同一组 key 与地址复用同一个客户端。"""
+    """返回 (客户端或 None, 模型名)；同一组 key、地址与代理复用同一个客户端。"""
     model = str(runtime.get("llm.model") or DEFAULT_MODEL)
     key = secret_store.get("llm_api_key")
     if not key:
         return None, model
     base_url = str(runtime.get("llm.base_url") or "")
-    client = _CLIENTS.get((key, base_url))
+    cache_key = (key, base_url, proxy.url_for("ai"))
+    client = _CLIENTS.get(cache_key)
     if client is None:
         client = client_for(base_url)
         if client is None:
             return None, model
-        _CLIENTS.clear()  # 换了 key 或地址，旧客户端不再使用
-        _CLIENTS[(key, base_url)] = client
+        _CLIENTS.clear()  # 换了 key、地址或代理，旧客户端不再使用
+        _CLIENTS[cache_key] = client
     return client, model
 
 

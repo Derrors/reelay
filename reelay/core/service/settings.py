@@ -1,7 +1,7 @@
 """配置与密钥：读取、校验与保存配置（跨进程互斥、按版本号防止覆盖他人的修改），设置与清除密钥。
 
 配置文件会被 Web 进程（设置页）与主进程（控制 Bot 里采纳建议等）写入：保存时在文件锁下核对版本号，
-期间文件已被别处改过就拒绝，不会悄悄覆盖。密钥绑定在它的接口地址上：改了 AI 或 TMDB 的接口地址，
+期间文件已被别处改过就拒绝，不会悄悄覆盖。密钥绑定在它的地址上：改了 AI 或 TMDB 的接口地址、代理地址，
 原来的密钥随之清除，不会被带到新的地址去。
 """
 from __future__ import annotations
@@ -12,14 +12,15 @@ import logging
 from contextlib import contextmanager
 from typing import Any
 
-from .. import secret_store
+from .. import runtime, secret_store
 from ..config import SYSTEM_KEYS, config_revision, load_config, normalize_config, write_config
 from .base import ConflictError, ServiceBase
 
 log = logging.getLogger("reelay.service")
 
-# 接口地址 → 发往这个地址的密钥：地址改了，密钥要重新填写
-_KEY_FOR_URL = (("llm", "llm_api_key"), ("tmdb", "tmdb_api_key"))
+# 地址（配置块, 字段）→ 发往这个地址的密钥：地址改了，密钥要重新填写
+_KEY_FOR_URL = (("llm", "base_url", "llm_api_key"), ("tmdb", "base_url", "tmdb_api_key"),
+                ("proxy", "url", "proxy_password"))
 MIN_PASSWORD_LENGTH = 8  # Web 登录密码的最短长度（首次设置可以在局域网里的任何设备上进行）
 
 
@@ -52,7 +53,7 @@ class SettingsMixin(ServiceBase):
         """校验并原子写入配置，返回 {config, revision, cleared_secrets}。
 
         expected_revision 是调用方读取配置时的版本号：期间配置已被别处修改时抛 ConflictError。
-        改了 AI 或 TMDB 的接口地址时，原来的密钥一并清除（cleared_secrets 列出清除了哪些）。
+        改了 AI 或 TMDB 的接口地址、代理地址时，原来的密钥一并清除（cleared_secrets 列出清除了哪些）。
         """
         config = self.check_config(config)
         # 新写入的插件设置必须对应已安装的插件（防止写错名字）；删除插件后留下的旧设置不拦着保存
@@ -68,11 +69,11 @@ class SettingsMixin(ServiceBase):
                 if expected_revision is not None and expected_revision != config_revision(current):
                     raise ConflictError("配置已被其他页面或进程修改，请重新加载后再保存")
                 write_config(self.config_path, config)
-            cleared = [key for section, key in _KEY_FOR_URL
-                       if config[section]["base_url"] != current[section]["base_url"] and secret_store.get(key)]
+            cleared = [key for section, field, key in _KEY_FOR_URL
+                       if config[section][field] != current[section][field] and secret_store.get(key)]
             if cleared:
                 secret_store.current().update({key: None for key in cleared})
-                log.info("接口地址已更改，清除了原来的密钥：%s", "、".join(cleared))
+                log.info("地址已更改，清除了原来的密钥：%s", "、".join(cleared))
             self.pipeline.apply_config(config)
         return {"config": config, "revision": config_revision(config), "cleared_secrets": cleared}
 
@@ -95,6 +96,29 @@ class SettingsMixin(ServiceBase):
         revision = config_revision(cfg)
         change(cfg)
         return (await self.save_config(cfg, expected_revision=revision))["config"]
+
+    async def test_proxy(self, *, url: str, password: str | None = None,
+                         services: list[str] | None = None) -> dict[str, Any]:
+        """经代理连一次各项服务（地址用表单里的，可以还没保存）。
+
+        已保存的代理密码只发给已保存的地址：试别的地址时用 password（「这个地址的密码」），没填就不带密码。
+        """
+        from .. import proxy, tmdb
+        from ..config import DEFAULT_LLM_BASE
+        url = (url or "").strip().rstrip("/")
+        if not url:
+            raise ValueError("请先填写代理地址")
+        proxy.parse(url)
+        services = [name for name in (proxy.SERVICES if services is None else services) if name in proxy.SERVICES]
+        if not services:
+            raise ValueError("至少开启一项走代理的服务")
+        saved = str(runtime.get("proxy.url") or "")
+        password = (password or "").strip() or (secret_store.get("proxy_password") if url == saved else None)
+        results = await proxy.probe(
+            proxy.with_password(url, password), services, tmdb_url=tmdb.base_url(),
+            llm_url=str(runtime.get("llm.base_url") or "") or DEFAULT_LLM_BASE,
+            api_id=secret_store.get("telegram_api_id"), api_hash=secret_store.get("telegram_api_hash"))
+        return {"results": results}
 
     # ------------------------------------------------------------------ #
     # 密钥：只能设置、替换或清除，读不回原值

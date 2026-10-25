@@ -57,9 +57,10 @@ python -m reelay.web
 
 然后依次完成：
 
-1. **设置 → Telegram**：填写 `api_id` / `api_hash`、控制 Bot Token 和你的数字 ID。
-2. **设置 → AI 与 TMDB**：填写 AI 接口地址与密钥，从接口返回的列表里选择模型，点「测试连通性」确认能用；再填写 TMDB 密钥。
-3. **设置 → 115 网盘**：用 115 App 扫码登录。
+1. **设置 → 网络代理**（国内网络需要）：填写代理地址（如 Clash 的 `http://192.168.1.2:7890`），点「测试代理」确认 Telegram、TMDB 与 AI 服务都能连上。终端里的 Telegram 登录也会用这个代理。
+2. **设置 → Telegram**：填写 `api_id` / `api_hash`、控制 Bot Token 和你的数字 ID。
+3. **设置 → AI 与 TMDB**：填写 AI 接口地址与密钥，从接口返回的列表里选择模型，点「测试连通性」确认能用；再填写 TMDB 密钥。
+4. **设置 → 115 网盘**：用 115 App 扫码登录。
 
 所有设置保存在 `data/` 目录：配置在 `data/config.yaml`，密钥单独存放在 `data/secrets.json`，页面上只显示「已设置」。
 

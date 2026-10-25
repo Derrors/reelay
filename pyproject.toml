@@ -40,6 +40,9 @@ full = [
     "python-concurrenttools==0.1.8",
     "qrcode>=7.4,<9",
     "openai>=1.40,<4",
+    # 网络代理：Telegram（Telethon）走代理要 python-socks，AI 与 TMDB（httpx2）走 SOCKS5 代理要 socksio
+    "python-socks>=2.5,<3",
+    "socksio>=1,<2",
 ]
 web = [
     "fastapi>=0.115,<1",

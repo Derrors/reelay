@@ -206,7 +206,7 @@ export function ServicesTab({ config, saved, setField, secrets, onSecrets, pendi
           <Field label="接口地址"
             hint={tmdbMoved && secrets.tmdb_api_key?.set
               ? <span className="text-warning">地址改了：已保存的 TMDB 密钥属于原来的地址，保存设置时会被清除，之后需要重新填写。</span>
-              : '留空使用官方地址；国内网络连不上时可改用 https://api.tmdb.org/3 或自己的反向代理。'}>
+              : '留空使用官方地址；国内网络连不上时可在「网络代理」里设置代理，或改用 https://api.tmdb.org/3、自己的反向代理。'}>
             <Input className="bg-card" placeholder="https://api.themoviedb.org/3" value={text(tmdb.base_url)}
               onChange={e => setField('tmdb', 'base_url', e.target.value)} />
           </Field>
@@ -230,7 +230,7 @@ export function TelegramTab({ config, setField, secrets, onSecrets }: { config: 
     <div className="space-y-5">
       <Notice tone="info" icon={Info}>
         Telegram 账号、控制 Bot 与机主 ID {RESTART_HINT}首次使用个人账号监听时，还要在终端运行一次
-        <code className="mx-1 rounded bg-muted px-1 font-mono text-xs">python -m reelay.login</code>登录。
+        <code className="mx-1 rounded bg-muted px-1 font-mono text-xs">python -m reelay.login</code>登录。国内网络连不上 Telegram 时，先在「网络代理」里设置代理。
       </Notice>
       <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
         <Panel icon={Send} title="个人账号（监听来源）" description="在 my.telegram.org 申请 API ID 与 API Hash，用你自己的账号收听资源 Bot 与频道。" bodyClassName="p-4 sm:p-5">

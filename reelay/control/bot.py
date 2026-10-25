@@ -26,7 +26,7 @@ import logging
 import re
 import time
 
-from ..core import messages, paths, secret_store, subscriptions
+from ..core import messages, paths, proxy, secret_store, subscriptions
 from ..core.contracts import TaskState
 from ..core.messages import parse_callback, short_key
 from ..core.service import ConflictError, ManagementService, NotFoundError
@@ -66,7 +66,7 @@ class ControlBot:
 
         api_id = int(secret_store.get("telegram_api_id") or 0)
         api_hash = secret_store.get("telegram_api_hash") or ""
-        self._client = TelegramClient(str(paths.CONTROL_BOT_SESSION), api_id, api_hash)
+        self._client = TelegramClient(str(paths.CONTROL_BOT_SESSION), api_id, api_hash, proxy=proxy.telethon())
 
         self._register_handlers(events)
         await self._client.start(bot_token=self._token)

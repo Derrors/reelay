@@ -4,6 +4,7 @@
 保留 AI 标题而不是写入错误的规范名。结果（含未命中）进程内缓存一天。
 
 TMDB 密钥同时支持 v3 API Key 与 v4 Read Access Token（``eyJ`` 开头）。
+开了网络代理时改用 httpx2 请求（标准库不支持 SOCKS 代理），见 core/proxy.py。
 """
 from __future__ import annotations
 
@@ -12,13 +13,14 @@ import re
 import threading
 import time
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from difflib import SequenceMatcher
 from typing import Any
 
-from . import runtime, secret_store
+from . import proxy, runtime, secret_store
 
 DEFAULT_BASE = "https://api.themoviedb.org/3"
 ACCEPT_SCORE = 0.8          # 年份无冲突时的最低标题相似度
@@ -49,6 +51,12 @@ def _request(path: str, params: dict[str, Any], *, timeout: float) -> dict:
     else:
         query["api_key"] = key
     url = f"{base_url()}{path}?" + urllib.parse.urlencode(query)
+    via = proxy.url_for("tmdb")
+    if via:
+        response = proxy.http_client(via).get(url, headers=headers, timeout=timeout)
+        if response.is_error:  # 与标准库同样的异常；不用 raise_for_status，它的说明里有带 api_key 的完整地址
+            raise urllib.error.HTTPError(path, response.status_code, response.reason_phrase, None, None)
+        return response.json()
     with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

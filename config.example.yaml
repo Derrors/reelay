@@ -117,6 +117,14 @@ system:
     share_qps: 1
     risk_cooldown_sec: 3600
 
+  # 网络代理：国内网络连不上 Telegram、TMDB 或 AI 服务时使用；115 始终直连
+  proxy:
+    url: ""                # http://192.168.1.2:7890 或 socks5://127.0.0.1:1080，留空不使用；需要认证时写成
+                           # http://用户名@地址:端口，密码在管理台「设置 → 网络代理」中填写（保存在 secrets.json）
+    telegram: true         # 监听、控制 Bot 与登录（改了重启主进程生效）
+    tmdb: true
+    ai: true               # 用国内的 AI 服务或本地模型时可以关掉
+
   # 主进程：同时处理的任务数与日志级别（重启生效）
   runtime:
     concurrency: 3

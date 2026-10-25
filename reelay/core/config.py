@@ -31,6 +31,7 @@ LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 # 管理台会检测当前模型支持哪些；请求被拒时去掉这个参数重发，见 ai.request
 REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
+DEFAULT_LLM_BASE = "https://api.openai.com/v1"  # llm.base_url 留空时 OpenAI SDK 用的地址
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "save_dirs": {"电影": "0", "剧集": "0", "动漫": "0", "默认": "0"},
@@ -58,6 +59,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "runtime": {"concurrency": 3, "log_level": "INFO"},
     # 115 请求治理：各类接口的每秒请求数，触发风控后全部接口冷却的秒数
     "p115": {"open_qps": 3, "cookie_qps": 2, "share_qps": 1, "risk_cooldown_sec": 3600},
+    # 网络代理：Telegram、TMDB、AI 服务各自是否走代理（115 始终直连）；代理密码在 secrets.json
+    "proxy": {"url": "", "telegram": True, "tmdb": True, "ai": True},
     "plugins": {},
 }
 # 系统配置的键（写文件时放进 system）
@@ -158,7 +161,7 @@ def normalize_config(data: Any) -> dict[str, Any]:
     if "save_dirs" in data:
         cfg["save_dirs"] = copy.deepcopy(data["save_dirs"])
     for key in ("save_dirs", "defaults", "forward", "providers", "plugins", "approval", "schedule", "ai", "release",
-                "llm", "tmdb", "telegram", "runtime", "p115"):
+                "llm", "tmdb", "telegram", "runtime", "p115", "proxy"):
         if not isinstance(cfg[key], dict):
             raise ValueError(f"{key} 必须是对象")
     dirs = cfg["save_dirs"]
@@ -256,7 +259,7 @@ def _number(section: dict, key: str, label: str, low: float, high: float, *, int
 
 
 def _validate_services(cfg: dict) -> None:
-    """AI 服务、TMDB、Telegram、主进程与 115 的设置（密钥另存，不在这里）。"""
+    """AI 服务、TMDB、Telegram、主进程、115 与网络代理的设置（密钥另存，不在这里）。"""
     for section, keys in (("llm", ("base_url", "model")), ("tmdb", ("base_url", "language"))):
         for key in keys:
             if type(cfg[section].get(key)) is not str:
@@ -286,6 +289,8 @@ def _validate_services(cfg: dict) -> None:
     for key in ("open_qps", "cookie_qps", "share_qps"):
         _number(cfg["p115"], key, "p115", 0.1, 20)
     _number(cfg["p115"], "risk_cooldown_sec", "p115", 60, 86400, integer=True)
+    from .proxy import validate as validate_proxy
+    validate_proxy(cfg["proxy"])
 
 
 def _validate_rule(rule: dict, dirs: dict, label: str) -> None:

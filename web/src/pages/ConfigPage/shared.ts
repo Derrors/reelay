@@ -86,11 +86,12 @@ export const CONFIG_SECTIONS = [
   { label: 'TMDB', tab: 'services', paths: ['tmdb'] },
   { label: 'Telegram', tab: 'telegram', paths: ['telegram'] },
   { label: '115 请求限速', tab: 'connections', paths: ['p115'] },
+  { label: '网络代理', tab: 'proxy', paths: ['proxy'] },
   { label: '运行参数', tab: 'system', paths: ['runtime'] },
 ];
 /** 设置页负责的配置块（插件页负责 providers、defaults 与 plugins）。追剧订阅与不再接收的作品存在数据库里，不在配置中。 */
 export const SYSTEM_KEYS = ['save_dirs', 'defaults', 'sources', 'forward', 'approval', 'ai', 'release',
-  'llm', 'tmdb', 'telegram', 'p115', 'runtime'];
+  'llm', 'tmdb', 'telegram', 'p115', 'proxy', 'runtime'];
 export const PLUGIN_KEYS = ['providers', 'defaults', 'plugins'];
 
 /**
@@ -105,10 +106,11 @@ export function describeConfigError(message: string): string {
   return section ? `「${section.label}」${message}` : message;
 }
 
-/** 接口地址 → 属于它的密钥：地址改了，后端保存时会清除这个密钥。 */
+/** 接口地址、代理地址 → 属于它的密钥：地址改了，后端保存时会清除这个密钥。 */
 export const URL_SECRETS: Array<{ path: string; secret: string; label: string }> = [
   { path: 'llm.base_url', secret: 'llm_api_key', label: 'AI 服务' },
   { path: 'tmdb.base_url', secret: 'tmdb_api_key', label: 'TMDB' },
+  { path: 'proxy.url', secret: 'proxy_password', label: '网络代理' },
 ];
 
 /** 比较接口地址时去掉首尾空白与末尾的斜杠（与后端一致）。 */

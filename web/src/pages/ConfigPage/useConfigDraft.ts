@@ -72,7 +72,7 @@ export function useConfigDraft(keys: string[]) {
     const moved = URL_SECRETS.filter((x) => normalizeUrl(getPath(config, x.path)) !== normalizeUrl(getPath(data.config, x.path)));
     const lost = moved.filter((x) => data.secrets[x.secret]?.set);
     if (lost.length && !(await confirmDialog({
-      title: '改了接口地址，原来的密钥会被清除',
+      title: '改了地址，原来的密钥会被清除',
       description: '密钥属于原来的地址：保存后清除，需要为新地址重新填写。',
       details: lost.map((x) => ({
         label: data.secrets[x.secret]?.label ?? x.label,

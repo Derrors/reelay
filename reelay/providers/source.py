@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable
 
-from ..core import paths, runtime, secret_store
+from ..core import paths, proxy, runtime, secret_store
 from ..core.contracts import RawMessage
 from ..core.registry import register
 
@@ -112,6 +112,7 @@ class TelegramUserbotSource:
 
         API ID / Hash 在管理台「设置 → Telegram」填写，会话用 ``python -m reelay.login`` 建立（需要交互输入，
         不能在这里做）；做不到时记下原因交给 health，每 RETRY_SECONDS 秒重新检查，补上后自动接上。
+        网络代理每次重试时读取：连不上时在管理台配好代理，下次重试就会用上。
         """
         from telethon import TelegramClient  # 延迟导入
 
@@ -121,7 +122,8 @@ class TelegramUserbotSource:
             if not (api_id and api_hash):
                 problem = ("not_configured", "未配置 Telegram API ID / API Hash：在管理台「设置 → Telegram」中填写")
             else:
-                client = TelegramClient(self._session, int(api_id), api_hash, catch_up=True)
+                via = proxy.telethon()
+                client = TelegramClient(self._session, int(api_id), api_hash, catch_up=True, proxy=via)
                 setup(client)
                 try:
                     await client.connect()
@@ -134,7 +136,8 @@ class TelegramUserbotSource:
                         self._problem = None
                         return client
                 except OSError as exc:  # 含 ConnectionError：网络问题，稍后重试
-                    problem = ("disconnected", f"连不上 Telegram：{exc}")
+                    hint = "，请检查代理是否可用" if via else "；国内网络需要在「设置 → 网络代理」中配置代理"
+                    problem = ("disconnected", f"连不上 Telegram：{exc}{hint}")
                 await client.disconnect()
             self._problem = problem
             if problem != reported:

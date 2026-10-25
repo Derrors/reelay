@@ -1,13 +1,14 @@
 """在交互终端建立个人 Telegram 会话（API ID / Hash 先在管理台「设置 → Telegram」中填写）。
 
 主进程在会话还没登录时等待并定时重试，这里登录成功后会自动接上，不用重启。
+管理台「设置 → 网络代理」给 Telegram 开了代理时，登录也经代理连接。
 """
 from __future__ import annotations
 
 import asyncio
 
-from .core import paths, secret_store
-from .core.config import ensure_config
+from .core import paths, proxy, secret_store
+from .core.config import ensure_config, load_config
 
 
 async def login() -> None:
@@ -18,7 +19,7 @@ async def login() -> None:
     if not api_id or not api_hash:
         raise SystemExit("请先在管理台「设置 → Telegram」中填写个人账号的 API ID 与 API Hash，再执行登录")
     paths.USERBOT_SESSION.parent.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(str(paths.USERBOT_SESSION), int(api_id), api_hash)
+    client = TelegramClient(str(paths.USERBOT_SESSION), int(api_id), api_hash, proxy=proxy.telethon(load_config()))
     try:
         await client.start()
         account = await client.get_me()

@@ -1,4 +1,4 @@
-"""配置：读取、按块保存（带版本号）、校验，以及插件声明的动作（如命名预览）。"""
+"""配置：读取、按块保存（带版本号）、校验、测试网络代理，以及插件声明的动作（如命名预览）。"""
 from __future__ import annotations
 
 import inspect
@@ -19,6 +19,13 @@ class SectionsPayload(BaseModel):
 
 class ConfigPayload(BaseModel):
     config: Any
+
+
+class ProxyTestPayload(BaseModel):
+    url: str
+    # 地址与已保存的不同时，已保存的密码不会发过去；需要认证就带上这个地址的密码
+    password: str | None = None
+    services: list[str] | None = None
 
 
 def router(service, registry) -> APIRouter:
@@ -46,6 +53,10 @@ def router(service, registry) -> APIRouter:
     async def validate(payload: ConfigPayload):
         service.check_config(payload.config)
         return {"ok": True}
+
+    @api.post("/api/proxy/test")
+    async def test_proxy(payload: ProxyTestPayload):
+        return await service.test_proxy(url=payload.url, password=payload.password, services=payload.services)
 
     @api.post("/api/extensions/{name}/actions/{action}")
     async def extension_action(name: str, action: str, request: Request):

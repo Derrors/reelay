@@ -2,7 +2,7 @@
 
 所有设置都能在管理台修改，保存后约 1 秒生效（个别项注明需要重启主进程）。本页是完整的字段说明，日常使用不需要逐项阅读，遇到具体问题时按目录查找即可。
 
-- [系统配置](#系统配置system)：[目录与来源](#目录与来源save_dirs--sources--providers) · [识别与决策](#识别与决策defaults--sources) · [AI 能力](#ai-能力ai) · [版本偏好](#版本偏好release) · [转发、审批提醒、定时](#转发审批提醒定时) · [AI 服务与 TMDB](#ai-服务与-tmdbllm--tmdb) · [Telegram](#telegramtelegram) · [115 请求限速](#115-请求限速p115) · [运行参数](#运行参数runtime)
+- [系统配置](#系统配置system)：[目录与来源](#目录与来源save_dirs--sources--providers) · [识别与决策](#识别与决策defaults--sources) · [AI 能力](#ai-能力ai) · [版本偏好](#版本偏好release) · [转发、审批提醒、定时](#转发审批提醒定时) · [AI 服务与 TMDB](#ai-服务与-tmdbllm--tmdb) · [Telegram](#telegramtelegram) · [115 请求限速](#115-请求限速p115) · [网络代理](#网络代理proxy) · [运行参数](#运行参数runtime)
 - [插件配置](#插件配置plugins) · [订阅与不再接收的作品](#订阅与不再接收的作品) · [密钥](#密钥) · [运行文件位置](#运行文件位置) · [环境变量](#环境变量)
 
 设置分四类：
@@ -113,7 +113,7 @@ plugins:
 | `llm.base_url` | 空 | OpenAI 兼容接口地址，留空用 OpenAI 官方地址 |
 | `llm.model` | `gpt-4o-mini` | 模型名。管理台打开时用已保存的密钥从接口获取模型列表，只能从列表中选择（直接编辑配置文件不受限制） |
 | `llm.reasoning_effort` | 空 | 推理强度，随每次请求作为 `reasoning_effort` 发送：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；留空不传，由模型决定。各家支持的取值不同（如 DeepSeek 只认 `low` / `high` / `xhigh` / `max`），管理台会检测当前模型支持哪些并禁用其余选项；请求因推理强度被拒时自动去掉这个参数重发，不会让识别失败 |
-| `tmdb.base_url` | 空 | 留空用 `https://api.themoviedb.org/3`；国内该域名常被 DNS 污染，可改用官方备用域名 `https://api.tmdb.org/3` 或自己的反向代理 |
+| `tmdb.base_url` | 空 | 留空用 `https://api.themoviedb.org/3`；国内该域名常被 DNS 污染，可以配置[网络代理](#网络代理proxy)，或改用官方备用域名 `https://api.tmdb.org/3`、自己的反向代理 |
 | `tmdb.language` / `tmdb.timeout` | `zh-CN` / `10` | TMDB 匹配语言与超时秒数 |
 
 AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生效。「设置 → AI 与 TMDB」可以用表单里当前的地址获取模型列表（OpenAI 兼容的 `GET /models`），并用当前的地址、模型与推理强度发一条很短的消息测试连通性，不必先保存。
@@ -136,6 +136,21 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `p115.risk_cooldown_sec` | `3600` | 触发 115 风控（访问上限、操作频繁）后所有接口暂停的秒数。冷却期间转存与整理暂停，任务到点自动继续，不算失败、不消耗重试次数 |
 
 115 的登录态在「设置 → 115 网盘」扫码获得，保存在 `data/115_credentials.json`。
+
+### 网络代理（`proxy`）
+
+国内网络连不上 Telegram、TMDB 或 AI 服务时，让它们经 HTTP 或 SOCKS5 代理连接（Clash、mihomo、v2rayN 等客户端的 HTTP 端口或混合端口都可以用）。115 的服务器在国内，始终直连。
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `proxy.url` | 空 | 代理地址，如 `http://192.168.1.2:7890`、`socks5://127.0.0.1:1080`；留空不使用代理。需要认证时写成 `http://用户名@地址:端口`，密码是密钥 `proxy_password`，不写在地址里。Docker 部署时 `127.0.0.1` 指容器自己，代理在宿主机或局域网里的其他设备上时填它的局域网地址 |
+| `proxy.telegram` | `true` | 监听、控制 Bot 与终端登录（`python -m reelay.login`）走代理 |
+| `proxy.tmdb` | `true` | TMDB 走代理 |
+| `proxy.ai` | `true` | AI 服务走代理；用国内的 AI 服务或本地模型时可以关掉 |
+
+TMDB 与 AI 服务保存后立即生效；Telegram 要重启主进程，还没连上 Telegram 时下次重试（30 秒一次）就会用上。没开代理的服务按原来的方式连接：TMDB 与 AI 仍会使用环境变量 `HTTP_PROXY` / `HTTPS_PROXY`，Telegram 直连。
+
+「设置 → 网络代理」的「测试代理」用表单里当前的地址经代理连一次开启的服务，不必先保存：Telegram 只与数据中心建立连接，不登录；TMDB 与 AI 服务有回应就算连得上。和 AI 密钥一样，已保存的代理密码只发给已保存的地址，保存时改了 `proxy.url` 会清除密码。
 
 ### 运行参数（`runtime`）
 
@@ -190,6 +205,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `tmdb_api_key` | AI 与 TMDB | TMDB v3 API Key 或 v4 Read Access Token。改了 `tmdb.base_url` 时自动清除 |
 | `telegram_api_id` / `telegram_api_hash` | Telegram | 个人账号的 Telegram API 凭证 |
 | `control_bot_token` | Telegram | 控制 Bot 的 token |
+| `proxy_password` | 网络代理 | 代理的认证密码，`proxy.url` 里写了用户名时才使用。改了 `proxy.url` 时自动清除 |
 | `web_password` | 运行与安全 | 管理台登录密码，只保存 PBKDF2 摘要，至少 8 个字符。第一次打开管理台时设置（局域网里用 IP 地址打开的设备也可以）；设置之前，除首次设置外的接口只接受本机地址。修改或清除要先输入当前密码，修改后其他已登录的页面需要重新登录。登录会话保存在数据库里，有效期 7 天，Web 重启不影响。忘记密码时删掉 `data/secrets.json` 里的 `web_password` 一项，再打开管理台重新设置 |
 | `mcp_token` / `mcp_readonly_token` | 运行与安全 | MCP 访问令牌（读写 / 只读）。外部 Agent 在请求头 `Authorization: Bearer <令牌>` 里带上它访问 `/mcp`；只读令牌看不到写操作工具。至少 24 个字符，两个不能相同，管理台可随机生成。两个都没设置时 `/mcp` 关闭。与 Web 登录密码相互独立 |
 
