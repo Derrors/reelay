@@ -5,7 +5,7 @@
 ## 1. 项目性质与用途边界
 
 - Reelay 是一个**自托管的个人自动化工具**：替你阅读你自己的 Telegram 账号**本来就能看到**的消息，识别其中的 115 网盘分享链接，并在你确认后把分享转存到**你自己的** 115 账号、整理成媒体库目录结构。
-- 本项目**不提供、不存储、不索引、不分发任何影视或其他内容**，不内置、不推荐任何资源来源（频道、Bot、群组或网站）。仓库与文档中出现的来源名称均为虚构占位符。
+- 本项目**不提供、不存储、不索引、不分发任何影视或其他内容**，不内置任何资源来源（频道、Bot、群组或网站）。[快速开始](docs/quickstart.md) 中列出的推荐来源由第三方运营，与本项目无关；本项目不对其发布的内容负责，也不保证其合法性与可用性，是否使用由你自行判断。仓库与文档中出现的其他来源名称均为虚构占位符。
 - 你应当只用它处理你**有权获取、保存与使用**的内容，例如自己上传的分享、已获授权的内容或公有领域作品。转存、整理、播放什么内容由你自己决定，相关的版权与法律责任由你自行承担。
 - 禁止将本项目用于侵犯著作权、传播违法内容、批量爬取或任何违反所在地法律法规的用途。
 
@@ -33,4 +33,4 @@
 
 ---
 
-**English summary.** Reelay is a self-hosted personal automation tool. It reads messages your own Telegram account can already see, detects 115 cloud share links, and—after your approval—saves them into your own 115 account. It does not host, index, or distribute any content and ships with no content sources. Use it only for content you have the right to access and keep; you are solely responsible for what you save. Logging in as a Telegram user (userbot) may trigger rate limits or **account bans**; 115's private web APIs may change at any time and heavy use may get your 115 account **rate-limited, logged out, or restricted**. Automatic approval, quality upgrades, and conflict handling can move, rename, or delete files in your drive. The software is provided "as is" under the MIT License, without warranty of any kind.
+**English summary.** Reelay is a self-hosted personal automation tool. It reads messages your own Telegram account can already see, detects 115 cloud share links, and—after your approval—saves them into your own 115 account. It does not host, index, or distribute any content and ships with no content sources. The source suggested in the quick start is run by a third party and is not affiliated with this project; the project is not responsible for what it posts and makes no guarantee about its legality or availability. Use it only for content you have the right to access and keep; you are solely responsible for what you save. Logging in as a Telegram user (userbot) may trigger rate limits or **account bans**; 115's private web APIs may change at any time and heavy use may get your 115 account **rate-limited, logged out, or restricted**. Automatic approval, quality upgrades, and conflict handling can move, rename, or delete files in your drive. The software is provided "as is" under the MIT License, without warranty of any kind.

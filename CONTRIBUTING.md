@@ -64,7 +64,7 @@ tests/               # 后端测试（unittest，不访问网络），见下
 ## 必须遵守的约束
 
 - **不要提交任何真实凭证或个人数据**：`.env`、`config.yaml`、`data/`、session 文件、cookie、真实目录 CID。日志和截图里的这些信息也要打码。
-- **不要在代码、测试、文档、Issue 中出现具体的资源频道、Bot 或站点名称**，统一使用 `@example_channel` 这类占位符。
+- **不要在代码、测试、文档、Issue 中出现具体的资源频道、Bot 或站点名称**，统一使用 `@example_channel` 这类占位符。唯一的例外是快速开始里维护者列出的推荐来源。
 - 涉及 115 写操作（转存、改名、移动、删除）的改动必须保持"先持久化检查点、再调用远端、事后读回核验"的顺序，结果不明时只能核验不能重发，并补充故障注入测试（参考 `tests/test_storage.py`）。
 - 测试不得访问网络：使用 `tests/fakes.py` 里的替身、`tests/test_storage.py` 中模拟 115 的 `Cloud`，或 `providers/dryrun.py` 的内存网盘。
 
