@@ -204,6 +204,8 @@ class Cloud:
         with self.lock:
             self.calls.append(('delete', list(ids)))
             fail, self.fail_delete = self.fail_delete, None
+            if fail == 'busy':  # 115 同一时间只处理一个删除：这次被推迟，没有执行
+                return {'state': False, 'errno': 990009, 'code': 990009, 'error': '删除[.reelay-other]操作尚未执行完成，请稍后再试！'}
             if fail == 'before':
                 raise TimeoutError('删除请求超时')
             if fail != 'ignore':
@@ -771,6 +773,27 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute(ctx)).state, TaskState.SKIPPED)  # 读回已不在，不再删除
         self.assertEqual(self.cloud.calls.count(('delete', [stage])), 2)
         self.assertEqual(len(self.cloud.receives()), 1)
+
+    async def test_abandon_is_retried_when_115_is_still_running_another_delete(self):
+        """同时放弃两条转存时，115 推迟第二个删除（990009「操作尚未执行完成」）：不是令牌失效、也不是风控，到点自动重试。"""
+        ctx, stage = await self.partial_task()
+        await self.service.abandon_transfer(ctx.task_id)
+        self.cloud.fail_delete = 'busy'
+        worker = Worker(self.pipeline, self.store)
+        await worker._handle(ctx.task_id, TaskState.QUEUED)
+        row = self.store._conn.execute("SELECT state, retries, not_before FROM tasks WHERE task_id=?",
+                                       (ctx.task_id,)).fetchone()
+        self.assertEqual((row['state'], row['retries']), ('queued', 0))  # 不算失败
+        self.assertGreater(row['not_before'], time.time())
+        deferred = self.store.get_task(ctx.task_id)
+        self.assertTrue(deferred.ns('storage')['abandon'])  # 放弃的决定保留
+        self.assertIn('115 还在执行上一个操作', deferred.trail[-1])
+        self.assertIsNone(self.credentials.cooldown())  # 不进入风控冷却
+        self.assertIn(stage, self.cloud.items)
+        await worker._handle(ctx.task_id, TaskState.QUEUED)  # 到点后再执行
+        self.assertEqual(self.store.get_task(ctx.task_id).state, TaskState.SKIPPED)
+        self.assertNotIn(stage, self.cloud.items)
+        self.assertEqual(self.cloud.calls.count(('delete', [stage])), 2)
 
     async def test_partial_transfer_that_stops_changing_is_notified_early(self):
         from reelay.core.worker import RECHECK_STABLE_TIMES, RECHECK_WINDOW_SEC

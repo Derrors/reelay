@@ -660,6 +660,8 @@ class Pipeline:
         try:
             with self.scope(ctx):
                 await storage.abandon(ctx)
+        except StorageBusy:
+            raise  # 网盘暂时推迟了删除（风控冷却、上一个操作还没执行完）：Worker 到点再执行这次放弃
         except Exception as exc:  # noqa: BLE001 - 删除结果不明：保留决定，再点一次会先读回再删
             ctx.state = TaskState.NEED_MANUAL
             ctx.log(f"删除暂存目录没有完成：{exc}")

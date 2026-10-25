@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from reelay.core import auth115, runtime
+from reelay.core.contracts import StorageBusy
 
 
 class FakeOpenClient:
@@ -202,6 +204,35 @@ class TestCredentialStore(unittest.TestCase):
         self.assertEqual(len(cookie.renames), 1)
         self.assertEqual(len(cookie.moves), 1)
         self.assertEqual(len(cookie.deletes), 1)
+
+    def test_auth_error_codes_match_whole_numbers(self):
+        codes = auth115.OPEN_AUTH_CODES
+        self.assertFalse(auth115.is_auth_error("{'state': False, 'errno': 990009}", codes))  # 不是 99
+        self.assertTrue(auth115.is_auth_error("{'state': False, 'errno': 99}", codes))
+        self.assertTrue(auth115.is_auth_error('{"code": 401, "message": "x"}', codes))
+        self.assertTrue(auth115.is_auth_error("[40140125] token invalid", codes))
+        self.assertFalse(auth115.is_auth_error("errno: 200040", codes))
+
+    def test_990009_is_risk_control_only_when_it_says_too_frequent(self):
+        self.assertTrue(self.store._risk_reason({"errno": 990009, "error": "操作过于频繁，请稍后再试"}))
+        self.assertEqual(self.store._risk_reason({'state': False, 'errno': 990009, 'code': 990009, 'error': '删除[.reelay-other]操作尚未执行完成，请稍后再试！'}), "")
+        self.assertTrue(self.store._risk_reason({"code": 429, "message": ""}))
+
+    def test_write_postponed_by_115_is_retried_later_not_sent_again_via_cookie(self):
+        """115 还在执行上一个操作时推迟了这次写请求：抛 StorageBusy 稍后重试，不当令牌失效改走 cookie 再发一次。"""
+        cookie, open_client = install_fake_p115(self.store)
+        self.store.save_tokens("a", "r", 100195125)
+        open_client.fs_delete_open = lambda payload: {'state': False, 'errno': 990009, 'code': 990009, 'error': '删除[.reelay-other]操作尚未执行完成，请稍后再试！'}
+        with self.assertRaises(StorageBusy) as caught:
+            self.store.delete([5])
+        self.assertIn("还在执行上一个操作", str(caught.exception))
+        self.assertGreater(caught.exception.until, time.time())
+        self.assertEqual(cookie.deletes, [])
+        self.assertIsNone(self.store.cooldown())
+        self.store.clear_oauth()  # 只有 cookie 时一样
+        cookie.fs_delete = lambda payload: {'state': False, 'errno': 990009, 'code': 990009, 'error': '删除[.reelay-other]操作尚未执行完成，请稍后再试！'}
+        with self.assertRaises(StorageBusy):
+            self.store.delete([5])
 
     def test_write_without_any_credential_raises(self):
         with self.assertRaises(RuntimeError):

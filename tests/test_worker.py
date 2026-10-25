@@ -1,6 +1,7 @@
 """Worker：失败退避、115 鉴权失效与风控时暂停。"""
 from __future__ import annotations
 
+import json
 import unittest
 import time
 from unittest.mock import patch
@@ -114,6 +115,37 @@ class TestStorageBusy(PipelineCase):
             worker.check_cooldown()
         self.assertIsNone(worker.storage_paused)
         self.assertEqual(self.store.active_alerts(), [])
+
+
+    async def test_cooldown_survives_a_restart(self):
+        from reelay.core import auth115
+        before = auth115.CredentialStore()
+        with patch.object(auth115, "get_store", lambda: before):
+            before._enter_cooldown("操作太频繁")
+            Worker(self.pipeline(), self.store).check_cooldown()
+        until = before.cooldown()[0]
+        after = auth115.CredentialStore()  # 主进程重启：冷却只在内存里，新进程的凭证中心没有冷却
+        restarted = Worker(self.pipeline(), self.store)
+        with patch.object(auth115, "get_store", lambda: after):
+            restarted.check_cooldown()
+            self.assertIn("风控", restarted.storage_paused)  # 接着冷却
+            self.assertAlmostEqual(after.cooldown()[0], until, places=3)
+            self.assertEqual(self.store.active_alerts()[0]["key"], COOLDOWN_ALERT)
+            after._cooldown_until = 0
+            restarted.check_cooldown()
+        self.assertIsNone(restarted.storage_paused)
+        self.assertEqual(self.store.active_alerts(), [])
+
+    async def test_stale_cooldown_alert_is_cleared_on_start(self):
+        # 上次冷却期间重启、冷却没有存下来：告警一直显示生效中，下次真的触发风控也不会再提醒
+        self.store.raise_alert(COOLDOWN_ALERT, "115 触发风控，转存与整理暂停到 20:19", ["console"])
+        from reelay.core import auth115
+        with patch.object(auth115, "get_store", lambda: auth115.CredentialStore()):
+            Worker(self.pipeline(), self.store).check_cooldown()
+        self.assertEqual(self.store.active_alerts(), [])
+        recovered = [json.loads(r[0])["text"] for r in self.store._conn.execute(
+            "SELECT snapshot FROM outbox WHERE event='recovered'")]
+        self.assertEqual(recovered, ["✅ 115 风控冷却结束，转存与整理继续执行"])
 
 
 if __name__ == "__main__":

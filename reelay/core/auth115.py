@@ -49,8 +49,12 @@ AUTH_ERRNOS = {99, 401}
 OPEN_AUTH_CODES = {401, 99, 40140125, 20004, 20005}
 # 开放平台扫码会话有效期（115 二维码约 5 分钟），本地稍短一点做兜底。
 QR_TTL = 240
-RISK_CODES = {429, 405, 990009}
-RISK_MARKERS = ("访问上限", "操作频繁", "操作太频繁", "请求过于频繁", "风控", "429 Too Many Requests")
+RISK_CODES = {429, 405}
+# 990009 是 115 的「请稍后再试」，既用于操作过于频繁，也用于上一个操作还没执行完，只按说明判断
+RISK_MARKERS = ("访问上限", "操作频繁", "操作太频繁", "过于频繁", "风控", "429 Too Many Requests")
+# 115 还在执行上一个操作（如同一时间只处理一个删除）：这次请求被推迟、没有执行，稍后再发即可，不是风控
+BUSY_MARKERS = ("尚未执行完成",)
+BUSY_RETRY_SEC = 30
 # Cookie 扫码绑定的设备：独立 TV 会话，降低与网页端/手机端既有会话互踢概率。
 COOKIE_QR_APP = "tv"
 # OAuth access_token 按 2 小时估算有效期，提前 15 分钟主动刷新。
@@ -91,9 +95,9 @@ class AuthState:
 
 
 def is_auth_error(msg: str, codes: set[int]) -> bool:
+    """115 的回应或错误信息是不是鉴权失效。错误码按完整数字匹配（990009 不是 99）。"""
     text = msg or ""
-    if any(f"[{n}]" in text or f"errno: {n}" in text or f"errno': {n}" in text
-           or f"'code': {n}" in text or f'"code": {n}' in text for n in codes):
+    if any(re.search(rf"""\[{n}\]|errno['"]?:\s*{n}(?!\d)|['"]code['"]:\s*{n}(?!\d)""", text) for n in codes):
         return True
     return "请重新登录" in text
 
@@ -111,6 +115,13 @@ _NOT_SENT = {"ConnectError", "ConnectTimeout", "ConnectionRefusedError", "NewCon
 
 def _not_sent(exc: BaseException) -> bool:
     return isinstance(exc, StorageBusy) or any(type(e).__name__ in _NOT_SENT for e in (exc, exc.__cause__) if e)
+
+
+def _still_busy(what: str, text: str) -> StorageBusy | None:
+    """115 因为上一个操作还没执行完而推迟了这次写请求时，返回到点再试的 StorageBusy。"""
+    if any(mark in text for mark in BUSY_MARKERS):
+        return StorageBusy(f"115 还在执行上一个操作，{what}稍后自动重试（{text[:80]}）", time.time() + BUSY_RETRY_SEC)
+    return None
 
 
 def _rejected(resp: Any) -> str | None:
@@ -211,6 +222,12 @@ class CredentialStore:
         if gate.qps != self._qps(lane):
             gate.set_qps(self._qps(lane))
         gate.acquire()
+
+    def restore_cooldown(self, until: float, reason: str) -> None:
+        """接着上次没结束的风控冷却（主进程重启后，见 Worker.check_cooldown）。"""
+        with self._cooldown_lock:
+            self._cooldown_until = max(self._cooldown_until, until)
+            self._cooldown_reason = reason[:200]
 
     def _enter_cooldown(self, reason: str) -> None:
         until = time.time() + self._cooldown_sec
@@ -726,11 +743,17 @@ class CredentialStore:
         except StorageBusy:
             raise
         except Exception as exc:  # noqa: BLE001
+            busy = _still_busy(what, str(exc))
+            if busy:
+                raise busy from None
             if is_auth_error(str(exc), OPEN_AUTH_CODES) or _not_sent(exc):
                 log.warning("OAuth %s没有发出（%s），改走 cookie", what, type(exc).__name__)
                 return False, None
             raise
         reason = _rejected(resp)
+        busy = _still_busy(what, reason or "")
+        if busy:
+            raise busy
         if reason and is_auth_error(str(resp), OPEN_AUTH_CODES):
             log.warning("OAuth 令牌失效，%s改走 cookie：%s", what, reason)
             return False, None
@@ -742,8 +765,19 @@ class CredentialStore:
         client = self.cookie_client()
         if client is None:
             raise RuntimeError(f"{what}失败：OAuth 与 cookie 均不可用")
-        resp = call(client)
+        try:
+            resp = call(client)
+        except StorageBusy:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            busy = _still_busy(what, str(exc))
+            if busy:
+                raise busy from None
+            raise
         reason = _rejected(resp)
+        busy = _still_busy(what, reason or "")
+        if busy:
+            raise busy
         if reason:
             raise RuntimeError(f"115 拒绝{what}：{reason}")
         return resp

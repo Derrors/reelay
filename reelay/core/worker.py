@@ -31,6 +31,8 @@ POLL_INTERVAL = 1.0
 STORAGE_STATES = (TaskState.QUEUED, TaskState.STORED)
 AUTH_ALERT = "p115_auth"
 COOLDOWN_ALERT = "p115_cooldown"
+# 风控冷却的结束时间与原因：冷却只记在进程内存里，存一份，主进程重启后接着冷却
+COOLDOWN_STATE = ("kernel", "p115_cooldown")
 # 115 凭证探活间隔（秒）；凭证失效暂停转存期间固定 30 秒探活，恢复后自动继续
 AUTH_CHECK_SEC = 300
 # 转存结果待核验的任务：首次在转为待人工 5 分钟后自动复查，之后间隔翻倍（最长 1 小时），持续 24 小时
@@ -53,6 +55,7 @@ class Worker:
         self._stop = asyncio.Event()
         # 转存/整理暂停的原因：auth（115 凭证失效）、cooldown（115 风控冷却）；只有 _monitor 与鉴权失败会修改。
         self._paused: dict[str, str] = {}
+        self._cooldown_saved: float | None = None  # 已存进数据库的冷却结束时间；None 表示启动后还没检查过
         self._next_auth_check = 0.0
         self._dir_paths_revision: str | None = None  # 已记录目录路径的配置版本
         self._next_dir_paths = 0.0
@@ -259,14 +262,28 @@ class Worker:
         self.store.clear_alert(AUTH_ALERT if kind == "auth" else COOLDOWN_ALERT, text, self.pipeline.notify_targets())
 
     def check_cooldown(self) -> None:
-        """115 风控冷却期间暂停转存与整理（请求本来也会被拒），结束后自动继续。"""
+        """115 风控冷却期间暂停转存与整理（请求本来也会被拒），结束后自动继续。
+
+        冷却的结束时间存进数据库：主进程重启后接着冷却。启动时已经没有冷却，就清掉上次留下的告警，
+        否则它一直显示生效中，下次真的触发风控也不会再提醒（告警只在由正常变为异常时通知）。
+        """
         from .auth115 import get_store
-        cooling = get_store().cooldown()
+        credentials = get_store()
+        starting = self._cooldown_saved is None
+        if starting:
+            self._cooldown_saved = 0.0
+            saved = self.store.state_get(*COOLDOWN_STATE) or {}
+            if float(saved.get("until") or 0) > time.time():
+                credentials.restore_cooldown(float(saved["until"]), str(saved.get("reason") or ""))
+        cooling = credentials.cooldown()
         if cooling:
             until, reason = cooling
+            if until != self._cooldown_saved:
+                self.store.state_set(*COOLDOWN_STATE, {"until": until, "reason": reason})
+                self._cooldown_saved = until
             self.pause_storage(f"115 触发风控（{reason[:60]}），转存与整理暂停到 {time.strftime('%H:%M', time.localtime(until))}，"
                                "之后自动继续", kind="cooldown")
-        elif "cooldown" in self._paused:
+        elif starting or "cooldown" in self._paused:
             self.resume_storage("cooldown")
 
     def stop(self) -> None:

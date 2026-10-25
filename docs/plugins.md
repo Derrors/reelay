@@ -142,7 +142,7 @@ class MyListener:
 | `inspect_share(parsed, describe=...)` | 只读查询分享是否可用、有哪些季集（分享检查插件用） |
 | `browse(cid, offset, limit)` | 列出子目录（管理台选目录用） |
 
-`save` 的结果用异常区分：`TransferRejected` 表示网盘明确拒绝、确定没有转存，可以重发；`TransferUncertain` 表示请求可能已经执行，之后只能核验（拿得到网盘对这次请求的回应时放进它的 `response`，内核写进任务轨迹供排查）；`StorageBusy(reason, until)` 表示网盘暂时拒绝一切请求、这次请求没有发出，任务到 `until` 再继续，不算失败。`prepare`、`reconcile` 与可选方法遇到同样的情况也抛 `StorageBusy`。
+`save` 的结果用异常区分：`TransferRejected` 表示网盘明确拒绝、确定没有转存，可以重发；`TransferUncertain` 表示请求可能已经执行，之后只能核验（拿得到网盘对这次请求的回应时放进它的 `response`，内核写进任务轨迹供排查）；`StorageBusy(reason, until)` 表示网盘暂时拒绝一切请求或推迟了这次请求、这次请求没有执行，任务到 `until` 再继续，不算失败。`prepare`、`reconcile` 与可选方法遇到同样的情况也抛 `StorageBusy`。
 
 Provider 由配置选择：`providers.source`、`providers.notify`，以及 `defaults`/`sources[]` 中的 `parser`、`decision`、`storage`。
 
