@@ -261,8 +261,13 @@ def problem_reason(ctx: PipelineContext, event: str | None = None) -> tuple[str,
             return (f"转存只到了 {partial['landed']}/{partial['expected']} 个文件，多次复查都没有变化",
                     [f"缺 {len(missing)} 个文件：", *missing[:5], *([f"…等 {len(missing)} 个"] if len(missing) > 5 else [])],
                     "可以按已到的文件继续入库，或放弃并删除")
-        if (storage.get("auto_recheck") or {}).get("gave_up"):
+        record = storage.get("auto_recheck") or {}
+        if record.get("gave_up"):
             return "后台 24 小时的自动复查都没有核验通过", [], "系统不会自动重发；到网盘确认后点「核验转存」，或放弃并删除"
+        if record.get("notified"):  # 连续几次核验结果一样，提前提醒（见 Worker.recheck_transfers）
+            result = str(record.get("result") or "").removesuffix("，请核验")
+            return ("转存请求发出后，多次复查结果都没有变化", [result] if result else [],
+                    "系统不会自动重发，后台仍在复查；到网盘确认后点「核验转存」，或放弃并删除")
         return "转存请求发出后没有确认结果", [], "系统不会自动重发；确认网盘情况后点「核验转存」"
     if event == "organize_failed":
         conflict = organize.get("pending_conflict")

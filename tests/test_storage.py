@@ -136,6 +136,8 @@ class Cloud:
                     if mode == 'background':
                         cloud.landing[to_pid] = [3, selected, []]
                         return {'state': True}
+                    if mode == 'not_landed':  # 115 接受了请求，文件却一直没到
+                        return {'state': True, 'errno': 0, 'error': ''}
                     if mode == 'unsettled':  # 文件已到齐，但列表里暂时多一个临时目录
                         for item in selected:
                             cloud.add(item, to_pid)
@@ -808,6 +810,50 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await worker.recheck_transfers(now + RECHECK_WINDOW_SEC * 2), 0)  # 24 小时到了也不再提醒
         self.assertEqual(notices(), 1)
         self.assertEqual(len(self.cloud.receives()), 1)
+
+    async def test_transfer_that_never_lands_is_notified_early_with_the_115_response(self):
+        """115 接受了转存请求，暂存目录却一直是空的：以前要等 24 小时才提醒，现在连续几次核验结果一样就提醒。"""
+        from reelay.core.worker import RECHECK_STABLE_TIMES
+        from reelay.providers.notify import ConsoleNotify
+        sent = []
+
+        async def sender(**kwargs):
+            sent.append(kwargs)
+
+        notify = ConsoleNotify()
+        notify.configure(sender=sender)
+        self.reg.add_provider('notify', notify)
+        self.cfg = {**self.cfg, 'providers': {'notify': ['console']}}
+        self.pipeline = Pipeline(self.reg, self.store, self.cfg)
+        self.cloud.add_share('share', 'S01E07.mkv')
+        self.cloud.receive_mode['share'] = 'not_landed'
+        ctx = self.task(episodes=(7,))
+        manual = await self.execute(ctx)
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        # 115 当时的回应写进轨迹，供排查
+        self.assertTrue(any(line.endswith('网盘对这次转存请求的回应：{"state": true, "errno": 0, "error": ""}')
+                            for line in manual.trail))
+        worker, now = Worker(self.pipeline, self.store), time.time()
+
+        def notices():
+            return self.store._conn.execute("SELECT COUNT(*) FROM outbox WHERE task_id=? AND event='transfer_uncertain'",
+                                            (ctx.task_id,)).fetchone()[0]
+        for _ in range(RECHECK_STABLE_TIMES - 1):  # 前几次先不打扰：115 有时要十几分钟才落地
+            now += 3600
+            self.assertEqual(await worker.recheck_transfers(now), 1)
+            self.assertEqual((await self.execute(ctx)).state, TaskState.NEED_MANUAL)
+            self.assertEqual(notices(), 0)
+        now += 3600
+        self.assertEqual(await worker.recheck_transfers(now), 0)  # 第 3 次核验结果仍一样：提前提醒，这一轮不复查
+        self.assertEqual(notices(), 1)
+        await self.pipeline.dispatch_deliveries()
+        self.assertIn('需要处理</b>：转存请求发出后，多次复查结果都没有变化\n'
+                      '<blockquote>暂存目录有 0 项，与转存清单的 1 个文件不一致</blockquote>', sent[-1]['text'])
+        self.assertIn(('🔍 核验转存', f'rc:{ctx.task_id}'), sent[-1]['buttons'][0])
+        self.assertEqual(await worker.recheck_transfers(now + 1), 1)  # 后台继续复查
+        await self.execute(ctx)
+        self.assertEqual(notices(), 1)  # 只提醒一次
+        self.assertEqual(len(self.cloud.receives()), 1)  # 始终不重发
 
     async def test_late_landing_is_rechecked_automatically_and_only_notified_when_giving_up(self):
         from reelay.core.worker import RECHECK_FIRST_SEC, RECHECK_WINDOW_SEC

@@ -552,6 +552,8 @@ class Pipeline:
                     raise
                 except Exception as error:
                     ctx.log(f"转存请求没有确认结果（{type(error).__name__}），改为只读核验，不重发")
+                    if isinstance(error, TransferUncertain) and error.response:
+                        ctx.log(f"网盘对这次转存请求的回应：{error.response}")
                     with self.scope(ctx):
                         receipt = await storage.reconcile(ctx)
             elif ns["phase"] == "receiving" and ns.get("accept_partial") and hasattr(storage, "reconcile_partial"):

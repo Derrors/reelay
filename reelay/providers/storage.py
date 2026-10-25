@@ -13,6 +13,7 @@ prepare 只创建暂存目录并枚举分享；save 只发送一次转存请求�
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
@@ -35,6 +36,12 @@ MOVIE_MIN_SIZE = 1 << 30
 # 核验不通过时退避重查，最多等这么久，仍不通过交给只读核验与人工。
 LANDING_WAIT = 180.0
 _sleep = time.sleep
+
+
+def _response_text(response: Any, limit: int = 300) -> str:
+    """115 接口回应的原文（JSON，过长时截断），写进任务轨迹。"""
+    text = json.dumps(response, ensure_ascii=False, default=str)
+    return text if len(text) <= limit else text[:limit] + '…'
 
 
 def _await_landing(verify):
@@ -565,7 +572,13 @@ class P115Storage(ShareStorage):
             receipt = _await_landing(lambda: self._reconcile_sync(manifest))
         except StorageBusy as busy:
             # 转存请求已经发出，只是核验被风控冷却挡住了：结果不明，之后只读核验
-            raise TransferUncertain(f'转存请求已发出，核验时 {busy}') from None
+            uncertain = TransferUncertain(f'转存请求已发出，核验时 {busy}')
+            uncertain.response = _response_text(recv)
+            raise uncertain from None
+        except TransferUncertain as uncertain:
+            # 115 接受了请求，文件却迟迟没到：记下 115 当时的回应，供排查
+            uncertain.response = _response_text(recv)
+            raise
         receipt['received'] = recv
         return receipt
 

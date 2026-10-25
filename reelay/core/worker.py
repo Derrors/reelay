@@ -8,7 +8,8 @@
   凭证恢复后自动继续并发送恢复通知。任务不会因鉴权失效耗尽重试次数；
 - 115 触发风控冷却时同样暂停转存/整理，冷却结束自动继续；冷却期间被拒的请求没有发出，任务回到原阶段等待；
 - 转存请求已发出、暂存目录还没到齐而转为待人工的任务，后台按退避间隔自动只读核验（见 ``recheck_transfers``）：
-  115 在后台落地文件有时要十几分钟，到齐后自动入库，并释放它占着的集，排在后面的任务随之继续。
+  115 在后台落地文件有时要十几分钟，到齐后自动入库，并释放它占着的集，排在后面的任务随之继续；
+  连续几次核验结果都没有变化（比如一个文件都没到）时提前提醒一次，后台仍继续复查。
 """
 
 from __future__ import annotations
@@ -160,9 +161,10 @@ class Worker:
     async def recheck_transfers(self, now: float | None = None) -> int:
         """转存请求已发出、核验时暂存目录没到齐的待人工任务：到点后放回队列做一次只读核验（不重发转存）。
 
-        复查记录在 storage.auto_recheck（since / count / next_at，以及 landed / stable：上次到达几个文件、
-        连续几次没变）。复查期间不提醒；只到了一部分且连续 RECHECK_STABLE_TIMES 次到达数不变时提前提醒一次
-        （notified），之后照常复查；超过 24 小时仍未到齐就不再自动复查，没提醒过的这时才通知。
+        复查记录在 storage.auto_recheck（since / count / next_at，以及 result / stable：上次的核验结果、
+        连续几次一样）。复查期间不提醒；连续 RECHECK_STABLE_TIMES 次核验结果都一样时（只到了一部分、一个文件
+        都没到、到的文件对不上），等下去多半不会变，提前提醒一次（notified），之后照常复查；超过 24 小时仍未
+        核验通过就不再自动复查，没提醒过的这时才通知。
         返回本次放回队列的任务数。
         """
         now = time.time() if now is None else now
@@ -187,17 +189,15 @@ class Worker:
                 except ValueError:
                     pass  # 期间被人工处理了
                 continue
-            landed = (ns.get("partial") or {}).get("landed")
-            if landed and not record.get("notified"):
-                stable = record.get("stable", 0) + 1 if record.get("landed") == landed else 1
-                record = {**record, "since": since, "landed": landed, "stable": stable}
+            result = row["error"] or ""  # 上一次核验的结果，如「暂存目录有 0 项……」「已到 1/2 个文件……」
+            if not record.get("notified"):
+                stable = record.get("stable", 0) + 1 if record.get("result") == result else 1
+                record = {**record, "since": since, "result": result, "stable": stable}
                 ns["auto_recheck"] = record
-            if landed and not record.get("notified") and record.get("stable", 0) >= RECHECK_STABLE_TIMES:
-                partial = ns["partial"]
+            if not record.get("notified") and record["stable"] >= RECHECK_STABLE_TIMES:
                 ns["auto_recheck"] = {**record, "notified": True}
-                ctx.log(f"连续 {record['stable']} 次复查都只到了 {landed}/{partial['expected']} 个文件，"
-                        "先提醒你处理，后台仍继续复查")
-                log.info("任务 %s 转存只到了 %d/%d 个文件且不再变化，提前提醒", ctx.task_id, landed, partial["expected"])
+                ctx.log(f"连续 {record['stable']} 次核验结果都没有变化，先提醒你处理，后台仍继续复查")
+                log.info("任务 %s 转存连续 %d 次核验结果没有变化，提前提醒：%s", ctx.task_id, record["stable"], result)
                 await self.pipeline.notify_uncertain(ctx)
                 try:
                     self.store.update_task_context(ctx, expected=TaskState.NEED_MANUAL, error=row["error"])

@@ -92,7 +92,12 @@ class StorageBusy(RuntimeError):
 
 
 class TransferUncertain(RuntimeError):
-    """网盘写请求的结果不能确认；只允许核验，不能自动再次发送。"""
+    """网盘写请求的结果不能确认；只允许核验，不能自动再次发送。
+
+    response 是网盘对这次写请求的回应（存储 Provider 拿得到时填写），内核写进任务轨迹供排查。
+    """
+
+    response: str | None = None
 
 
 class NeedsManual(RuntimeError):
