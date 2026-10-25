@@ -94,8 +94,9 @@ class TestTemplates(unittest.TestCase):
         text = messages.approval_card(ctx)
         self.assertTrue(text.startswith("📺 <b>玉簟秋</b> (2026) · S01 E17\n<i>Yu Dian Qiu</i>\n\n🌟 评分：7.0\n"
                                         "🎭 类型：剧情 · 悬疑 · 犯罪\n🌍 地区：中国大陆 · 香港 · 加拿大\n"
-                                        "🗣 语言：国语 · 粤语\n👥 主演：甲、乙&lt;丙&gt;\n"))
-        self.assertIn("🖥 分辨率：2160p · 杜比视界\n🔊 音轨：国语 · 粤语\n💬 字幕：简体中字\n💿 片源：WEB-DL", text)
+                                        "🗣 语言：国语 · 粤语\n👥 主演：甲、乙&lt;丙&gt;\n\n"  # 作品信息与版本信息之间空一行
+                                        "🖥 分辨率：2160p · 杜比视界\n💿 片源：WEB-DL\n📦 大小：2.53 GB\n💬 字幕：简体中字\n"))
+        self.assertNotIn("音轨", text)  # 与「语言」重复，不显示
         self.assertIn("📖 简介：\n<blockquote expandable>", text)
         overview = text.split("<blockquote expandable>")[1].split("</blockquote>")[0]
         self.assertTrue(overview.endswith("…") and "&lt;很长&gt;" in overview)
@@ -105,8 +106,10 @@ class TestTemplates(unittest.TestCase):
         self.assertEqual(messages.link_buttons(ctx), [[("🎬 TMDB 详情", "https://www.themoviedb.org/tv/42")]])
 
     def test_resolution_falls_back_to_share_and_file_names(self):
-        ctx = tv(resolution=None)
-        self.assertIn("🖥 分辨率：未标注", messages.approval_card(ctx))
+        ctx = tv(resolution=None, size=None)
+        # 没有 TMDB 信息时不在片名下多空一行；分辨率、片源、大小没标注时照样列出
+        self.assertIn(" · S01 E17\n\n🖥 分辨率：未标注\n💿 片源：未标注\n📦 大小：未标注\n💬 字幕：简体中字\n",
+                      messages.approval_card(ctx))
         ctx.meta["share"] = {"status": "available", "resolution": "2160p"}
         self.assertIn("🖥 分辨率：2160p", messages.approval_card(ctx))
         ctx.meta["share"] = {}

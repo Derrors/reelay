@@ -99,9 +99,11 @@ Web console, Telegram bot and MCP; one folder is one plugin.
 🎭 Genre: Drama · Mystery · Crime
 🌍 Region: Mainland China
 👥 Cast: Fan Wei, Qin Hao, Chen Minghao
+
 🖥 Resolution: 2160p · Dolby Vision
-💬 Subtitles: Simplified Chinese
+💿 Release: WEB-DL
 📦 Size: 38.6 GB
+💬 Subtitles: Simplified Chinese
 
 📖 Overview:
 ▍ In 1997, taxi driver Wang Xiang… (expandable)
@@ -126,7 +128,9 @@ Web console, Telegram bot and MCP; one folder is one plugin.
 
 🌟 Rating: 8.6
 🎭 Genre: Drama · Mystery · Crime
+
 🖥 Resolution: 2160p · Dolby Vision
+💿 Release: WEB-DL
 📦 Size: 38.6 GB
 
 📂 Location: /TV/Chinese TV/The Long Season

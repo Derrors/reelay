@@ -88,7 +88,8 @@ def _resolution(ctx: PipelineContext) -> str | None:
 
 
 def _facts(ctx: PipelineContext) -> list[str]:
-    """评分、类型、地区、语言、主演、分辨率、音轨、字幕、片源、大小，各占一行（季集在片名后）。"""
+    """两组字段，各占一行（季集在片名后）：评分、类型、地区、语言、主演；空一行，分辨率、片源、大小，
+    没标注时写「未标注」，有字幕信息时再加一行字幕。"""
     p = ctx.parsed
     fields = p.raw_fields if p else {}
     rating = fields.get("rating")
@@ -103,18 +104,21 @@ def _facts(ctx: PipelineContext) -> list[str]:
         [label(info["subtitle_format"], info["subtitle_format"])] if info.get("subtitle_format") else [])
     join = lambda items, sep=" · ": sep.join(esc(x) for x in items) or None  # noqa: E731
     strings = lambda key: [x for x in fields.get(key) or [] if isinstance(x, str)]  # noqa: E731
-    return [
+    unknown = "未标注" if p and p.is_media else None
+    work = [
         *_field("🌟", "评分", f"{float(rating):.1f}" if type(rating) in (int, float) else None),
         *_field("🎭", "类型", join(genres)),
         *_field("🌍", "地区", join(countries)),
         *_field("🗣", "语言", join(strings("languages"))),
         *_field("👥", "主演", join(strings("cast")[:5], "、")),
-        *_field("🖥", "分辨率", join(video) or ("未标注" if p and p.is_media else None)),
-        *_field("🔊", "音轨", join([label(x, x) for x in info.get("audio") or []])),
-        *_field("💬", "字幕", join(subtitles)),
-        *_field("💿", "片源", join(source)),
-        *_field("📦", "大小", _size(ctx)),
     ]
+    version = [
+        *_field("🖥", "分辨率", join(video) or unknown),
+        *_field("💿", "片源", join(source) or unknown),
+        *_field("📦", "大小", _size(ctx) or unknown),
+        *_field("💬", "字幕", join(subtitles)),
+    ]
+    return [*work, *([""] if work and version else []), *version]
 
 
 def _overview(ctx: PipelineContext) -> list[str]:
