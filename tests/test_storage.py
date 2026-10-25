@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from reelay.core import works
 from reelay.core.auth115 import CredentialStore
 from reelay.core.config import normalize_config
 from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
@@ -336,6 +337,27 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute(b)).state, TaskState.SKIPPED)
         self.assertEqual(len(self.cloud.receives()), 1)
 
+    async def test_same_title_different_works_are_not_deduplicated(self):
+        """同名的不同作品（如翻拍剧）不会互相当成已入库；同一部作品照常去重。"""
+        for code in ('old', 'new', 'again', 'unmatched'):
+            self.cloud.add_share(code, 'S01E01.mkv')
+
+        def work(code, year, tmdbid):
+            ctx = self.task(code)
+            ctx.parsed.year = year
+            if tmdbid:
+                ctx.parsed.raw_fields['tmdbid'] = tmdbid
+            self.store.save_task(ctx)
+            return ctx
+
+        self.assertEqual((await self.execute(work('old', 1980, 1001))).state, TaskState.DONE)
+        # 以前会被判定为「分享内第 1 季的 1 集均已入库」而跳过
+        self.assertEqual((await self.execute(work('new', 2024, 2002))).state, TaskState.DONE)
+        self.assertEqual((await self.execute(work('again', 2024, 2002))).state, TaskState.SKIPPED)
+        # TMDB 没匹配上：按规范片名与年份认作品
+        self.assertEqual((await self.execute(work('unmatched', 1980, None))).state, TaskState.SKIPPED)
+        self.assertEqual(len(self.cloud.receives()), 2)
+
     async def test_share_listing_decides_episodes_and_later_update_is_skipped(self):
         self.cloud.add_share('share', 'S01E01.mkv', 'S01E02.mkv')
         a, b = self.task(episodes=(1,)), self.task(episodes=(1, 2))
@@ -362,7 +384,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(self.path_of(int(x['id'])) for x in done.ns('storage')['landed']), [
             '剧集 (2026)/Season 01/剧集 - S01E01 - 第 1 集.mkv', '剧集 (2026)/Season 01/剧集 - S01E02 - 第 2 集.mkv',
             '剧集 (2026)/Season 02/剧集 - S02E01 - 第 1 集.mkv', '剧集 (2026)/Season 02/剧集 - S02E02 - 第 2 集.mkv'])
-        self.assertEqual(self.store.stored_episode_pairs('剧集', '1'), [[1, 1], [1, 2], [2, 1], [2, 2]])
+        self.assertEqual(self.store.stored_episode_pairs(works.identity('剧集'), '1'), [[1, 1], [1, 2], [2, 1], [2, 2]])
         self.assertTrue(any('按季分别转存与整理' in line for line in done.trail))
 
         # 另一个分享里 S02E02 已入库，只转存 S03E01；占位同样按（季, 集）
@@ -500,7 +522,7 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         a, b = self.task('a', episodes=()), self.task('b', episodes=())
         # a 先占住 E02：b 拿到清单后无法占位，释放全部占位重新排队（不持有任何键等待）。
         self.store.claim_resource(self.store.get_task(a.task_id), 'p115:1:a',
-                                  content_keys=['p115:1:episode:' + Store.episode_key('剧集', 1, 2)])
+                                  content_keys=['p115:1:episode:' + works.claim_key('剧集', 1, 2)])
         waiting = await self.execute(b)
         self.assertEqual(waiting.state, TaskState.QUEUED)
         self.assertEqual(waiting.ns('storage')['manifest']['episodes'], [2, 3])

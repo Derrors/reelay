@@ -82,8 +82,8 @@ class Services:
     def ignored_works(self) -> list[dict[str, Any]]:
         return self.store.ignored_works()
 
-    def stored_series(self) -> dict[tuple[str, int], set[int]]:
-        """按（片名, 季）汇总的已入库集。"""
+    def stored_series(self) -> list[dict[str, Any]]:
+        """按（作品, 季）汇总的已入库集：[{work, name, season, episodes}]；某部作品某一季用 works.episodes 查。"""
         return self.store.stored_series()
 
     def task(self, task_id: str):

@@ -65,6 +65,18 @@ class TestSubscriptionDecision(ServiceCase):
         self.assertEqual(await self.decide(tv_ctx(msg_id="2", episodes=(3,))), Decision.ASK)
         self.assertEqual(await self.decide(tv_ctx(msg_id="3", episodes=(3, 4))), Decision.SAVE)
 
+    async def test_episodes_of_a_same_title_remake_do_not_count_as_stored(self):
+        remake = tv_ctx(episodes=(3,), tmdbid=999)  # 同名的另一部剧
+        remake.state = TaskState.STORED
+        remake.save_dir_cid = "2"
+        remake.result = {"storage_verified": True}
+        remake.ns("storage")["identity"] = {"cid": "2", "share_code": remake.parsed.share_code,
+                                            "title": remake.parsed.title, "season": 1, "episodes": [3]}
+        self.store.save_task(remake)
+        self.store.finish_transfer(remake)
+        self.assertEqual(await self.decide(tv_ctx(msg_id="2", episodes=(3,))), Decision.SAVE)
+        self.assertEqual([item["have"] for item in self.service.list_subscriptions()["items"]][0], [])
+
     async def test_preferences_can_still_veto_a_subscription(self):
         provider = LLMDecision()
         provider._client = FakeAI({"decision": "skip", "save_to": None, "reason": "不要 1080p"})

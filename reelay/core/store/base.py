@@ -18,6 +18,8 @@ Telethon 自己的 session 库与本业务库分文件，互不干扰。
 from __future__ import annotations
 
 import functools
+import json
+import re
 import sqlite3
 import threading
 from collections import OrderedDict
@@ -169,7 +171,39 @@ CREATE TABLE IF NOT EXISTS ignored_works (
 SYSTEM_TASK = "system"
 
 
-MIGRATIONS = (lambda conn: None,)
+def _episode_work_keys(conn: sqlite3.Connection) -> None:
+    """v2：内容级去重键加上作品身份（年份与 TMDB ID，取自入库任务的快照），同名的不同作品不再互相当成已入库；
+    转存中的资源占位改用规范片名（见 core/works.py）。"""
+    from .. import tmdb, works
+    target = re.compile(r"^(?:[A-Za-z0-9_.-]+:)?\d+:")
+    rows = conn.execute("SELECT d.key, d.task_id, d.created_at, t.snapshot FROM dedup d "
+                        "LEFT JOIN tasks t ON t.task_id=d.task_id WHERE d.kind='episode'").fetchall()
+    for key, task_id, created, snapshot in rows:
+        prefix = target.match(key)
+        head, _, tail = key[prefix.end():].rpartition("|S") if prefix else ("", "", "")
+        if not head:
+            continue
+        snap = json.loads(snapshot) if snapshot else {}
+        parsed, matched = snap.get("parsed") or {}, (snap.get("meta") or {}).get("tmdb") or {}
+        fields = parsed.get("raw_fields") or {}
+        kind = matched.get("kind") or ("movie" if parsed.get("media_type") == "movie" and not parsed.get("episodes")
+                                       else "tv")
+        work = works.identity(head, parsed.get("year"), fields.get("tmdbid") or matched.get("tmdbid"), kind)
+        new = f"{prefix.group(0)}{works.key(work)}|S{tail}"
+        if new != key:
+            conn.execute("DELETE FROM dedup WHERE kind='episode' AND key=?", (key,))
+            conn.execute("INSERT OR IGNORE INTO dedup VALUES ('episode', ?, ?, ?)", (new, task_id, created))
+    for key, task_id, created in conn.execute("SELECT resource_key, task_id, created_at FROM resource_claims "
+                                              "WHERE resource_key LIKE '%:episode:%'").fetchall():
+        scope, _, body = key.partition(":episode:")
+        head, _, tail = body.rpartition("|S")
+        new = f"{scope}:episode:{tmdb.normalize(head)}|S{tail}" if head else key
+        if new != key:
+            conn.execute("DELETE FROM resource_claims WHERE resource_key=?", (key,))
+            conn.execute("INSERT OR IGNORE INTO resource_claims VALUES (?,?,?)", (new, task_id, created))
+
+
+MIGRATIONS = (lambda conn: None, _episode_work_keys)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

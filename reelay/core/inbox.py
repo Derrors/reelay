@@ -12,7 +12,7 @@ import hashlib
 import json
 from typing import Any
 
-from . import ai, release, tmdb
+from . import ai, release, tmdb, works
 from .contracts import PipelineContext
 from .media import pairs_text, planned_pairs
 
@@ -86,7 +86,8 @@ def facts(ctx: PipelineContext, *, stored: dict, versions: dict, subscribed: boo
     if episodic:
         pairs = sorted(set(planned_pairs(ctx)))
         seasons = sorted({season for season, _ in pairs}) or [p.season if p.season is not None else 1]
-        have = sorted((season, ep) for season in seasons for ep in stored.get((p.title, season), set())) if p.title else []
+        work = works.of(p, meta.get("tmdb"))
+        have = sorted((season, ep) for season in seasons for ep in works.episodes(stored, work, season)) if p.title else []
         out.update(seasons=seasons, episodes=[list(x) for x in pairs], stored_episodes=[list(x) for x in have],
                    new_episodes=[list(x) for x in pairs if x not in set(have)])
     else:

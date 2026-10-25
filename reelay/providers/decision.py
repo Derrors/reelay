@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
-from ..core import ai, rules, runtime, subscriptions
+from ..core import ai, rules, runtime, subscriptions, works
 from ..core.contracts import ApprovalMode, Decision, PipelineContext
 from ..core.media import pairs_label, planned_pairs
 from ..core.registry import register
@@ -125,7 +125,7 @@ class SubscriptionDecision(DefaultDecision):
         season = seasons.pop()
         episodes = {ep for s, ep in pairs if s == season}
         if episodes:
-            have = runtime.services().stored_series().get((p.title, season), set())
+            have = works.episodes(runtime.services().stored_series(), works.of(p, ctx.meta.get("tmdb")), season)
             if episodes <= have:
                 ctx.log(f"订阅《{item['title']}》：消息里的集都已入库，仍交给你确认")
                 return decision

@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Any
 
-from .. import ai, ignored, messages, subscriptions, tmdb
+from .. import ai, ignored, messages, subscriptions, tmdb, works
 from ..contracts import PipelineContext, TaskState
 from ..media import format_episodes
 from ..rules import tv_category
@@ -38,7 +38,7 @@ class FollowMixin(ServiceBase):
         items = []
         for item in subs:
             titles = {item["title"], *(self.store.titles_for_tmdbid(item["tmdbid"]) if item["tmdbid"] else [])}
-            have = sorted(set().union(*(stored.get((title, item["season"]), set()) for title in titles)))
+            have = sorted(works.episodes(stored, works.identity(item["title"], tmdbid=item["tmdbid"]), item["season"]))
             entry = next((report[f"{title}|S{item['season']:02d}"] for title in titles
                           if f"{title}|S{item['season']:02d}" in report), {})
             items.append({**item, "have": have, "missing": entry.get("missing", []), "aired": entry.get("aired"),

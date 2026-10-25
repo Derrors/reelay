@@ -38,7 +38,7 @@ from .registry import Registry
 from .store import Store, _load_ctx
 from .config import config_revision, load_config, merge_config, normalize_config
 from .media import pairs_label, summarize_pairs
-from . import confidence, ignored, messages, runtime
+from . import confidence, ignored, messages, runtime, works
 
 log = logging.getLogger("reelay.pipeline")
 
@@ -473,14 +473,15 @@ class Pipeline:
                 ctx.log("执行前去重命中，分享已转存到该目录")
                 self.store.save_task(ctx)
                 return
+            # work 是作品身份（TMDB ID、规范片名与年份）：同名的不同作品不会互相当成已入库
             ns["identity"] = {
                 "provider": provider_name,
                 "cid": ctx.save_dir_cid, "share_code": ctx.parsed.share_code,
                 "title": ctx.parsed.title, "season": ctx.parsed.season,
-                "episodes": list(ctx.parsed.episodes),
+                "episodes": list(ctx.parsed.episodes), "work": works.of(ctx.parsed, ctx.meta.get("tmdb")),
             }
-            ns["stored_episodes"] = (self.store.stored_episode_pairs(ctx.parsed.title, ctx.save_dir_cid, provider_name)
-                                     if ctx.parsed.title else [])
+            ns["stored_episodes"] = (self.store.stored_episode_pairs(ns["identity"]["work"], ctx.save_dir_cid,
+                                                                     provider_name) if ctx.parsed.title else [])
             try:
                 with self.scope(ctx):
                     manifest = await storage.prepare(ctx)
@@ -526,6 +527,9 @@ class Pipeline:
                 return
         else:
             ctx.state = TaskState.SAVING
+            # 占位键按当前格式重新生成（集数已按清单确定），升级前开始的任务与新任务互相可见
+            if ns.get("manifest"):
+                ns["content_keys"] = self._content_keys(storage.name, ctx)
             if not self.store.claim_resource(ctx, ns["resource_key"],
                                              content_keys=ns.get("content_keys") or ns.get("claim_keys")):
                 ctx.state = TaskState.QUEUED
@@ -702,9 +706,10 @@ class Pipeline:
         p = ctx.parsed
         return bool(p.title) and (p.media_type in ("tv", "anime") or bool(p.episodes))
 
-    def _content_keys(self, storage_name: str, ctx: PipelineContext) -> list[str]:
+    @staticmethod
+    def _content_keys(storage_name: str, ctx: PipelineContext) -> list[str]:
         title = ctx.parsed.title
-        return [f"{storage_name}:{ctx.save_dir_cid}:episode:{self.store.episode_key(title, season, ep)}"
+        return [f"{storage_name}:{ctx.save_dir_cid}:episode:{works.claim_key(title, season, ep)}"
                 for season, ep in ctx.episode_pairs() if title]
 
     @staticmethod
@@ -738,8 +743,8 @@ class Pipeline:
                 ctx.parsed.share_code, ctx.save_dir_cid, provider_name):
             reason = "分享已转存到该目录"
         elif manifest.get("episodes") and ctx.parsed.title:
-            stored = {tuple(pair) for pair in self.store.stored_episode_pairs(
-                ctx.parsed.title, ctx.save_dir_cid, provider_name)}
+            work = ns.get("identity", {}).get("work") or works.of(ctx.parsed, ctx.meta.get("tmdb"))
+            stored = {tuple(pair) for pair in self.store.stored_episode_pairs(work, ctx.save_dir_cid, provider_name)}
             remaining = [f for f in manifest["files"] if (f.get("season"), f.get("episode")) not in stored]
             if not remaining:
                 reason = "分享内的集数均已由其他任务入库"

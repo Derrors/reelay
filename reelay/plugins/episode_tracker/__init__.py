@@ -24,7 +24,7 @@ import asyncio
 import logging
 import time
 
-from ...core import runtime, tmdb
+from ...core import runtime, tmdb, works
 from ...core.contracts import PipelineContext
 from ...core.media import format_episodes
 from ...core.messages import callback, esc, short_key, type_icon
@@ -210,7 +210,8 @@ class EpisodeTracker(_Base):
         for item in services.subscriptions():
             if item["finished"]:
                 continue  # 已完结：不再巡检
-            episodes = await self._season_complete(item, stored.get((item["title"], item["season"]), set()), today)
+            have = works.episodes(stored, works.identity(item["title"], tmdbid=item["tmdbid"]), item["season"])
+            episodes = await self._season_complete(item, have, today)
             if episodes:
                 services.finish_subscription(item["id"], {"date": today, "episodes": episodes})
                 ended.append(item | {"episodes": episodes})
@@ -231,7 +232,7 @@ class EpisodeTracker(_Base):
             silence = muted.get(f"{title}|S{season:02d}") or {}
             if silence.get("all"):
                 continue
-            have = stored.get((title, season), set())
+            have = works.episodes(stored, works.identity(title, tmdbid=info.get("tmdbid")), season)
             aired, air_dates = await self._aired(info.get("tmdbid"), season, today)
             missing = missing_episodes(have, total=info.get("total"), aired=aired, from_first=info["from_first"])
             missing = [ep for ep in missing if ep not in set(silence.get("episodes", []))]

@@ -106,7 +106,8 @@ def gaps(episodes: set[int]) -> list[int]:
     return sorted(set(range(min(episodes), max(episodes) + 1)) - episodes) if episodes else []
 
 
-def missing(report: dict, stored: dict[tuple[str, int], set[int]], title: str | None = None) -> list[dict]:
+def missing(report: dict, stored: list[dict], title: str | None = None) -> list[dict]:
+    """缺集：有巡检结果时用它；没有时按已入库的集（Store.stored_series）算断档。"""
     wanted = tmdb.normalize(title) if title else None
     items = []
     for key, info in (report.get("series") or {}).items():
@@ -118,7 +119,8 @@ def missing(report: dict, stored: dict[tuple[str, int], set[int]], title: str | 
                       "overdue": info.get("overdue") or []})
     if items or not wanted:
         return items
-    for (name, season), episodes in stored.items():  # 没有巡检结果：按已入库的集算断档
+    for entry in stored:  # 没有巡检结果：按已入库的集算断档
+        name, season, episodes = entry["name"], entry["season"], entry["episodes"]
         if wanted in tmdb.normalize(name):
             items.append({"title": name, "season": season, "have": len(episodes), "missing": gaps(episodes),
                           "aired": None, "overdue": [], "note": "没有 TMDB 播出信息，只看已入库集之间的断档"})

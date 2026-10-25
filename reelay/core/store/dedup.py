@@ -1,9 +1,14 @@
-"""三层去重与资源占位：消息级、资源级（分享）、内容级（集）。"""
+"""三层去重与资源占位：消息级、资源级（分享）、内容级（集）。
+
+内容级的键是「目标前缀:规范片名|年份|TMDB|Sxx|Exx」（作品部分见 core/works.py）：同名的不同作品（如翻拍剧）
+不会互相当成已入库；判断是不是同一部按 works.same。
+"""
 from __future__ import annotations
 
 import re
 import time
 
+from .. import works
 from ..contracts import PipelineContext
 from .base import DEDUP_EPISODE, DEDUP_SHARE, _locked
 
@@ -49,10 +54,9 @@ class DedupRepository:
             keys = [(DEDUP_SHARE, f"{prefix}:{identity['share_code']}")]
             # 跨多季的合集按（季, 集）逐个记录；单季剧集的清单没有 pairs，按季与集数
             pairs = identity.get("pairs") or [[identity["season"], ep] for ep in identity["episodes"]]
-            keys += [
-                (DEDUP_EPISODE, f"{prefix}:{self.episode_key(identity['title'] or '', season, ep)}")
-                for season, ep in pairs if identity["title"]
-            ]
+            work = identity.get("work") or works.of(ctx.parsed, ctx.meta.get("tmdb"))
+            keys += [(DEDUP_EPISODE, f"{prefix}:{self.episode_key(work, season, ep)}")
+                     for season, ep in pairs if identity["title"]]
             self._conn.executemany(
                 "INSERT OR IGNORE INTO dedup VALUES (?,?,?,?)",
                 [(kind, key, ctx.task_id, time.time()) for kind, key in keys],
@@ -82,35 +86,41 @@ class DedupRepository:
             self._conn.commit()
 
     @staticmethod
-    def episode_key(title: str, season: int | None, ep: int) -> str:
-        return f"{title}|S{season if season is not None else 1:02d}|E{ep:02d}"
+    def episode_key(work: dict, season: int | None, ep: int) -> str:
+        """内容级去重键（不含目标前缀）；work 见 core/works.py。"""
+        return f"{works.key(work)}|S{season if season is not None else 1:02d}|E{ep:02d}"
 
     @_locked
-    def stored_episode_pairs(self, title: str, cid: str, provider: str = "p115") -> list[list[int]]:
-        """某剧在目标目录已入库的 [季, 集]；分享清单据此排除已入库的集。"""
-        prefix = f"{_target_prefix(cid, provider)}:{title}|"
+    def stored_episode_pairs(self, work: dict, cid: str, provider: str = "p115") -> list[list[int]]:
+        """这部作品在目标目录已入库的 [季, 集]；分享清单据此排除已入库的集。"""
+        prefix = f"{_target_prefix(cid, provider)}:"
         pairs = set()
-        for row in self._conn.execute(
-                "SELECT key, task_id FROM dedup WHERE kind=? AND substr(key, 1, ?)=?",
-                (DEDUP_EPISODE, len(prefix), prefix)):
-            parsed = _episode_pair(row["key"][len(prefix):])
-            if parsed:
-                pairs.add(parsed)
+        for row in self._conn.execute("SELECT key FROM dedup WHERE kind=? AND substr(key, 1, ?)=?",
+                                      (DEDUP_EPISODE, len(prefix), prefix)):
+            found = split_episode_key(row["key"][len(prefix):])
+            if found and works.same(found[0], work):
+                pairs.add(found[1:])
         return [list(pair) for pair in sorted(pairs)]
 
     @_locked
-    def stored_series(self) -> dict[tuple[str, int], set[int]]:
-        """按 (标题, 季) 汇总所有目标目录中已入库的集，供追更检查使用。"""
-        series: dict[tuple[str, int], set[int]] = {}
-        for row in self._conn.execute("SELECT key FROM dedup WHERE kind=?", (DEDUP_EPISODE,)):
-            # 键是「目标前缀:标题|Sxx|Exx」，目标前缀为 CID（115）或「provider:CID」
-            body = _TARGET_PREFIX.sub("", row["key"], count=1)
-            title, _, rest = body.rpartition("|S")
-            pair = _episode_pair("S" + rest) if title else None
-            if pair:
-                season, ep = pair
-                series.setdefault((title, season or 1), set()).add(ep)
-        return series
+    def stored_series(self) -> list[dict]:
+        """所有目标目录中已入库的集，按（作品, 季）汇总：[{work, name, season, episodes}]。
+
+        name 是入库任务的片名（展示用）；查某部作品某一季已入库哪些集用 works.episodes。
+        """
+        series: dict[tuple[str, int], dict] = {}
+        for row in self._conn.execute("SELECT d.key, t.title FROM dedup d LEFT JOIN tasks t ON t.task_id=d.task_id "
+                                      "WHERE d.kind=?", (DEDUP_EPISODE,)):
+            # 目标前缀为 CID（115）或「provider:CID」
+            found = split_episode_key(_TARGET_PREFIX.sub("", row["key"], count=1))
+            if not found:
+                continue
+            work, season, ep = found
+            season = season or 1  # 与追更一致：特别篇（第 0 季）并入第 1 季
+            entry = series.setdefault((works.key(work), season), {"work": work, "name": row["title"] or work["title"],
+                                                                  "season": season, "episodes": set()})
+            entry["episodes"].add(ep)
+        return list(series.values())
 
 
 _TARGET_PREFIX = re.compile(r"^(?:[A-Za-z0-9_.-]+:)?\d+:")
@@ -120,7 +130,10 @@ def _target_prefix(cid: str | None, provider: str) -> str:
     return str(cid) if provider == "p115" else f"{provider}:{cid}"
 
 
-def _episode_pair(text: str) -> tuple[int, int] | None:
-    """解析 episode_key 的 ``S01|E02`` 尾部。"""
-    match = re.fullmatch(r"S(\d+)\|E(\d+)", text)
-    return (int(match.group(1)), int(match.group(2))) if match else None
+def split_episode_key(body: str) -> tuple[dict, int, int] | None:
+    """episode_key 的反向：（作品, 季, 集）；格式不对时为 None。"""
+    head, _, tail = body.rpartition("|S")
+    match = re.fullmatch(r"(\d+)\|E(\d+)", tail)
+    if not head or not match:
+        return None
+    return works.parse_key(head), int(match.group(1)), int(match.group(2))

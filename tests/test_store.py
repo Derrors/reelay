@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from reelay.core import works
 from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
 from reelay.core.registry import discover
 from reelay.core.store.health import HEARTBEAT_INTERVAL
@@ -44,10 +45,10 @@ class TestStore(unittest.TestCase):
         """追更：只返回同一目标目录、同一剧名已入库的 [季, 集]。"""
         s = self.store
         for ep in range(1, 9):
-            s.mark(DEDUP_EPISODE, "1:" + Store.episode_key("剧A", 1, ep))
-        s.mark(DEDUP_EPISODE, "2:" + Store.episode_key("剧A", 1, 9))
-        s.mark(DEDUP_EPISODE, "1:" + Store.episode_key("剧AB", 1, 9))
-        self.assertEqual(s.stored_episode_pairs("剧A", "1"), [[1, ep] for ep in range(1, 9)])
+            s.mark(DEDUP_EPISODE, "1:" + Store.episode_key(works.identity("剧A"), 1, ep))
+        s.mark(DEDUP_EPISODE, "2:" + Store.episode_key(works.identity("剧A"), 1, 9))
+        s.mark(DEDUP_EPISODE, "1:" + Store.episode_key(works.identity("剧AB"), 1, 9))
+        self.assertEqual(s.stored_episode_pairs(works.identity("剧A"), "1"), [[1, ep] for ep in range(1, 9)])
 
     def test_state_update_keeps_snapshot_consistent(self):
         s = self.store
@@ -210,7 +211,8 @@ class TestPersistenceBoundaries(unittest.TestCase):
         items = [{'id': 'one', 'name': 'S01E01.mkv'}, {'id': 'special', 'name': 'S00E01.mkv'}]
         p = ParsedResource(episodes=[1], season=0)
         self.assertEqual([x['id'] for x in _select_video_items(items, p)['files']], ['special'])
-        self.assertEqual(Store.episode_key('Show', None, 1), Store.episode_key('Show', 1, 1))
+        show = works.identity('Show')
+        self.assertEqual(Store.episode_key(show, None, 1), Store.episode_key(show, 1, 1))
 
 
 class TestStoreThreading(unittest.TestCase):
@@ -324,6 +326,61 @@ class TestHousekeeping(unittest.TestCase):
         self.assertEqual(removed, 3)
         left = {json.loads(row["snapshot"])["key"] for row in self.store._conn.execute("SELECT snapshot FROM outbox")}
         self.assertEqual(left, {"recent-done", "recent-failed", "old-pending"})  # 还没投递的不清理
+
+
+
+class TestWorkIdentity(unittest.TestCase):
+    """内容级去重按作品区分：同名的不同作品（如翻拍剧）不会互相当成已入库。"""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+
+    def test_same_title_works_are_told_apart_by_tmdb_id_then_year(self):
+        self.store.mark(DEDUP_EPISODE, "1:" + Store.episode_key(works.identity("幕府将军", 1980, 1001), 1, 1))
+
+        def stored(*args, **kwargs):
+            return self.store.stored_episode_pairs(works.identity(*args, **kwargs), "1")
+
+        self.assertEqual(stored("幕府将军", 2024, 126308), [])  # 翻拍：TMDB ID 不同
+        self.assertEqual(stored("Shogun", 1980, 1001), [[1, 1]])  # 同一部，片名改过也算
+        self.assertEqual(stored("幕府将军", 2024), [])  # TMDB 没匹配上：年份不同
+        self.assertEqual(stored("幕府 将军！", 1980), [[1, 1]])  # 规范片名与年份相同
+        self.assertEqual(stored("幕府将军"), [[1, 1]])  # 不知道年份：按同一部，宁可确认也不重复转存
+        self.assertEqual(stored("幕府将军", 1980, 1001, kind="movie"), [])  # 同号的电影是另一部
+        series = self.store.stored_series()
+        self.assertEqual(works.episodes(series, works.identity("幕府将军", tmdbid=1001), 1), {1})
+        self.assertEqual(works.episodes(series, works.identity("幕府将军", tmdbid=126308), 1), set())
+
+    def test_old_episode_keys_are_migrated_with_work_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "reelay.db"
+            store = Store(path)
+            ctx = PipelineContext(RawMessage("@b", "1", "x"))
+            ctx.parsed = ParsedResource(is_media=True, title="幕府将军", year=1980, media_type="tv", season=1,
+                                        episodes=[1], raw_fields={"tmdbid": 1001})
+            ctx.state = TaskState.DONE
+            store.save_task(ctx)
+            store.mark(DEDUP_EPISODE, "1:幕府将军|S01|E01", ctx.task_id)  # 1.0.x 的格式：只有片名
+            store.mark(DEDUP_EPISODE, "dryrun:5:没有任务的剧|S00|E02", "gone")
+            with store._conn:
+                store._conn.execute("INSERT INTO resource_claims VALUES (?,?,?)",
+                                    ("p115:1:episode:幕府 将军|S01|E02", ctx.task_id, 0))
+                store._conn.execute("PRAGMA user_version=1")
+            store.close()
+            store = Store(path)  # 打开时自动迁移
+            try:
+                keys = sorted(r[0] for r in store._conn.execute("SELECT key FROM dedup WHERE kind='episode'"))
+                self.assertEqual(keys, ["1:幕府将军|1980|tv:1001|S01|E01", "dryrun:5:没有任务的剧|||S00|E02"])
+                claims = [r[0] for r in store._conn.execute("SELECT resource_key FROM resource_claims")]
+                self.assertEqual(claims, ["p115:1:episode:幕府将军|S01|E02"])
+                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(store.stored_episode_pairs(works.identity("幕府将军", 2024, 126308), "1"), [])
+                self.assertEqual(store.stored_episode_pairs(works.identity("幕府将军", 1980), "1"), [[1, 1]])
+                self.assertEqual(store.stored_episode_pairs(works.identity("没有任务的剧", 2001), "5", "dryrun"),
+                                 [[0, 2]])  # 找不到任务：身份未知，按同一部处理
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":
