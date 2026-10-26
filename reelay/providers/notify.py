@@ -1,7 +1,7 @@
 """通知 / 转发 Provider（NotifyProvider）。
 
 - ``identified`` 事件：识别成功后，若配置开启 forward，立即按模板转发到目标；
-- ``pending_approval`` 事件：推确认卡片；callback_data 只带 task_id；
+- ``pending_approval`` 事件：推确认卡片；callback_data 只带 task_id，控制 Bot 记下卡片，任务在别处处理后改成结果；
 - ``saved`` 事件：发送转存完成通知，不重复执行资源转发；
 - ``notice(text, html=False, buttons=None)``：系统通知（故障告警与恢复、审批汇总、日报），不绑定任务；日报与追更是 HTML，
   审批汇总、追更等带控制 Bot 的按钮。
@@ -27,16 +27,18 @@ class ConsoleNotify:
     name = "console"
 
     def __init__(self) -> None:
-        self._sender = None   # 真实模式下注入一个 async send(text, buttons=None, chat=None, html=False, photo=None)
+        # 真实模式下注入一个 async send(text, buttons=None, chat=None, html=False, photo=None, card=None)
+        self._sender = None
         self._forward_cfg: dict[str, Any] = {}
 
     def configure(self, sender=None, forward_cfg: dict | None = None) -> None:
         self._sender = sender
         self._forward_cfg = forward_cfg or {}
 
-    async def _send(self, text: str, buttons=None, photo: str | None = None) -> None:
+    async def _send(self, text: str, buttons=None, photo: str | None = None, card: str | None = None) -> None:
+        """card 是审批卡片对应的任务 ID。"""
         if self._sender:
-            await self._sender(text=text, buttons=buttons, html=True, photo=photo)
+            await self._sender(text=text, buttons=buttons, html=True, photo=photo, **({"card": card} if card else {}))
         else:
             log.info("[通知] %s%s", messages.plain(text).replace("\n", " / "), f" | 按钮={buttons}" if buttons else "")
 
@@ -56,7 +58,7 @@ class ConsoleNotify:
             # 关键：按钮 callback_data 只带 task_id
             subscribed = subscriptions.subscribed(_subscriptions(), ctx)
             await self._send(messages.approval_card(ctx), messages.approval_buttons(ctx, subscribed=subscribed),
-                             photo=messages.card_image_url(ctx))
+                             photo=messages.card_image_url(ctx), card=ctx.task_id)
 
         elif event == "saved":
             await self._send(messages.saved_message(ctx, _drive_path(ctx)), messages.link_buttons(ctx),

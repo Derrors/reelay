@@ -122,9 +122,17 @@ class TestTemplates(unittest.TestCase):
         ctx.meta["tmdb"] = {"matched": True, "tmdbid": 7, "kind": "tv"}
         rows = messages.approval_buttons(ctx)
         self.assertEqual(rows, [[("✅ 转存", "ok:t1"), ("🚫 忽略", "no:t1")], [("📂 换目录", "dir:t1"), ("✏️ 修正", "fx:t1")],
-                                [("🔔 追剧", "sub:t1"), ("⛔ 不再接收", "blk:t1")],
+                                [("🔔 追剧并转存", "sub:t1"), ("⛔ 不再接收", "blk:t1")],
                                 [("🎬 TMDB 详情", "https://www.themoviedb.org/tv/7")]])
-        self.assertNotIn(("🔔 追剧", "sub:t1"), [b for row in messages.approval_buttons(ctx, subscribed=True) for b in row])
+        self.assertNotIn(("🔔 追剧并转存", "sub:t1"),
+                         [b for row in messages.approval_buttons(ctx, subscribed=True) for b in row])
+        # 处理后的卡片：批准了、还没订阅的剧留一个「追剧」
+        self.assertEqual(messages.result_buttons(ctx), messages.link_buttons(ctx))  # 还在待审批
+        ctx.state = TaskState.QUEUED
+        self.assertEqual(messages.result_buttons(ctx), [[("🔔 追剧", "sub:t1")], *messages.link_buttons(ctx)])
+        self.assertEqual(messages.result_buttons(ctx, subscribed=True), messages.link_buttons(ctx))
+        ctx.state = TaskState.SKIPPED
+        self.assertEqual(messages.result_buttons(ctx), messages.link_buttons(ctx))
         movie = tv(media_type="movie", season=None, episodes=[], raw_fields={"tmdbid": 7})
         movie.meta["tmdb"] = {"matched": True, "tmdbid": 7, "kind": "movie"}
         self.assertEqual(messages.approval_buttons(movie)[1], [("📂 换目录", "dir:t1"), ("✏️ 修正", "fx:t1")])
@@ -252,26 +260,59 @@ class TestDelivery(unittest.IsolatedAsyncioTestCase):
         task = tv(raw_fields={"tmdbid": 7})
         task.state = TaskState.PENDING_APPROVAL
         task.meta["tmdb"] = {"matched": True, "tmdbid": 7, "kind": "tv"}
-        calls = []
+        calls, subs = [], []
+        show = {"title": "玉簟秋", "season": 1, "tmdbid": 7, "auto": True}
 
         async def subscribe_from_task(task_id):
             calls.append(("sub", task_id))
-            return {"subscription": {"title": "玉簟秋", "season": 1, "tmdbid": 7}, "pending": [task_id]}
+            subs.append(show)
+            return {"subscription": show, "pending": [task_id, "t2"]}
+
+        async def approve(task_id, save_dir_alias=None):
+            calls.append(("approve", task_id))
+            task.state = TaskState.QUEUED
 
         async def ignore_work(task_id):
             calls.append(("ignore", task_id))
             return {"work": {"title": "玉簟秋", "tmdbid": 7, "kind": "tv"}, "rejected": [task_id, "t2", "t3"]}
 
-        bot = fake_bot(task, subscribe_from_task=subscribe_from_task, ignore_work=ignore_work)
+        bot = fake_bot(task, subscribe_from_task=subscribe_from_task, approve=approve, ignore_work=ignore_work)
+        bot.service.store.subscriptions = lambda: subs
+        # 待审批时「追剧并转存」：订阅这一季，这一集一并转存
         text, rows, toast = await bot.callback("sub:t1", "卡片")
-        self.assertIn("🔔 已订阅《玉簟秋》第 1 季", text)
-        self.assertEqual(rows, messages.approval_buttons(task, subscribed=True))  # 仍等审批，只是不再显示「追剧」
-        self.assertEqual(toast, "已订阅")
+        self.assertEqual(calls, [("sub", "t1"), ("approve", "t1")])
+        self.assertEqual(text, "卡片\n\n🔔 已订阅《玉簟秋》第 1 季，之后的新集自动转存；待审批里还有 1 条这部剧，可以用 /pending 处理\n"
+                               "✅ <b>已批准</b>，正在转存，完成后另行通知")
+        self.assertEqual(rows, messages.link_buttons(task))
+        self.assertEqual(toast, "已订阅，开始转存")
+        # 先点了「转存」：批准后的卡片上还有「追剧」，点了只订阅
+        subs.clear()
+        task.state = TaskState.PENDING_APPROVAL
+        text, rows, _ = await bot.callback("ok:t1", "卡片")
+        calls.clear()
+        self.assertEqual(rows, [[("🔔 追剧", "sub:t1")], *messages.link_buttons(task)])
+        text, rows, toast = await bot.callback("sub:t1", "卡片")
+        self.assertEqual(calls, [("sub", "t1")])
+        self.assertTrue(text.startswith("卡片\n\n🔔 已订阅《玉簟秋》第 1 季"))
+        self.assertNotIn("已批准", text)
+        self.assertEqual((rows, toast), (messages.link_buttons(task), "已订阅"))
+        # 这一季已经订阅过（如同一部剧的另一张卡片）：只转存
+        task.state = TaskState.PENDING_APPROVAL
+        calls.clear()
+        text, rows, toast = await bot.callback("sub:t1", "卡片")
+        self.assertEqual(calls, [("approve", "t1")])
+        self.assertEqual(text, "卡片\n\n✅ <b>已批准</b>，正在转存，完成后另行通知")
+        self.assertEqual(toast, "开始转存")
+        # 已经忽略的：不再订阅
+        task.state = TaskState.SKIPPED
+        self.assertIn("这条已经处理过了（当前：skipped）", (await bot.callback("sub:t1", "卡片"))[0])
+        task.state = TaskState.PENDING_APPROVAL
+        calls.clear()
         text, rows, toast = await bot.callback("blk:t1", "卡片")
         self.assertIsNone(text)
         self.assertEqual(rows, [[("⚠️ 确认不再接收", "bly:t1"), ("↩ 返回", "back:t1")]])
         self.assertIn("恢复", toast)
-        self.assertEqual(calls, [("sub", "t1")])  # 第一次点只出确认
+        self.assertEqual(calls, [])  # 第一次点只出确认
         text, rows, _ = await bot.callback("bly:t1", "卡片")
         self.assertEqual(calls[-1], ("ignore", "t1"))
         self.assertIn("之后《玉簟秋》的消息不再处理；待审批里另有 2 条一并忽略", text)

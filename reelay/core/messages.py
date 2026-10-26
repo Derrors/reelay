@@ -189,14 +189,44 @@ def with_result(card: str, result: str) -> str:
     return f"{card}\n\n{result}"
 
 
-def approval_result(card: str, outcome: str, state: str | None = None, target: str | None = None) -> str:
-    """审批后的卡片。outcome：approved / rejected / stale；target 是手动选的保存目录。"""
-    result = {
+def approval_outcome(outcome: str, state: str | None = None, target: str | None = None) -> str:
+    """审批结果那一行。outcome：approved / rejected / stale；target 是手动选的保存目录。"""
+    return {
         "approved": f"✅ <b>已批准</b>{f'，存到「{esc(target)}」' if target else ''}，正在转存，完成后另行通知",
         "rejected": "🚫 <b>已忽略</b>",
         "stale": f"ℹ️ 这条已经处理过了{f'（当前：{esc(state)}）' if state else ''}",
     }[outcome]
-    return with_result(card, result)
+
+
+def approval_result(card: str, outcome: str, state: str | None = None, target: str | None = None) -> str:
+    """审批后的卡片：卡片末尾加一行结果（见 approval_outcome）。"""
+    return with_result(card, approval_outcome(outcome, state, target))
+
+
+def approved(ctx: PipelineContext) -> bool:
+    """已经批准转存（排队、转存、整理中或已入库）。"""
+    from .contracts import TaskState
+    return ctx.state in (TaskState.QUEUED, TaskState.SAVING, TaskState.STORED, TaskState.ORGANIZING, TaskState.DONE)
+
+
+def settled_card(ctx: PipelineContext, *, ignored: bool = False) -> str:
+    """在别处处理过的审批卡片（管理台、对话助手、批量操作，或同一部作品点了「不再接收」）：卡片加一行结果。
+
+    ignored：这部作品已设为不再接收。
+    """
+    from .contracts import TaskState
+    card, p = approval_card(ctx), ctx.parsed
+    if ctx.state == TaskState.DONE:
+        return with_result(card, "✅ <b>已批准</b>，已入库")
+    if approved(ctx):
+        return approval_result(card, "approved", target=(ctx.meta.get("library") or {}).get("pinned"))
+    if ctx.state in (TaskState.SKIPPED, TaskState.REJECTED):
+        if ignored and p and p.title:
+            return with_result(card, f"⛔ <b>已忽略</b>，之后《{esc(p.title)}》的消息不再处理")
+        return approval_result(card, "rejected")
+    if ctx.state in (TaskState.RECEIVED, TaskState.PARSED):
+        return with_result(card, "🔄 <b>已重新识别</b>，按新的识别结果处理")
+    return approval_result(card, "stale", ctx.state.value)
 
 
 def _saved_location(ctx: PipelineContext, root: str) -> tuple[str, list[str]]:
@@ -377,16 +407,23 @@ def link_buttons(ctx: PipelineContext) -> Buttons:
 
 
 def approval_buttons(ctx: PipelineContext, *, subscribed: bool = False) -> Buttons:
-    """转存、忽略、换目录、修正、追剧（可订阅且还没订阅的剧）、不再接收、TMDB 详情，两个一行。"""
+    """转存、忽略、换目录、修正、追剧并转存（可订阅且还没订阅的剧）、不再接收、TMDB 详情，两个一行。"""
     from .subscriptions import subscribable
     tid = ctx.task_id
     items = [("✅ 转存", callback("ok", tid)), ("🚫 忽略", callback("no", tid)), ("📂 换目录", callback("dir", tid)),
              ("✏️ 修正", callback("fx", tid))]
     if subscribable(ctx) and not subscribed:
-        items.append(("🔔 追剧", callback("sub", tid)))
+        items.append(("🔔 追剧并转存", callback("sub", tid)))
     items.append(("⛔ 不再接收", callback("blk", tid)))
     items += [button for row in link_buttons(ctx) for button in row]
     return [items[i:i + 2] for i in range(0, len(items), 2)]
+
+
+def result_buttons(ctx: PipelineContext, *, subscribed: bool = False) -> Buttons:
+    """处理后的审批卡片：已批准、还没订阅的剧留一个「追剧」，再加 TMDB 详情。"""
+    from .subscriptions import subscribable
+    follow = [[("🔔 追剧", callback("sub", ctx.task_id))]] if approved(ctx) and subscribable(ctx) and not subscribed else []
+    return follow + link_buttons(ctx)
 
 
 def block_confirm_buttons(ctx: PipelineContext) -> Buttons:

@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS outbox (
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_ready ON outbox(status, next_attempt);
+CREATE TABLE IF NOT EXISTS bot_cards (     -- 控制 Bot 发出的审批卡片：任务在别处处理后据此改卡片
+    chat       TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    task_id    TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (chat, message_id)
+);
 CREATE TABLE IF NOT EXISTS runtime_health (
     component TEXT PRIMARY KEY,
     payload TEXT NOT NULL,

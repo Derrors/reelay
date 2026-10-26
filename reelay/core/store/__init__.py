@@ -5,6 +5,7 @@ import time  # noqa: F401 - 测试按 reelay.core.store.time 打补丁
 
 from .base import (DEDUP_EPISODE, DEDUP_MESSAGE, DEDUP_SHARE, MIGRATIONS, SCHEMA_VERSION, SYSTEM_TASK, Database,
                    _dump_ctx, _load_ctx)
+from .cards import CardRepository
 from .configs import ConfigSnapshotRepository
 from .dedup import DedupRepository
 from .feedback import FeedbackRepository
@@ -23,5 +24,5 @@ __all__ = ["Store", "DEDUP_EPISODE", "DEDUP_MESSAGE", "DEDUP_SHARE", "MIGRATIONS
 
 class Store(TaskRepository, DedupRepository, OutboxRepository, HealthRepository, PluginStateRepository,
             SessionRepository, FeedbackRepository, SourceRepository, FollowRepository, ConfigSnapshotRepository,
-            ReportRepository, Database):
+            ReportRepository, CardRepository, Database):
     """线程安全的 SQLite 封装：各领域的读写方法来自对应的仓储，连接与锁来自 ``Database``。"""

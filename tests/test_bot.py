@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import time
+import types
 import unittest
 from unittest.mock import patch
+
+from telethon.errors import MessageIdInvalidError
 
 from reelay.control import manage
 from reelay.control.bot import ControlBot
@@ -182,6 +185,68 @@ class TestBulkPlans(ServiceCase):
             self.assertIn("过期", await manage.bulk_run(self.service, plan_id))
         self.assertEqual(self.store.get_task(task.task_id).state, TaskState.PENDING_APPROVAL)
 
+
+
+class TestCardSync(ServiceCase):
+    """审批卡片在别处（管理台、批量操作、「不再接收」……）处理后，Bot 把卡片改成处理结果。"""
+
+    def bot(self):
+        sent, edits = [], []
+
+        class Client:
+            fail = None
+
+            async def send_message(self, chat, text, **kwargs):
+                sent.append(text)
+                return types.SimpleNamespace(id=len(sent))
+
+            async def edit_message(self, chat, message_id, text, **kwargs):
+                if self.fail:
+                    raise self.fail
+                edits.append((chat, message_id, text, kwargs["buttons"]))
+
+        bot = bot_for(self.service)
+        bot._client, bot._owner = Client(), "42"
+        bot._Button = types.SimpleNamespace(inline=lambda label, data: (label, data.decode()), url=lambda label, url: (label, url))
+        return bot, edits
+
+    async def test_cards_follow_tasks_handled_elsewhere(self):
+        first, second, third = [await self.pending(str(i)) for i in (1, 2, 3)]
+        bot, edits = self.bot()
+        for task in (first, second, third):
+            await bot.send(messages.approval_card(task), messages.approval_buttons(task), html=True, card=task.task_id)
+        await bot.send("不是审批卡片", html=True)
+        self.assertEqual(await bot.sync_cards(), 0)  # 都还在待审批
+        await self.service.approve(first.task_id)  # 在管理台批准
+        self.assertEqual(await bot.sync_cards(), 1)
+        chat, message_id, text, buttons = edits[-1]
+        self.assertEqual((chat, message_id), (42, 1))
+        self.assertEqual(text, messages.approval_result(messages.approval_card(self.store.get_task(first.task_id)),
+                                                        "approved"))
+        self.assertIsNone(buttons)  # 审批按钮去掉了
+        self.assertEqual(await bot.sync_cards(), 0)  # 只改一次
+        await self.service.ignore_work(second.task_id)  # 「不再接收」：同一部作品的其他卡片一并改掉
+        self.assertEqual(await bot.sync_cards(), 2)
+        self.assertEqual([m for _, m, _, _ in edits[-2:]], [2, 3])
+        self.assertTrue(all(text.endswith("⛔ <b>已忽略</b>，之后《剧》的消息不再处理") for _, _, text, _ in edits[-2:]))
+
+    async def test_cards_answered_on_telegram_or_gone_are_dropped(self):
+        first, second = await self.pending("1"), await self.pending("2")
+        bot, edits = self.bot()
+        await bot.send("卡片", html=True, card=first.task_id)
+        await bot.send("卡片", html=True, card=second.task_id)
+        self.store.card_drop("42", 1, settled_only=True)  # 点了卡片上的按钮，但任务还在待审批：继续跟踪
+        await self.service.approve(first.task_id)
+        self.store.card_drop("42", 1, settled_only=True)  # 卡片上点了「转存」：结果已写在卡片上
+        await self.service.reject(second.task_id)
+        bot._client.fail = ConnectionError("断开")
+        with self.assertRaises(ConnectionError):  # 连不上 Telegram：下次再改
+            await bot.sync_cards()
+        bot._client.fail = MessageIdInvalidError(request=None)  # 卡片被删了：不再重试
+        self.assertEqual(await bot.sync_cards(), 0)
+        bot._client.fail = None
+        self.assertEqual(await bot.sync_cards(), 0)
+        self.assertEqual(edits, [])
 
 
 class TestHealth(ServiceCase):

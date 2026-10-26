@@ -8,13 +8,16 @@
 - 对话：不以 ``/`` 开头的文字交给对话助手（``control/assistant.py``），如「我有哪些 4K 日本动画」
   「把《X》这几集都批了，存到动漫」；写操作先回显要执行的动作，点「执行」后才执行
 - 卡片按钮回调（按钮数据只带短 ID，用 ``messages.callback`` 拼接、``parse_callback`` 解析），见 ``callback``：审批 ``ok`` / ``no`` / ``dir``（换目录）/
-  ``to``（存到某个目录）/ ``sub``（追剧）/ ``blk`` → ``bly``（不再接收，先确认再执行）/ ``back``；需要处理的任务 ``rc``（核验转存）/ ``ro``（重新整理）/ ``rt``（重试）/
+  ``to``（存到某个目录）/ ``sub``（追剧：订阅这一季，还在待审批时这一集一并转存）/ ``blk`` → ``bly``（不再接收，先确认再执行）/
+  ``back``；需要处理的任务 ``rc``（核验转存）/ ``ro``（重新整理）/ ``rt``（重试）/
   ``ap``（按已到的文件继续）/ ``cf`` → ``cy``（删除转存文件、覆盖保存、放弃并删除，先确认再执行）/ ``pb``；
   修正识别 ``fx``（发出提示，回复它写要改的项）/ ``rp``（重新识别）/ ``fxn``；列表 ``cd``（重新发出卡片）/ ``pl`` ``fl``（翻页）/
   ``pa`` ``pr`` → ``pay`` ``pry``（全部批准、全部忽略：先列出计划，确认时只处理计划里的任务）/ ``us`` → ``usy``（取消订阅）/
   ``so``（继续订阅）/ ``ui``（恢复接收）；订阅建议 ``ss``（订阅）/ ``sd``（不用了）；对话助手的确认按钮 ``do`` / ``cancel``；
   其他前缀交给声明了 ``bot_action:<前缀>`` 能力的扩展（如缺集追更提醒上的按钮）
 - 对外暴露 ``send(...)``：给 NotifyProvider 用来推确认卡片（带按钮）与结果通知
+- 审批卡片的同步：发出时记下消息（``send(card=...)``），每 ``CARD_SYNC_SEC`` 秒检查一次，任务在管理台、对话助手、
+  批量操作或「不再接收」里处理掉后，把卡片改成处理结果并去掉审批按钮，见 ``sync_cards``
 
 未配置 token（dry-run / 未接入）时，本模块不启动，通知走 ConsoleNotify 打印。
 消息只发给 ``telegram.owner_id``（你自己的数字 id），不广播。
@@ -22,11 +25,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 
-from ..core import messages, paths, proxy, secret_store, subscriptions
+from ..core import ignored, messages, paths, proxy, secret_store, subscriptions
 from ..core.contracts import TaskState
 from ..core.messages import parse_callback, short_key
 from ..core.service import ConflictError, ManagementService, NotFoundError
@@ -39,6 +43,7 @@ log = logging.getLogger("reelay.control.bot")
 CAPTION_LIMIT = 960
 
 CORRECTION_TTL = 600  # 点「修正」后多久内发的消息当作修正内容
+CARD_SYNC_SEC = 5  # 多久检查一次在别处处理过的审批卡片
 _CORRECTION_RE = re.compile(re.escape(messages.CORRECTION_MARK.strip()) + r"\s*([0-9a-zA-Z_-]{4,64})")
 
 
@@ -52,6 +57,7 @@ class ControlBot:
         self._client = None
         self._Button = None
         self._correcting: dict[str, tuple[str, float]] = {}  # 会话 → (正在修正的任务, 过期时间)
+        self._card_lock = asyncio.Lock()  # 点按钮改卡片与同步卡片不交错，点出的结果不会被同步覆盖
 
     @property
     def enabled(self) -> bool:
@@ -112,7 +118,8 @@ class ControlBot:
             task_id = self.correction_target(str(e.chat_id), reply.raw_text if reply else None)
             if task_id:
                 text, buttons, photo = await self.correct(task_id, e.raw_text)
-                await self.send(text, buttons, chat=e.chat_id, html=True, photo=photo)
+                card = task_id if self._pending(task_id) else None  # 修正后仍待审批：发出的是新的审批卡片
+                await self.send(text, buttons, chat=e.chat_id, html=True, photo=photo, card=card)
                 return
             text, buttons = await self.chat(e.raw_text, chat=str(e.chat_id))
             await e.reply(text, buttons=self._buttons(buttons))
@@ -122,32 +129,37 @@ class ControlBot:
             if str(e.sender_id) != str(self._owner):
                 return
             data = (e.data or b"").decode()
-            if parse_callback(data)[0] in ("do", "cancel"):
+            action, args = parse_callback(data)
+            if action in ("do", "cancel"):
                 await e.edit(await self.confirm(data))
                 return
             sent = await self.open(data, chat=str(e.chat_id))
             if sent is not None:  # 发一条新消息（卡片、修正提示），原消息不动
                 text, buttons, photo, toast = sent
                 if text:
-                    await self.send(text, buttons, chat=e.chat_id, html=True, photo=photo)
+                    card = args[0] if action == "cd" and self._pending(args[0]) else None
+                    await self.send(text, buttons, chat=e.chat_id, html=True, photo=photo, card=card)
                 await e.answer(toast or "")
                 return
-            from telethon.extensions import html as tl_html
-            message = await e.get_message()
-            original = tl_html.unparse(message.message or "", message.entities or []) if message else ""
-            text, buttons, toast = await self.callback(data, original)
             from telethon.errors import MessageNotModifiedError
-            try:
-                if text is None:
-                    if buttons:  # 只换按钮，正文不动
-                        from telethon import functions
-                        await self._client(functions.messages.EditMessageRequest(
-                            peer=await e.get_input_chat(), id=e.message_id,
-                            reply_markup=self._client.build_reply_markup(self._buttons(buttons))))
-                else:
-                    await e.edit(text, buttons=self._buttons(buttons) or None, parse_mode="html")
-            except MessageNotModifiedError:
-                toast = toast or "已是最新"  # 如「刷新」时内容没变：Telegram 拒绝原样编辑，不算出错
+            from telethon.extensions import html as tl_html
+            async with self._card_lock:
+                message = await e.get_message()
+                original = tl_html.unparse(message.message or "", message.entities or []) if message else ""
+                text, buttons, toast = await self.callback(data, original)
+                try:
+                    if text is None:
+                        if buttons:  # 只换按钮，正文不动
+                            from telethon import functions
+                            await self._client(functions.messages.EditMessageRequest(
+                                peer=await e.get_input_chat(), id=e.message_id,
+                                reply_markup=self._client.build_reply_markup(self._buttons(buttons))))
+                    else:
+                        await e.edit(text, buttons=self._buttons(buttons) or None, parse_mode="html")
+                except MessageNotModifiedError:
+                    toast = toast or "已是最新"  # 如「刷新」时内容没变：Telegram 拒绝原样编辑，不算出错
+                # 卡片上点出了结果（批准、忽略……）就不再同步它
+                self.service.store.card_drop(str(e.chat_id), e.message_id, settled_only=True)
             await e.answer(toast or "")
 
     async def callback(self, data: str, original: str = "") -> tuple[str | None, list | None, str | None]:
@@ -164,21 +176,23 @@ class ControlBot:
         links = messages.link_buttons(ctx) if ctx else []
         card = original or (messages.approval_card(ctx) if ctx else f"<code>{messages.esc(task_id)}</code>")
         pending = bool(ctx and ctx.state == TaskState.PENDING_APPROVAL)
+        if action == "sub" and ctx:  # 待审批的卡片上，以及批准之后的卡片上
+            return await self._subscribe(ctx, card, links)
         # 「忽略」也出现在失败任务的提醒上：那时是不再处理（见下方 operations）
-        if action in ("ok", "to", "dir", "back", "sub", "blk", "bly") or (action == "no" and pending):
-            if not pending:
-                return messages.approval_result(card, "stale", ctx.state.value if ctx else None), links, None
+        if action in ("ok", "to", "dir", "back", "blk", "bly") or (action == "no" and pending):
+            if not pending:  # 已在别处处理
+                return (messages.approval_result(card, "stale", ctx.state.value if ctx else None),
+                        self._result_buttons(ctx) if ctx else links, None)
             if action == "dir":
                 return None, messages.directory_buttons(task_id, list(self.service.pipeline.cfg["save_dirs"])), None
             if action == "back":
                 return None, self._approval_buttons(ctx), None
             if action == "blk":
                 return None, messages.block_confirm_buttons(ctx), "确认后，这部作品之后的消息都会直接忽略；可以用 /ignored 恢复"
-            if action == "sub":
-                return await self._subscribe(task_id, card)
             if action == "bly":
                 return await self._ignore_work(task_id, card, links)
-            return await self.decide(data, card), links, None
+            text = await self.decide(data, card)
+            return text, self._result_buttons(self.service.store.get_task(task_id) or ctx), None
         if action == "cf" and ctx and arg in messages.CONFLICT_CHOICES:
             return None, messages.confirm_buttons(task_id, arg), messages.CONFLICT_CHOICES[arg][1]
         if action == "pb" and ctx:
@@ -352,20 +366,45 @@ class ControlBot:
             return f"{done}\n\n{text}", rows, None
         return (messages.with_result(original, done) if original else done), buttons, None
 
-    def _approval_buttons(self, ctx) -> list:
-        return messages.approval_buttons(ctx, subscribed=subscriptions.subscribed(self.service.store.subscriptions(), ctx))
+    def _subscribed(self, ctx) -> bool:
+        return subscriptions.subscribed(self.service.store.subscriptions(), ctx)
 
-    async def _subscribe(self, task_id: str, card: str):
-        """追剧：订阅这部剧这一季；这条仍等审批，按钮保留（去掉「追剧」）。"""
-        try:
-            result = await self.service.subscribe_from_task(task_id)
-        except (ConflictError, NotFoundError, ValueError) as exc:
-            return None, None, str(exc)[:190]
+    def _approval_buttons(self, ctx) -> list:
+        return messages.approval_buttons(ctx, subscribed=self._subscribed(ctx))
+
+    def _result_buttons(self, ctx) -> list:
+        return messages.result_buttons(ctx, subscribed=self._subscribed(ctx))
+
+    def _pending(self, task_id: str) -> bool:
         ctx = self.service.store.get_task(task_id)
-        item = result["subscription"]
-        text = messages.with_result(card, f"🔔 已订阅《{messages.esc(item['title'])}》第 {item['season']} 季，"
-                                          "之后的新集自动转存；这一集仍等你确认")
-        return text, messages.approval_buttons(ctx, subscribed=True), "已订阅"
+        return bool(ctx and ctx.state == TaskState.PENDING_APPROVAL)
+
+    async def _subscribe(self, ctx, card: str, links: list):
+        """追剧：订阅这部剧这一季（已订阅的跳过）；还在待审批时这一集一并转存。"""
+        task_id = ctx.task_id
+        if ctx.state in (TaskState.REJECTED, TaskState.SKIPPED):
+            return messages.approval_result(card, "stale", ctx.state.value), links, None
+        lines, toast = [], []
+        if not self._subscribed(ctx):
+            try:
+                result = await self.service.subscribe_from_task(task_id)
+            except (ConflictError, NotFoundError, ValueError) as exc:
+                return None, None, str(exc)[:190]
+            item, others = result["subscription"], len([tid for tid in result["pending"] if tid != task_id])
+            lines.append(f"🔔 已订阅《{messages.esc(item['title'])}》第 {item['season']} 季，之后的新集自动转存"
+                         + (f"；待审批里还有 {others} 条这部剧，可以用 /pending 处理" if others else ""))
+            toast.append("已订阅")
+        if ctx.state == TaskState.PENDING_APPROVAL:
+            try:
+                await self.service.approve(task_id)
+            except (ConflictError, NotFoundError):
+                current = self.service.store.get_task(task_id)
+                lines.append(messages.approval_outcome("stale", current.state.value if current else None))
+            else:
+                lines.append(messages.approval_outcome("approved"))
+                toast.append("开始转存")
+        current = self.service.store.get_task(task_id) or ctx
+        return messages.with_result(card, "\n".join(lines)), self._result_buttons(current), "，".join(toast) or None
 
     async def _ignore_work(self, task_id: str, card: str, links: list):
         """不再接收：记下这部作品，并忽略待审批里同一部作品的任务（含这条）。"""
@@ -434,26 +473,76 @@ class ControlBot:
                                     else self._Button.inline(label, data.encode()))
         return [[make(label, data) for label, data in row] for row in rows if row]
 
-    async def send(self, text: str, buttons=None, chat=None, html: bool = False, photo: str | None = None) -> None:
+    async def send(self, text: str, buttons=None, chat=None, html: bool = False, photo: str | None = None,
+                   card: str | None = None) -> None:
         """供 NotifyProvider 调用：把消息发给 owner（或指定 chat）。html=True 时按 HTML 解析（模板见 core/messages.py）；
         按钮见 _buttons。photo 是图片地址（如 TMDB 海报）：以图片发送、正文作为说明；说明超出 Telegram 的
-        长度限制或图片发送失败时退回纯文字。"""
+        长度限制或图片发送失败时退回纯文字。card 是审批卡片对应的任务：记下这条消息，任务在别处处理后改成结果。"""
         if not self._client:
             log.info("[控制bot未启用] %s", (messages.plain(text) if html else text).replace("\n", " / "))
             return
-        target, mode = chat or int(self._owner), "html" if html else ()
-        if photo and len(messages.plain(text) if html else text) <= CAPTION_LIMIT:
+        target = chat or int(self._owner)
+        sent = await self._deliver(target, text, buttons, "html" if html else (), photo)
+        if card and sent is not None:
+            self.service.store.card_add(card, str(target), sent.id)
+
+    async def _deliver(self, target, text: str, buttons, mode, photo: str | None):
+        if photo and len(messages.plain(text) if mode else text) <= CAPTION_LIMIT:
             try:
-                await self._client.send_file(target, photo, caption=text, buttons=self._buttons(buttons), parse_mode=mode)
-                return
+                return await self._client.send_file(target, photo, caption=text, buttons=self._buttons(buttons),
+                                                    parse_mode=mode)
             except Exception as exc:  # noqa: BLE001 - 海报只是锦上添花，发不出就发文字
                 log.warning("海报发送失败，改发文字：%s", exc)
-        await self._client.send_message(target, text, buttons=self._buttons(buttons), parse_mode=mode)
+        return await self._client.send_message(target, text, buttons=self._buttons(buttons), parse_mode=mode)
+
+    async def sync_cards(self) -> int:
+        """把在别处处理过的审批卡片改成处理结果、去掉审批按钮，返回改了几张。
+
+        管理台、对话助手、批量操作，以及同一部作品点了「不再接收」时，任务离开待审批，卡片却还停在原样。
+        卡片被删了、改不了时不再重试；连不上 Telegram 时抛出，下次再改。
+        """
+        from telethon.errors import MessageNotModifiedError, RPCError
+        store, changed = self.service.store, 0
+        async with self._card_lock:
+            for row in store.cards_settled():
+                ctx = store.get_task(row["task_id"])
+                if ctx is not None:
+                    chat = row["chat"]
+                    work = ignored.match(store.ignored_works(), ctx.parsed, ctx.meta.get("tmdb", {}))
+                    try:
+                        await self._client.edit_message(
+                            int(chat) if chat.lstrip("-").isdigit() else chat, row["message_id"],
+                            messages.settled_card(ctx, ignored=work is not None), parse_mode="html",
+                            buttons=self._buttons(self._result_buttons(ctx)))
+                        changed += 1
+                    except MessageNotModifiedError:
+                        pass
+                    except RPCError as exc:  # 卡片已被删除等
+                        log.info("审批卡片没能更新（任务 %s）：%s", row["task_id"], exc)
+                store.card_drop(row["chat"], row["message_id"])
+        return changed
+
+    async def _sync_loop(self) -> None:
+        reported = None
+        while True:
+            await asyncio.sleep(CARD_SYNC_SEC)
+            try:
+                await self.sync_cards()
+                reported = None
+            except Exception as exc:  # noqa: BLE001 - 连不上 Telegram 等：下次再改
+                if str(exc) != reported:
+                    log.warning("同步审批卡片失败：%s", exc)
+                reported = str(exc)
 
     async def run_forever(self) -> None:
-        """保持控制 bot 长驻（在 gather 里与监听/worker 并发）。"""
-        if self._client:
+        """保持控制 bot 长驻（在 gather 里与监听/worker 并发），同时同步审批卡片。"""
+        if not self._client:
+            return
+        sync = asyncio.create_task(self._sync_loop())
+        try:
             await self._client.run_until_disconnected()
+        finally:
+            sync.cancel()
 
     def health(self) -> dict:
         if not self.enabled:  # 没配置不算断开：总览显示「未配置」而不是连接中断

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import os
@@ -87,7 +88,7 @@ def done_task(store, msg_id, *, title, media_type="tv", resolution="1080p", epis
 def bot_for(service) -> ControlBot:
     """不连 Telegram 的控制 Bot：只用来调用它的按钮与命令处理。"""
     bot = ControlBot.__new__(ControlBot)
-    bot.service, bot._correcting = service, {}
+    bot.service, bot._correcting, bot._card_lock = service, {}, asyncio.Lock()
     return bot
 
 
