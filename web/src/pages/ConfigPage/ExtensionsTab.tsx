@@ -158,7 +158,7 @@ export function ExtensionsTab({ catalog, hooks, events, config, saved, setConfig
   const [open, setOpen] = useState<Set<string>>(new Set());
   const providers = obj(config.providers);
   const defaults = obj(config.defaults);
-  // 识别方式与转存方式按来源设置（设置 → 监听来源）；网盘只有一种时不必选
+  // 识别方式与放行方式按来源设置（设置 → 监听来源）；网盘只有一种时不必选
   const slots = [
     ...SLOT_ORDER.filter(s => catalog.providers[s] && !PER_SOURCE_SLOTS.includes(s)
       && (s !== 'storage' || (catalog.providers[s]?.length ?? 0) > 1)),
@@ -206,7 +206,7 @@ export function ExtensionsTab({ catalog, hooks, events, config, saved, setConfig
       <Panel
         icon={Workflow}
         title="核心能力"
-        description={<>选择消息接入与通知方式。识别方式与转存方式按来源设置，在 <Link to="/config?tab=sources" className="text-primary hover:underline">设置 → 监听来源</Link> 的来源卡片上选择。</>}
+        description={<>选择消息接入与通知方式。识别方式与放行方式按来源设置，在 <Link to="/config?tab=sources" className="text-primary hover:underline">设置 → 监听来源</Link> 的来源卡片上选择。</>}
         actions={coreDirty ? (
           <>
             <DirtyTag />

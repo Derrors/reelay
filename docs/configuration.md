@@ -53,7 +53,7 @@ plugins:
 | `parser` | `llm` | `llm` 或 `regex`。`llm` 会把规则识别的结果作为参考一起交给 AI；LLM 不可用、超时重试后仍失败或输出非法时降级 regex 并强制人工确认 |
 | `parse_rules` | 无 | 来源自己的识别规则，按字段写 Python 正则（多行模式）：`title`、`year`、`season`、`episodes`、`resolution`、`size`，取第一个捕获组；`episodes` 逐处匹配后合并，单集用一个捕获组，区间用命名组 `start` 与 `end`，只有 `end` 时表示第 1 集到 end。没写或没匹配到的字段用通用规则。管理台来源卡片的「识别规则」可读取频道最近的消息，由 AI 起草并试跑 |
 | `llm_response_format` | `json_schema` | 不支持结构化输出的兼容接口改为 `json_object`（仍做本地严格校验） |
-| `decision` | `subscription` | `default` 只按规则；`subscription` 在规则之上让订阅剧集的新集自动放行；`llm` 再按 `preferences` 的自然语言偏好（并参考该来源近期的批准与忽略）决定是否收藏及目录，选出的目录不会被二级分类覆盖 |
+| `decision` | `subscription` | 放行方式：`default` 只按规则；`subscription` 在规则之上让订阅剧集的新集自动放行；`llm` 再按 `preferences` 的自然语言偏好（并参考该来源近期的批准与忽略）决定是否收藏及目录，选出的目录不会被二级分类覆盖 |
 | `preferences` | `""` | 例："只要 4K 或 1080p 的国产剧和日本动画，综艺不要"。想让它变成确定性规则，用管理台「用一句话生成规则」 |
 | `confidence_threshold` | `0.5` | 低于该值转人工。置信度由标题/类型/年份是否齐全、TMDB 是否匹配计算，不采信 LLM 自报值 |
 | `episodes_from` | `share` | `share`：以分享内文件名为准，转存未入库的所有集；`message`：只转存消息声明的集 |

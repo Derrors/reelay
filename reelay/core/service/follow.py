@@ -29,7 +29,7 @@ class FollowMixin(ServiceBase):
     # 剧集订阅
     # ------------------------------------------------------------------ #
     def list_subscriptions(self) -> dict[str, Any]:
-        """订阅列表：已入库与缺的集、类型（电视剧 / 动漫 / 综艺……）与是否已完结；附订阅建议，以及转存方式
+        """订阅列表：已入库与缺的集、类型（电视剧 / 动漫 / 综艺……）与是否已完结；附订阅建议，以及放行方式
         不会按订阅自动放行的来源。"""
         cfg = self.get_config()
         subs = self.store.subscriptions()
@@ -43,7 +43,7 @@ class FollowMixin(ServiceBase):
                           if f"{title}|S{item['season']:02d}" in report), {})
             items.append({**item, "have": have, "missing": entry.get("missing", []), "aired": entry.get("aired"),
                           "category": self._tv_category(item, sorted(titles))})
-        # 转存方式按来源设置，defaults 只是兜底，只报告实际在监听的来源
+        # 放行方式按来源设置，defaults 只是兜底，只报告实际在监听的来源
         deciders = self.pipeline.reg.providers.get("decision", {})
         inactive = [s["bot"] for s in cfg["sources"]
                     if not getattr(deciders.get({**cfg["defaults"], **s}.get("decision")), "releases_subscriptions", False)]

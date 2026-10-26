@@ -85,7 +85,7 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
     setField('forward', 'template', current.slice(0, start) + token + current.slice(end));
     requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(start + token.length, start + token.length); });
   };
-  // 默认偏好给转存方式为「AI 按偏好判断」、没写自己偏好的来源用
+  // 默认偏好给放行方式为「AI 按偏好判断」、没写自己偏好的来源用
   const preferencesActive = sources.some(s => text(s.decision || defaults.decision) === 'llm');
 
   return (
@@ -197,7 +197,7 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
               label="收藏偏好"
               hint={preferencesActive
                 ? '用大白话告诉 AI 你想要什么，它会据此辅助判断是否转存。'
-                : <>只对转存方式为「{providerLabel('decision', 'llm', catalog)}」的来源生效，目前没有这样的来源；可在 <Link to="/config?tab=sources" className="text-primary hover:underline">监听来源</Link> 的来源卡片上切换。</>}
+                : <>只对放行方式为「{providerLabel('decision', 'llm', catalog)}」的来源生效，目前没有这样的来源；可在 <Link to="/config?tab=sources" className="text-primary hover:underline">监听来源</Link> 的来源卡片上切换。</>}
             >
               <Textarea
                 className="min-h-20 bg-card"

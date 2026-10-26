@@ -166,7 +166,7 @@ export const RELEASE_OPTIONS: Record<'subtitles' | 'audio' | 'sources' | 'hdr', 
 
 /** 能力槽位 → 中文名 */
 export const SLOT_LABELS: Record<string, string> = {
-  source: '消息接入方式', parser: '识别方式', decision: '转存方式', storage: '网盘', notify: '通知渠道',
+  source: '消息接入方式', parser: '识别方式', decision: '放行方式', storage: '网盘', notify: '通知渠道',
 };
 
 /** 能力实现的内部名 → 中文名；不在这里的实现用扩展目录里的 label。 */

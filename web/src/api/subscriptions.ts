@@ -38,7 +38,7 @@ export interface IIgnoredWork {
 export interface ISubscriptionsResp {
   items: ISubscription[];
   suggestions: ISubscriptionSuggestion[];
-  /** 转存方式不支持订阅放行的规则（「默认规则」或来源名）。 */
+  /** 放行方式不支持订阅放行的规则（「默认规则」或来源名）。 */
   inactive: string[];
 }
 

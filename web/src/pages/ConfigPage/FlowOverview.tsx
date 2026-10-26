@@ -133,7 +133,7 @@ export function FlowOverview({ catalog, hooks, events, config }: FlowOverviewPro
           {group('after_parse')}
         </Step>
         <Arrow />
-        <Step index={3} title="判断" node={<CoreNode caption="转存判断" label={core('decision')} />}>
+        <Step index={3} title="判断" node={<CoreNode caption="放行方式" label={core('decision')} />}>
           <ul className="space-y-1 text-[11px] leading-4 text-muted-foreground">
             <li>放行 → 转存</li>
             <li>拿不准 → 等你确认</li>

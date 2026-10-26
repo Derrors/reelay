@@ -18,9 +18,9 @@ import { LinesField } from './fields';
 import { ParseRulesDialog } from './ParseRulesDialog';
 import { ParseTestDialog } from './ParseTestDialog';
 import { SourceWizard } from './SourceWizard';
-import { APPROVAL_OPTIONS, NOTIFY_OPTIONS, notifyValue, providerLabel, type Catalog } from './shared';
+import { APPROVAL_OPTIONS, NOTIFY_OPTIONS, notifyValue, providerHint, providerLabel, type Catalog } from './shared';
 
-/** 识别方式与转存方式只在来源上设置（defaults 里的值只是没写时的兜底）；网盘有多个可选时才出现在高级设置里。 */
+/** 识别方式与放行方式只在来源上设置（defaults 里的值只是没写时的兜底）；网盘有多个可选时才出现在高级设置里。 */
 const MAIN_SLOTS = ['parser', 'decision'];
 const ADVANCED_SLOTS = ['storage'];
 const multiple = (catalog: Catalog | null, slot: string) => (catalog?.providers[slot]?.length ?? 0) > 1;
@@ -99,7 +99,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
           />
         </Field>
         {MAIN_SLOTS.map(slot => (
-          <Field key={slot} label={SLOT_LABELS[slot]}>
+          <Field key={slot} label={SLOT_LABELS[slot]} hint={providerHint(slot, text(source[slot] || defaults[slot]), catalog) || undefined}>
             <Select
               value={text(source[slot] || defaults[slot])}
               onValueChange={v => onChange({ [slot]: v || undefined })}
@@ -196,7 +196,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
                 <LinesField value={strings(filters.block_keywords)} onChange={list => setFilter('block_keywords', list)} placeholder="如：广告" />
               </Field>
             </div>
-            <Field label="收藏偏好" hint="留空则沿用默认偏好；只在转存方式为「AI 按偏好判断」时生效。">
+            <Field label="收藏偏好" hint="留空则沿用默认偏好；只在放行方式为「AI 按偏好判断」时生效。">
               <Textarea
                 className="min-h-20 bg-card"
                 value={text(source.preferences)}
@@ -226,7 +226,7 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
   // 人工裁决统计只影响提示，读取失败时不显示
   const loaded = useAsync(() => sourceApi.insights(), []);
   const insights: Record<string, ISourceInsight> = Object.fromEntries((loaded.data?.sources ?? []).map((x) => [x.source.toLowerCase(), x]));
-  // 新来源直接写明识别方式与转存方式（取推荐值），卡片上看到的就是它实际用的
+  // 新来源直接写明识别方式与放行方式（取推荐值），卡片上看到的就是它实际用的
   const engines = { parser: text(defaults.parser) || 'llm', decision: text(defaults.decision) || 'subscription' };
   const addDraft = (draft: Obj) => {
     const name = text(draft.bot).trim().toLowerCase();

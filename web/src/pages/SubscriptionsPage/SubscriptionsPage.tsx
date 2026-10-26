@@ -181,8 +181,8 @@ export default function SubscriptionsPage() {
         <div role="alert" className="mb-5 flex items-start gap-3 rounded-xl border border-warning/35 bg-warning/8 px-4 py-3 text-sm">
           <CircleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
           <p className="min-w-0 leading-6">
-            「{data.inactive.join('」「')}」的转存方式是「规则判断」，订阅的新集仍会等你确认。
-            可以在 <Link to="/config?tab=sources" className="text-primary hover:underline">设置 → 监听来源</Link> 把来源的转存方式改为「规则 + 订阅放行」。
+            「{data.inactive.join('」「')}」的放行方式是「规则判断」，订阅的新集仍会等你确认。
+            可以在 <Link to="/config?tab=sources" className="text-primary hover:underline">设置 → 监听来源</Link> 把来源的放行方式改为「规则 + 订阅放行」。
           </p>
         </div>
       ) : null}
