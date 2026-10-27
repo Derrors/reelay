@@ -9,8 +9,9 @@ from dataclasses import asdict
 from typing import Any
 
 
-from .. import messages, subscriptions
+from .. import messages, subscriptions, works
 from ..contracts import ParsedResource, PipelineContext, TaskState
+from ..media import planned_pairs
 from ..validation import MEDIA_SCHEMA, validate_resource
 from .base import ConflictError, NotFoundError, ServiceBase
 
@@ -110,9 +111,19 @@ class TaskOpsMixin(ServiceBase):
         advice = self.advice_action(ctx) if ctx and ctx.state == TaskState.PENDING_APPROVAL else None
         if not await self.pipeline.reject(task_id):
             raise ConflictError("任务不是待审批状态")
-        # 分享已失效时忽略不说明你不想要这部资源，不记为样本，以免影响偏好参考、通过率与来源质量建议
-        if (ctx.meta.get("share") or {}).get("status") != "unavailable":
+        # 分享已失效、或消息里的集都已入库（重复）时忽略，不说明你不想要这部资源：不记为样本，
+        # 以免影响偏好参考（AI 会当成你不想要这部剧）、通过率与来源质量建议
+        if (ctx.meta.get("share") or {}).get("status") != "unavailable" and not self._already_stored(ctx):
             self._record(ctx, "reject", {}, advice)
+
+    def _already_stored(self, ctx: PipelineContext) -> bool:
+        """消息里的集都已入库（与待审批里「都已入库」的建议同样按作品与季集核对）；电影等没有集数的不算。"""
+        p = ctx.parsed
+        pairs = set(planned_pairs(ctx)) if p and p.title else set()
+        if not pairs:
+            return False
+        stored, work = self.store.stored_series(), works.of(p, ctx.meta.get("tmdb"))
+        return all(ep in works.episodes(stored, work, season) for season, ep in pairs)
 
     def dismiss(self, ctx: PipelineContext) -> None:
         """失败或待人工的任务不再处理，转为已忽略（如分享已失效）。

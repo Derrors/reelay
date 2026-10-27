@@ -139,11 +139,14 @@ class SubscriptionDecision(DefaultDecision):
 
     @staticmethod
     def withdraw(ctx: PipelineContext) -> None:
-        """订阅放行被后续判断否决时撤回：恢复放行时记下的季号。"""
+        """订阅放行被后续判断否决时撤回，并恢复放行时记下的季号。"""
         record = ctx.meta.pop("subscription", None)
-        if record and record.get("pinned"):
+        if not record:
+            return
+        if record.get("pinned"):
             ctx.parsed.season = None
-            ctx.log("偏好判断没有放行，撤回按订阅记下的季号")
+        ctx.log(f"偏好判断没有放行，撤回订阅《{record.get('title', '')}》的自动放行"
+                + ("和按订阅记下的季号" if record.get("pinned") else ""))
 
 
 def _resource(parsed) -> dict:
@@ -168,6 +171,21 @@ def decision_history(source: str, limit: int) -> list[dict]:
             item["save_to"] = row["label"]["save_dir_alias"]
         out.append(item)
     return out
+
+
+_VERDICTS = {"save": "转存", "ask": "交给你确认", "skip": "忽略"}
+_REASON_LIMIT = 150  # 处理过程里 AI 理由的最长字数
+
+
+def _verdict_line(data: dict, kept_asking: bool) -> str:
+    """处理过程里记下 AI 的结论、选的目录和理由。"""
+    reason = " ".join(data["reason"].split())
+    if len(reason) > _REASON_LIMIT:
+        reason = reason[:_REASON_LIMIT] + "…"
+    return (f"AI 按偏好判断：{_VERDICTS[data['decision']]}"
+            + (f"，存到「{data['save_to']}」" if data["save_to"] else "")
+            + (f"（{reason}）" if reason else "")
+            + ("；这条本来就要等你确认，仍交给你确认" if kept_asking else ""))
 
 
 _PREFERENCE_PROMPT = (
@@ -199,6 +217,7 @@ class LLMDecision(ai.UsesAI, SubscriptionDecision):
             return baseline
         if not self._client:
             ctx.ns("preference")["fallback"] = "unavailable"
+            ctx.log("AI 不可用，没能按偏好判断，交给你确认")
             return Decision.ASK
         aliases = list(runtime.get("save_dirs", {}))
         schema = {
@@ -232,6 +251,7 @@ class LLMDecision(ai.UsesAI, SubscriptionDecision):
                 invalid_retries=0)
         except ai.AIError as exc:
             ctx.ns("preference")["fallback"] = exc.category
+            ctx.log(f"按偏好判断时 AI 没有给出结果（{exc.category}），交给你确认")
             return Decision.ASK
         ctx.ns("preference")["result"] = data
         if history:
@@ -241,4 +261,6 @@ class LLMDecision(ai.UsesAI, SubscriptionDecision):
             # 与手动指定目录同等对待：二级分类不再覆盖 AI 按偏好选出的目录（见 organizer.route）。
             ctx.ns("library")["preferred"] = data["save_to"]
         decision = Decision(data["decision"])
-        return Decision.ASK if baseline == Decision.ASK and decision == Decision.SAVE else decision
+        kept_asking = baseline == Decision.ASK and decision == Decision.SAVE  # 只能收紧，不放宽
+        ctx.log(_verdict_line(data, kept_asking))
+        return Decision.ASK if kept_asking else decision

@@ -12,7 +12,7 @@ from reelay.plugins.organizer import LibraryRouter, build_plan
 from reelay.providers.decision import LLMDecision
 from reelay.providers.storage import P115Storage, _select_video_items
 
-from tests.fakes import FakeAI, ServiceCase, media, message
+from tests.fakes import APITimeoutError, FakeAI, ServiceCase, done_task, media, message
 
 
 class TestPreferredDirectory(ServiceCase):
@@ -126,6 +126,37 @@ class TestFeedbackSamples(ServiceCase):
         self.assertEqual([item["decision"] for item in payload["history"]], ["reject", "approve"])
         self.assertEqual(payload["history"][1]["save_to"], "剧集")
 
+
+    async def test_rejecting_episodes_already_in_the_library_is_not_a_sample(self):
+        """消息里的集都已入库时忽略（重复），不当作不想要这部剧，否则偏好判断会据此交给你确认。"""
+        done_task(self.store, "s", title="剧", episodes=(3,))
+        duplicate = await self.pending("1")  # 剧 S01E03，已入库
+        await self.service.reject(duplicate.task_id)
+        self.assertEqual(self.store.feedback_rows(), [])
+        self.parser._client = FakeAI(media(episodes=[3, 4]))
+        partly_new = await self.pending("2")  # E04 还没入库：忽略仍记为样本
+        await self.service.reject(partly_new.task_id)
+        self.assertEqual([r["kind"] for r in self.store.feedback_rows()], ["reject"])
+
+    async def test_preference_verdicts_are_written_to_the_trail(self):
+        """处理过程里看得到 AI 按偏好判断的结论、目录和理由；AI 不可用或出错时也写明。"""
+        async def decide(reply, approval_mode="manual"):
+            provider = LLMDecision()
+            provider._client = FakeAI(reply) if reply is not None else None
+            ctx = message(msg_id="9")
+            ctx.parsed = ParsedResource(**media(), share_code="abc123")
+            ctx.source_rule = {"preferences": "只收国产剧", "approval_mode": approval_mode}
+            with self.pl.scope(self.pl.cfg):
+                decision = await provider.decide(ctx)
+            return decision, ctx.trail[-1].split(" ", 1)[1]
+
+        self.assertEqual(await decide({"decision": "save", "save_to": "剧集", "reason": "国产剧"}, "auto"),
+                         (Decision.SAVE, "AI 按偏好判断：转存，存到「剧集」（国产剧）"))
+        self.assertEqual(await decide({"decision": "save", "save_to": None, "reason": "长" * 200}),  # 人工确认的来源
+                         (Decision.ASK, f"AI 按偏好判断：转存（{'长' * 150}…）；这条本来就要等你确认，仍交给你确认"))
+        self.assertEqual(await decide(APITimeoutError("slow")),
+                         (Decision.ASK, "按偏好判断时 AI 没有给出结果（APITimeoutError），交给你确认"))
+        self.assertEqual(await decide(None), (Decision.ASK, "AI 不可用，没能按偏好判断，交给你确认"))
 
 class TestAutoApprovalSuggestion(ServiceCase):
     def record(self, source, kind, count, start=0):

@@ -83,6 +83,14 @@ class TestSubscriptionDecision(ServiceCase):
         ctx = tv_ctx()
         ctx.source_rule["preferences"] = "只要 4K"
         self.assertEqual(await self.decide(ctx, provider), Decision.SKIP)
+        # 处理过程里写明 AI 的结论与理由、撤回了订阅放行，不再是「新集自动放行」之后直接「决策 = ask」
+        provider._client = FakeAI({"decision": "ask", "save_to": None, "reason": "目录不明确，\n需要确认"})
+        ctx = tv_ctx(msg_id="2")
+        ctx.source_rule["preferences"] = "只要 4K"
+        self.assertEqual(await self.decide(ctx, provider), Decision.ASK)
+        self.assertEqual([line.split(" ", 1)[1] for line in ctx.trail[-3:]],
+                         ["订阅《剧》第 1 季：新集自动放行", "AI 按偏好判断：交给你确认（目录不明确， 需要确认）",
+                          "偏好判断没有放行，撤回订阅《剧》的自动放行"])
 
     async def test_subscription_input_is_validated_and_duplicates_are_rejected(self):
         for bad in ({"title": "剧", "tmdbid": "100"}, {"title": "剧", "auto": "yes"}, {"title": " "}, {"season": 1}):
