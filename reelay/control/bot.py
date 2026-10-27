@@ -18,6 +18,7 @@
 - 对外暴露 ``send(...)``：给 NotifyProvider 用来推确认卡片（带按钮）与结果通知
 - 审批卡片的同步：发出时记下消息（``send(card=...)``），每 ``CARD_SYNC_SEC`` 秒检查一次，任务在管理台、对话助手、
   批量操作或「不再接收」里处理掉后，把卡片改成处理结果并去掉审批按钮，见 ``sync_cards``
+- 与 Telegram 断开后在进程里重新连接（见 ``run_forever`` 与 ``core/telegram.py``）；启动时连不上也不退出，稍后再连
 
 未配置 token（dry-run / 未接入）时，本模块不启动，通知走 ConsoleNotify 打印。
 消息只发给 ``telegram.owner_id``（你自己的数字 id），不广播。
@@ -30,7 +31,7 @@ import logging
 import re
 import time
 
-from ..core import ignored, messages, paths, proxy, secret_store, subscriptions
+from ..core import ignored, messages, paths, proxy, secret_store, subscriptions, telegram
 from ..core.contracts import TaskState
 from ..core.messages import parse_callback, short_key
 from ..core.service import ConflictError, ManagementService, NotFoundError
@@ -44,6 +45,7 @@ CAPTION_LIMIT = 960
 
 CORRECTION_TTL = 600  # 点「修正」后多久内发的消息当作修正内容
 CARD_SYNC_SEC = 5  # 多久检查一次在别处处理过的审批卡片
+RETRY_SECONDS = 30  # 连不上 Telegram 时多久重试一次
 _CORRECTION_RE = re.compile(re.escape(messages.CORRECTION_MARK.strip()) + r"\s*([0-9a-zA-Z_-]{4,64})")
 
 
@@ -58,6 +60,7 @@ class ControlBot:
         self._Button = None
         self._correcting: dict[str, tuple[str, float]] = {}  # 会话 → (正在修正的任务, 过期时间)
         self._card_lock = asyncio.Lock()  # 点按钮改卡片与同步卡片不交错，点出的结果不会被同步覆盖
+        self._problem: str | None = None  # 连不上 Telegram 的原因，连上后清空
 
     @property
     def enabled(self) -> bool:
@@ -67,15 +70,16 @@ class ControlBot:
         if not self.enabled:
             log.info("控制 bot 未配置（缺 token/owner），跳过；通知走控制台")
             return
-        from telethon import TelegramClient, events, Button  # 延迟导入
+        from telethon import Button  # 延迟导入
         self._Button = Button
-
-        api_id = int(secret_store.get("telegram_api_id") or 0)
-        api_hash = secret_store.get("telegram_api_hash") or ""
-        self._client = TelegramClient(str(paths.CONTROL_BOT_SESSION), api_id, api_hash, proxy=proxy.telethon())
-
-        self._register_handlers(events)
-        await self._client.start(bot_token=self._token)
+        try:
+            await self._open()
+        except Exception as exc:
+            if not telegram.transient(exc):
+                raise
+            self._problem = telegram.describe(exc)
+            log.warning("控制 bot 暂时连不上 Telegram（%s），稍后自动重试", self._problem)
+            return
         log.info("控制 bot 已上线")
         try:
             from telethon import functions, types
@@ -84,6 +88,21 @@ class ControlBot:
                 commands=[types.BotCommand(command=name, description=text) for name, text in manage.COMMAND_MENU]))
         except Exception as exc:  # noqa: BLE001 - 命令菜单只是方便输入
             log.warning("设置控制 bot 命令菜单失败：%s", exc)
+
+    async def _open(self) -> None:
+        """新建客户端、登记命令与按钮的处理，用 Bot Token 登录（断开后重新连接也走这里）。"""
+        from telethon import TelegramClient, events  # 延迟导入
+        api_id = int(secret_store.get("telegram_api_id") or 0)
+        api_hash = secret_store.get("telegram_api_hash") or ""
+        self._client = TelegramClient(str(paths.CONTROL_BOT_SESSION), api_id, api_hash, proxy=proxy.telethon(),
+                                      **telegram.CLIENT_OPTIONS)
+        self._register_handlers(events)
+        try:
+            await asyncio.wait_for(self._client.start(bot_token=self._token), telegram.CONNECT_TIMEOUT)
+        except Exception:
+            await self._client.disconnect()
+            raise
+        self._problem = None
 
     def _register_handlers(self, events) -> None:
         c = self._client
@@ -535,20 +554,51 @@ class ControlBot:
                 reported = str(exc)
 
     async def run_forever(self) -> None:
-        """保持控制 bot 长驻（在 gather 里与监听/worker 并发），同时同步审批卡片。"""
+        """保持控制 bot 长驻（在 gather 里与监听/worker 并发），同时同步审批卡片。
+
+        与 Telegram 断开（连接被重置、心跳没有回应、处理更新出错）后在进程里重新连接，不让进程退出。
+        """
         if not self._client:
             return
         sync = asyncio.create_task(self._sync_loop())
         try:
-            await self._client.run_until_disconnected()
+            while True:
+                if self._client.is_connected():
+                    try:
+                        await self._client.run_until_disconnected()
+                        reason = "连接已断开"
+                    except Exception as exc:  # noqa: BLE001
+                        reason = f"{type(exc).__name__}：{telegram.describe(exc)}"
+                    log.info("控制 bot 与 Telegram 断开（%s），%s 秒后重新连接", reason, telegram.RECONNECT_SEC)
+                await self._reconnect()
         finally:
             sync.cancel()
+
+    async def _reconnect(self) -> None:
+        """用新的客户端重新连接，连不上时每 RETRY_SECONDS 秒再试；Bot Token 失效等不是网络的问题照常抛出。"""
+        delay = telegram.RECONNECT_SEC
+        while True:
+            await asyncio.sleep(delay)
+            await self._client.disconnect()
+            try:
+                await self._open()
+            except Exception as exc:
+                if not telegram.transient(exc):
+                    raise
+                if telegram.describe(exc) != self._problem:
+                    log.warning("控制 bot 连不上 Telegram：%s，每 %s 秒重试一次", telegram.describe(exc), RETRY_SECONDS)
+                self._problem, delay = telegram.describe(exc), RETRY_SECONDS
+            else:
+                log.info("控制 bot 已重新连上")
+                return
 
     def health(self) -> dict:
         if not self.enabled:  # 没配置不算断开：总览显示「未配置」而不是连接中断
             return {"status": "not_configured",
                     "error": "未配置：在「设置 → Telegram」填写控制 Bot Token 与你的数字 ID，重启主进程后生效"}
-        return {"status": "connected" if self._client and self._client.is_connected() else "disconnected"}
+        if self._client and self._client.is_connected():
+            return {"status": "connected"}
+        return {"status": "disconnected", **({"error": f"连不上 Telegram：{self._problem}"} if self._problem else {})}
 
     async def close(self) -> None:
         if self._client:

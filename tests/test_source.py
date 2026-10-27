@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import struct
 import time
 import types
 import unittest
 from unittest.mock import patch
+
+from telethon.errors import InvalidBufferError
 
 from reelay.core import runtime, secret_store
 from reelay.core.contracts import TaskState
@@ -20,7 +24,7 @@ from tests.fakes import FakeTelegram, PipelineCase, message, tg_message
 
 
 class TestTelegramListen(unittest.IsolatedAsyncioTestCase):
-    """监听会话：等待凭证与登录、拒绝 Bot 会话、网络错误重试、确认身份前不放行消息。"""
+    """监听会话：等待凭证与登录、拒绝 Bot 会话、网络错误重试、确认身份前不放行消息、断开后重新连接。"""
 
     @staticmethod
     def fake_telethon(client_factory):
@@ -35,6 +39,7 @@ class TestTelegramListen(unittest.IsolatedAsyncioTestCase):
         def __init__(self, *, authorized=True, bot=False, on_connect=None):
             self.authorized, self.bot, self.on_connect = authorized, bot, on_connect
             self.handler, self.connected, self.disconnects, self.listened = None, False, 0, False
+            self.gone = None
 
         def add_event_handler(self, handler, event):
             self.handler = handler
@@ -58,10 +63,27 @@ class TestTelegramListen(unittest.IsolatedAsyncioTestCase):
 
         async def run_until_disconnected(self):
             self.listened = True
+            self.gone = asyncio.get_running_loop().create_future()
+            await self.gone
+
+        def drop(self, error=None):
+            """连接中断：run_until_disconnected 结束，带 error 时抛出它（与关掉自动重连的 Telethon 一致）。"""
+            self.connected = False
+            self.gone.set_exception(error) if error else self.gone.set_result(None)
 
         async def disconnect(self):
             self.connected = False
             self.disconnects += 1
+            if self.gone and not self.gone.done():
+                self.gone.set_result(None)
+
+    async def until(self, check, timeout=2):
+        """等到 check() 为真，返回它的值。"""
+        async def poll():
+            while not check():
+                await asyncio.sleep(0.01)
+        await asyncio.wait_for(poll(), timeout)
+        return check()
 
     async def wait_for_status(self, source, status, timeout=2):
         async def poll():
@@ -87,7 +109,9 @@ class TestTelegramListen(unittest.IsolatedAsyncioTestCase):
             store.update({"telegram_api_id": "1", "telegram_api_hash": "dummy"})  # 填写后不用重启
             await self.wait_for_status(source, "not_logged_in")
             self.assertIn("reelay.login", source.health()["error"])
-            await asyncio.wait_for(listener, 2)  # 登录后接上，监听到断开为止
+            await self.wait_for_status(source, "connected")  # 登录后接上
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
         self.assertEqual(clients[0].disconnects, 1)  # 没登录的会话断开后再试
         self.assertTrue(clients[1].listened)
 
@@ -115,7 +139,11 @@ class TestTelegramListen(unittest.IsolatedAsyncioTestCase):
         client = self.FakeClient(on_connect=flaky)
         with self.fake_telethon(lambda *args, **kwargs: client), patch("reelay.providers.source.RETRY_SECONDS", 0.02), \
                 secret_store.override(telegram_api_id="1", telegram_api_hash="dummy"):
-            await asyncio.wait_for(TelegramUserbotSource().listen(lambda raw: None), 2)
+            source = TelegramUserbotSource()
+            listener = asyncio.create_task(source.listen(lambda raw: None))
+            await self.wait_for_status(source, "connected")
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
         self.assertEqual(len(attempts), 2)
         self.assertTrue(client.listened)
 
@@ -136,22 +164,90 @@ class TestTelegramListen(unittest.IsolatedAsyncioTestCase):
 
         client = self.FakeClient(on_connect=deliver_early_message)
 
-        async def run_until_disconnected():
-            await asyncio.gather(*callbacks)
-        client.run_until_disconnected = run_until_disconnected
-
         async def emit(raw):
             emitted.append(raw)
         with self.fake_telethon(lambda *args, **kwargs: client), \
                 secret_store.override(telegram_api_id='1', telegram_api_hash='dummy'):
             source = TelegramUserbotSource()
             source.configure(['@test'])
-            await source.listen(emit)
+            listener = asyncio.create_task(source.listen(emit))
+            await asyncio.wait_for(asyncio.gather(*await self.until(lambda: callbacks)), 2)
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0].source, '@Test')
         self.assertEqual(emitted[0].urls, ['https://115.com/s/actual'])
         self.assertFalse(client.connected)
 
+
+    async def test_lost_connection_reconnects_in_process_and_backfills(self):
+        """今天的事故：代理不通 3.5 小时，恢复时 Telegram 限流（429），处理更新出错——不再让进程退出。"""
+        clients, emitted = [], []
+
+        def factory(*args, **kwargs):
+            self.assertIs(kwargs.get("auto_reconnect"), False)  # 断线由监听自己重连，不交给 Telethon
+            client = self.FakeClient()
+            backlog = FakeTelegram([tg_message(6)] if clients else [])  # 断开期间到了一条
+            client.get_entity, client.iter_messages = backlog.get_entity, backlog.iter_messages
+            clients.append(client)
+            return client
+
+        async def emit(raw):
+            emitted.append(raw)
+        with self.fake_telethon(factory), patch("reelay.core.telegram.RECONNECT_SEC", 0.3), \
+                secret_store.override(telegram_api_id="1", telegram_api_hash="dummy"):
+            source = TelegramUserbotSource()
+            source.configure(["@bot"])
+            source.bind_watermark(lambda name: max([5, *(int(raw.msg_id) for raw in emitted)]))  # 入库后水位前进
+            listener = asyncio.create_task(source.listen(emit))
+            await self.wait_for_status(source, "connected")
+            clients[0].drop(InvalidBufferError(struct.pack("<i", -429)))
+            health = await self.until(lambda: "down_for" in source.health() and source.health())
+            self.assertEqual(health["status"], "disconnected")  # 带上断开多久，告警与恢复提醒据此计时
+            await self.wait_for_status(source, "connected")
+            clients[1].drop()  # 心跳没有回应：run_until_disconnected 正常结束，同样重连
+            await self.until(lambda: len(clients) == 3 and source.health()["status"] == "connected")
+            self.assertFalse(listener.done())
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
+        self.assertEqual([raw.msg_id for raw in emitted], ["6"])  # 重新连上后补拉了断开期间的消息
+        self.assertTrue(all(client.disconnects for client in clients))
+
+    async def test_slow_or_rate_limited_connects_are_retried(self):
+        outcomes = ["hang", InvalidBufferError(struct.pack("<i", -429)), None]
+        problems = []
+
+        async def connect(client):
+            step = outcomes.pop(0)
+            if step == "hang":
+                await asyncio.Event().wait()
+            if step is not None:
+                raise step
+
+        def factory(*args, **kwargs):
+            return self.FakeClient(on_connect=connect)
+
+        with self.fake_telethon(factory), patch("reelay.core.telegram.CONNECT_TIMEOUT", 0.05), \
+                patch("reelay.providers.source.RETRY_SECONDS", 0.05), \
+                secret_store.override(telegram_api_id="1", telegram_api_hash="dummy"):
+            source = TelegramUserbotSource()
+            listener = asyncio.create_task(source.listen(lambda raw: None))
+            while source.health()["status"] != "connected":
+                error = source.health().get("error")
+                if error and error not in problems:
+                    problems.append(error)
+                await asyncio.sleep(0.005)
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
+        self.assertTrue(problems[0].startswith("连不上 Telegram：连接超时"))
+        self.assertTrue(problems[1].startswith("连不上 Telegram：Invalid response buffer (HTTP code 429)"))
+
+    def test_telethons_own_reconnect_error_is_not_logged(self):
+        logger = logging.getLogger("telethon.network.mtprotosender")
+        with self.assertLogs(logger, "ERROR") as logs:
+            logger.error("Automatic reconnection failed %d time(s)", 0)  # 关掉自动重连后每次断线都有
+            logger.error("Automatic reconnection failed %d time(s)", 3)
+        self.assertEqual([r.getMessage() for r in logs.records], ["Automatic reconnection failed 3 time(s)"])
 
 class TestSourceBackfillAndAlerts(PipelineCase):
     async def test_backfill_emits_messages_after_watermark_only(self):
@@ -310,6 +406,43 @@ class TestSourceBackfillAndAlerts(PipelineCase):
         await asyncio.gather(loop, return_exceptions=True)
         self.assertEqual([a["key"] for a in self.store.active_alerts()], ["source"])
 
+
+    async def test_outage_is_timed_from_the_disconnect_and_reported_on_recovery(self):
+        from reelay.main import _source_loop
+
+        class Recovering:
+            name = "flaky"
+            status = "connected"
+
+            async def listen(self, emit):
+                await asyncio.Event().wait()
+
+            def health(self):
+                return {"status": "connected"} if self.status == "connected" else {"status": "disconnected",
+                                                                                  "down_for": 3600}
+
+        source = Recovering()
+        registry = Registry()
+        registry.add_provider("source", source)
+        pipeline = self.pipeline({"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"},
+                                  "providers": {"source": "flaky", "notify": ["console"]}}, registry)
+        loop = asyncio.create_task(_source_loop(pipeline, None, poll_interval=0.02))
+        await asyncio.sleep(0.1)
+        source.status = "disconnected"  # 监听发现时已经断了 1 小时：不再等 alert_after（120 秒）才告警
+        await asyncio.sleep(0.1)
+        self.assertEqual([a["key"] for a in self.store.active_alerts()], ["source"])
+        payload = json.loads(self.store._conn.execute(
+            "SELECT payload FROM runtime_health WHERE component='source'").fetchone()[0])
+        self.assertEqual(payload["status"], "disconnected")
+        self.assertNotIn("down_for", payload)  # 每秒都在变，不写进心跳
+        source.status = "connected"
+        await asyncio.sleep(0.1)
+        loop.cancel()
+        await asyncio.gather(loop, return_exceptions=True)
+        self.assertEqual(self.store.active_alerts(), [])
+        recovered = [json.loads(r[0])["text"] for r in self.store._conn.execute(
+            "SELECT snapshot FROM outbox WHERE kind='notice' AND event='recovered'")]
+        self.assertEqual(recovered, ["✅ 消息源 flaky 已恢复连接，断开了约 1 小时"])
 
 class TestDailyWaitsForStartupBackfill(PipelineCase):
     CFG = {"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"}, "schedule": {"daily_hour": 0}}

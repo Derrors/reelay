@@ -2,6 +2,7 @@
 
 - ``TelegramUserbotSource``（name="telegram"）：用你自己的账号（Telethon）监听多个 bot。
   未配 API ID / Hash 或会话还没登录时不退出：health 报告原因并定时重试（见 _connect）。
+  与 Telegram 断开后在进程里重新连接，并补拉断开期间的消息（见 listen 与 ``core/telegram.py``）。
 
 模拟源 ``dryrun`` 在 ``providers/dryrun.py``。
 """
@@ -13,7 +14,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable
 
-from ..core import paths, proxy, runtime, secret_store
+from ..core import paths, proxy, runtime, secret_store, telegram
 from ..core.contracts import RawMessage
 from ..core.registry import register
 
@@ -41,6 +42,7 @@ class TelegramUserbotSource:
         self._watermark: Callable[[str], int | None] | None = None
         self.backfilled = 0
         self.backfill_done = False  # 本次监听的启动补拉已结束（含失败），日报据此决定何时发送
+        self._down_at: float | None = None  # 与 Telegram 断开的时刻（单调时钟），重新连上后清空
 
     def configure(self, targets: list[str]) -> None:
         self._targets = [target.strip().lower() for target in targets]
@@ -55,11 +57,18 @@ class TelegramUserbotSource:
         return bool(set(self._targets) & identities)
 
     def health(self) -> dict:
+        """连接状态；断开后重连期间带 down_for（已断开的秒数），告警与恢复提醒据此计时。"""
+        connected = bool(self._client and self._client.is_connected())
         if self._problem:
             status, error = self._problem
-            return {"status": status, "error": error}
-        connected = bool(self._client and self._client.is_connected())
-        return {"status": "connected" if connected and self._authorized else ("connecting" if connected else "disconnected")}
+            out = {"status": status, "error": error}
+        elif connected and self._authorized:
+            return {"status": "connected"}
+        else:
+            out = {"status": "connecting" if connected else "disconnected"}
+        if self._down_at is not None and out["status"] in ("connecting", "disconnected"):
+            out["down_for"] = round(time.monotonic() - self._down_at)
+        return out
 
     async def close(self) -> None:
         self._authorized = False
@@ -91,18 +100,33 @@ class TelegramUserbotSource:
             ))
 
         try:
-            self._client = await self._connect(lambda client: client.add_event_handler(_handler, events.NewMessage()))
-            # 放行实时消息之前记下各来源的水位：实时消息会推高水位，之后再读会漏掉停机期间的消息
-            marks = await self._watermarks()
-            self._authorized = True
-            ready.set()
-            try:
-                await self.backfill(emit, marks)
-            except Exception as exc:  # noqa: BLE001 - 补拉失败不影响实时监听
-                log.warning("历史消息补拉失败：%s", exc)
-            finally:
-                self.backfill_done = True
-            await self._client.run_until_disconnected()
+            while True:
+                ready.clear()
+                self._client = await self._connect(
+                    lambda client: client.add_event_handler(_handler, events.NewMessage()))
+                if self._down_at is not None:
+                    log.info("Telegram 监听已重新连上")
+                    self._down_at = None
+                # 放行实时消息之前记下各来源的水位：实时消息会推高水位，之后再读会漏掉停机或断开期间的消息
+                marks = await self._watermarks()
+                self._authorized = True
+                ready.set()
+                try:
+                    await self.backfill(emit, marks)
+                except Exception as exc:  # noqa: BLE001 - 补拉失败不影响实时监听
+                    log.warning("历史消息补拉失败：%s", exc)
+                finally:
+                    self.backfill_done = True
+                # 断开（连接被重置、心跳没有回应、处理更新出错）后用新的客户端重新连接，不让进程退出
+                try:
+                    await self._client.run_until_disconnected()
+                    reason = "连接已断开"
+                except Exception as exc:  # noqa: BLE001
+                    reason = f"{type(exc).__name__}：{telegram.describe(exc)}"
+                self._authorized, self._down_at = False, time.monotonic()
+                log.info("Telegram 监听断开（%s），%s 秒后重新连接", reason, telegram.RECONNECT_SEC)
+                await self._client.disconnect()
+                await asyncio.sleep(telegram.RECONNECT_SEC)
         finally:
             ready.set()
             await self.close()
@@ -123,27 +147,36 @@ class TelegramUserbotSource:
                 problem = ("not_configured", "未配置 Telegram API ID / API Hash：在管理台「设置 → Telegram」中填写")
             else:
                 via = proxy.telethon()
-                client = TelegramClient(self._session, int(api_id), api_hash, catch_up=True, proxy=via)
+                client = TelegramClient(self._session, int(api_id), api_hash, catch_up=True, proxy=via,
+                                        **telegram.CLIENT_OPTIONS)
                 setup(client)
                 try:
-                    await client.connect()
-                    if not await client.is_user_authorized():
-                        problem = ("not_logged_in", LOGIN_HINT)
-                    elif getattr(await client.get_me(), "bot", True):
-                        problem = ("not_logged_in", "监听会话登录的是 Bot，需要个人账号："
-                                                    f"删除 {paths.USERBOT_SESSION.name} 后重新执行 python -m reelay.login")
-                    else:
-                        self._problem = None
-                        return client
-                except OSError as exc:  # 含 ConnectionError：网络问题，稍后重试
+                    problem = await asyncio.wait_for(self._login_problem(client), telegram.CONNECT_TIMEOUT)
+                except Exception as exc:
+                    if not telegram.transient(exc):
+                        raise
                     hint = "，请检查代理是否可用" if via else "；国内网络需要在「设置 → 网络代理」中配置代理"
-                    problem = ("disconnected", f"连不上 Telegram：{exc}{hint}")
+                    problem = ("disconnected", f"连不上 Telegram：{telegram.describe(exc)}{hint}")
+                if problem is None:
+                    self._problem = None
+                    return client
                 await client.disconnect()
             self._problem = problem
             if problem != reported:
-                log.warning("Telegram 监听未启动：%s", problem[1])
+                log.warning("Telegram 监听没有连上：%s", problem[1])
                 reported = problem
             await asyncio.sleep(RETRY_SECONDS)
+
+    @staticmethod
+    async def _login_problem(client) -> tuple[str, str] | None:
+        """连上并确认会话登录的是个人账号；有问题时返回 (状态, 说明)。"""
+        await client.connect()
+        if not await client.is_user_authorized():
+            return "not_logged_in", LOGIN_HINT
+        if getattr(await client.get_me(), "bot", True):
+            return "not_logged_in", ("监听会话登录的是 Bot，需要个人账号："
+                                     f"删除 {paths.USERBOT_SESSION.name} 后重新执行 python -m reelay.login")
+        return None
 
     async def _watermarks(self) -> list[tuple[Any, str, int]]:
         """每个来源的（实体, 来源标识, 水位）。首次监听（无水位）的来源不补拉；找不到的来源跳过，不影响其余来源。"""

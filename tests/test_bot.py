@@ -1,12 +1,14 @@
 """控制 Bot：修正识别结果、列表与批量操作。"""
 from __future__ import annotations
 
+import asyncio
+import struct
 import time
 import types
 import unittest
 from unittest.mock import patch
 
-from telethon.errors import MessageIdInvalidError
+from telethon.errors import InvalidBufferError, MessageIdInvalidError
 
 from reelay.control import manage
 from reelay.control.bot import ControlBot
@@ -248,6 +250,76 @@ class TestCardSync(ServiceCase):
         self.assertEqual(await bot.sync_cards(), 0)
         self.assertEqual(edits, [])
 
+
+class TestReconnect(ServiceCase):
+    """控制 Bot 与 Telegram 断开后在进程里重新连接；启动时连不上也不退出。"""
+
+    async def until(self, check, timeout=2):
+        async def poll():
+            while not check():
+                await asyncio.sleep(0.005)
+        await asyncio.wait_for(poll(), timeout)
+
+    async def test_bot_reconnects_instead_of_exiting(self):
+        clients, failures = [], [ConnectionError("blocked")]  # 启动时代理不通
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                self.options, self.connected, self.gone = kwargs, False, None
+                clients.append(self)
+
+            def on(self, event):
+                return lambda handler: handler
+
+            async def start(self, bot_token):
+                if failures:
+                    raise failures.pop(0)
+                self.connected = True
+
+            async def __call__(self, request):  # 命令菜单
+                return None
+
+            def is_connected(self):
+                return self.connected
+
+            async def run_until_disconnected(self):
+                self.gone = asyncio.get_running_loop().create_future()
+                await self.gone
+
+            def drop(self, error=None):
+                self.connected = False
+                self.gone.set_exception(error) if error else self.gone.set_result(None)
+
+            async def disconnect(self):
+                self.connected = False
+                if self.gone and not self.gone.done():
+                    self.gone.set_result(None)
+
+        module = types.ModuleType("telethon")
+        module.TelegramClient, module.Button = Client, None
+        module.events = types.SimpleNamespace(NewMessage=lambda **kwargs: None, CallbackQuery=lambda **kwargs: None)
+        module.functions = types.SimpleNamespace(bots=types.SimpleNamespace(SetBotCommandsRequest=lambda **kw: kw))
+        module.types = types.SimpleNamespace(BotCommandScopeDefault=lambda: None, BotCommand=lambda **kw: kw)
+        bot = bot_for(self.service)
+        bot._token, bot._owner, bot._problem = "123:abc", "42", None
+        throttled = lambda: InvalidBufferError(struct.pack("<i", -429))  # noqa: E731
+        with patch.dict("sys.modules", {"telethon": module}), patch("reelay.core.telegram.RECONNECT_SEC", 0.01), \
+                patch("reelay.control.bot.RETRY_SECONDS", 0.01):
+            await bot.start()  # 启动时连不上：不退出，稍后自己连
+            self.assertEqual(bot.health(), {"status": "disconnected", "error": "连不上 Telegram：blocked"})
+            runner = asyncio.create_task(bot.run_forever())
+            await self.until(lambda: bot.health()["status"] == "connected")
+            self.assertIs(clients[-1].options["auto_reconnect"], False)  # 断线由 Bot 自己重连
+            failures.append(throttled())  # 恢复时被 Telegram 限流：稍后再连
+            clients[-1].drop(throttled())
+            await self.until(lambda: bot.health()["status"] == "connected" and not failures)
+            clients[-1].drop()  # 心跳没有回应：run_until_disconnected 正常结束，同样重连
+            await self.until(lambda: len(clients) == 5 and bot.health()["status"] == "connected")
+            self.assertFalse(runner.done())
+            failures.append(ValueError("Bot Token 失效"))  # 不是网络的问题：照常抛出
+            clients[-1].drop()
+            with self.assertRaises(ValueError):
+                await asyncio.wait_for(runner, 2)
 
 class TestHealth(ServiceCase):
     def test_unconfigured_bot_is_not_reported_as_disconnected(self):

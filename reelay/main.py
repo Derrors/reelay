@@ -115,6 +115,13 @@ async def _run_dry() -> int:
     return 0 if ok else 1
 
 
+def _lasted(seconds: float) -> str:
+    """「约 3 小时 32 分钟」这样的时长（不足 1 分钟按 1 分钟）。"""
+    minutes = max(1, round(seconds / 60))
+    hours, minutes = divmod(minutes, 60)
+    return "约 " + " ".join(filter(None, [f"{hours} 小时" if hours else "", f"{minutes} 分钟" if minutes else ""]))
+
+
 async def _serve_fetch(store: Store, source, request: dict) -> None:
     """管理台「获取最近消息」：监听会话只在主进程里，由这里代为读取并写回数据库。"""
     try:
@@ -160,19 +167,23 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                 if getattr(source, "backfilled", 0) > backfilled:
                     count, backfilled = source.backfilled - backfilled, source.backfilled
                     pipeline.store.stage_notice(
-                        "backfill", f"📥 已补拉停机期间的 {count} 条消息。补拉的消息不逐条推送确认卡片，"
+                        "backfill", f"📥 已补拉停机或断开期间的 {count} 条消息。补拉的消息不逐条推送确认卡片，"
                         "点下方按钮查看需要确认的资源。", pipeline.notify_targets(), buttons=messages.PENDING_BUTTONS)
                 health = source.health() if hasattr(source, "health") else {"status": "unobserved"}
+                down_for = float(health.pop("down_for", 0) or 0)  # 每秒都在变，不写进心跳
                 pipeline.store.heartbeat("source", provider=name, config_revision=pipeline.revision, **health)
                 if health.get("status") in ("connected", "unobserved"):
+                    lasted = time.monotonic() - down_since if down_since is not None else 0
                     down_since = None
-                    pipeline.store.clear_alert("source", f"消息源 {name} 已恢复连接", pipeline.notify_targets())
+                    pipeline.store.clear_alert("source", f"消息源 {name} 已恢复连接"
+                                               + (f"，断开了{_lasted(lasted)}" if lasted >= 60 else ""),
+                                               pipeline.notify_targets())
                     for request in pipeline.store.claim_source_fetches():
                         fetch = asyncio.create_task(_serve_fetch(pipeline.store, source, request))
                         fetches.add(fetch)
                         fetch.add_done_callback(fetches.discard)
                 elif down_since is None:
-                    down_since = time.monotonic()
+                    down_since = time.monotonic() - down_for  # 从断开的那一刻算，而不是发现的时候
                 elif time.monotonic() - down_since >= alert_after:
                     problem = health.get("error") or (f"消息源 {name} 已断开超过 {alert_after // 60 or 1} 分钟，"
                                                       "期间消息将在重连后补拉")

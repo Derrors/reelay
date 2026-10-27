@@ -166,6 +166,11 @@ class TestRequestsUseTheProxy(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTelegramClientsUseTheProxy(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    async def connected(source):
+        while source.health()["status"] != "connected":
+            await asyncio.sleep(0.01)
+
     async def test_listener_reads_the_proxy_on_each_attempt(self):
         from reelay.providers.source import TelegramUserbotSource
         from tests.test_source import TestTelegramListen
@@ -193,7 +198,9 @@ class TestTelegramClientsUseTheProxy(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(source.health()["status"], "disconnected")
             self.assertIn("网络代理", source.health()["error"])  # 直连不通时提示配置代理
             cfg["proxy"]["url"] = "socks5://127.0.0.1:1080"  # 管理台保存后，下次重试就用上
-            await asyncio.wait_for(listener, 2)
+            await asyncio.wait_for(self.connected(source), 2)
+            listener.cancel()
+            await asyncio.gather(listener, return_exceptions=True)
         self.assertIsNone(proxies[0])
         self.assertEqual(proxies[-1]["addr"], "127.0.0.1")
 

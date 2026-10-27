@@ -125,8 +125,8 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `telegram.owner_id` | 空 | 你的 Telegram 数字 ID；控制 Bot 只服务这个 ID，留空不启用控制 Bot（重启主进程生效） |
-| `telegram.backfill_limit` / `backfill_max_days` | `200` / `7` | 监听启动时（含断线后进程重启）每个来源最多补拉的停机期间消息条数（`0` 关闭）与最大消息年龄（天）；首次监听的来源不导入历史 |
-| `telegram.alert_after_sec` | `120` | 消息源断开（含还没配置或登录 Telegram）多久后告警 |
+| `telegram.backfill_limit` / `backfill_max_days` | `200` / `7` | 监听启动或断线后重新连上时，每个来源最多补拉的停机或断开期间消息条数（`0` 关闭）与最大消息年龄（天）；首次监听的来源不导入历史 |
+| `telegram.alert_after_sec` | `120` | 消息源断开（含还没配置或登录 Telegram）多久后告警，从断开的那一刻算起 |
 
 ### 115 请求限速（`p115`）
 
