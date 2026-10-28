@@ -115,21 +115,24 @@ class TestPipeline(unittest.IsolatedAsyncioTestCase):
         await pipeline.process_new(ctx)
         self.assertEqual(ctx.state, TaskState.PENDING_APPROVAL)
 
-    async def test_natural_preferences_choose_only_allowed_aliases_and_respect_manual(self):
+    async def test_natural_preferences_only_decide_whether_to_save_and_respect_manual(self):
         provider = LLMDecision()
         cfg = normalize_config({})
         for mode, expected in (("auto", Decision.SAVE), ("manual", Decision.ASK)):
             ctx = context()
             ctx.parsed = ParsedResource(**movie(), share_code="actual")
             ctx.source_rule = {"preferences": "只收 4K，存入动漫", "approval_mode": mode}
-            provider._client = FakeAI({"decision": "save", "save_to": "动漫", "reason": "匹配偏好"})
+            provider._client = FakeAI({"decision": "save", "reason": "匹配偏好"})
             with runtime.scope(cfg):
                 self.assertEqual(await provider.decide(ctx), expected)
-            self.assertEqual(ctx.save_dir_alias, "动漫")
-        provider._client = FakeAI({"decision": "save", "save_to": "未授权目录", "reason": ""})
+            self.assertIsNone(ctx.save_dir_alias)  # 保存位置按「保存到」与二级分类，偏好里写了目录也不改
+        request = provider._client.calls[0]
+        self.assertEqual(set(request["response_format"]["json_schema"]["schema"]["properties"]), {"decision", "reason"})
+        self.assertNotIn("allowed_dirs", request["messages"][1]["content"])
+        provider._client = FakeAI({"decision": "save", "save_to": "动漫", "reason": ""})  # 多出字段：格式无效
         with runtime.scope(cfg):
             self.assertEqual(await provider.decide(ctx), Decision.ASK)
-        self.assertEqual(ctx.save_dir_alias, "动漫")
+        self.assertIsNone(ctx.save_dir_alias)
         ctx.parsed.is_ad = True
         provider._client.calls.clear()
         with runtime.scope(cfg):

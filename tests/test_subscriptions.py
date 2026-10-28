@@ -53,7 +53,8 @@ class TestSubscriptionDecision(ServiceCase):
                 self.assertEqual(await self.decide(ctx), Decision.ASK)
         self.assertEqual(await self.decide(tv_ctx(is_ad=True)), Decision.SKIP)
 
-    async def test_already_stored_episodes_are_not_auto_released(self):
+    async def test_already_stored_episodes_are_skipped(self):
+        """消息里的集都已入库：批准了也会在转存前被去重拦下，直接跳过，不交给你确认，也不调用 AI。"""
         stored = tv_ctx(episodes=(3,))
         stored.state = TaskState.STORED
         stored.save_dir_cid = "2"
@@ -62,8 +63,16 @@ class TestSubscriptionDecision(ServiceCase):
                                             "title": stored.parsed.title, "season": 1, "episodes": [3]}
         self.store.save_task(stored)
         self.store.finish_transfer(stored)
-        self.assertEqual(await self.decide(tv_ctx(msg_id="2", episodes=(3,))), Decision.ASK)
-        self.assertEqual(await self.decide(tv_ctx(msg_id="3", episodes=(3, 4))), Decision.SAVE)
+        duplicate = tv_ctx(msg_id="2", episodes=(3,))
+        duplicate.source_rule["preferences"] = "只要 4K"
+        provider = LLMDecision()
+        provider._client = FakeAI({"decision": "save", "reason": "不该问到这里"})
+        self.assertEqual(await self.decide(duplicate, provider), Decision.SKIP)
+        self.assertEqual(duplicate.trail[-1].split(" ", 1)[1], "去重命中：消息里的 S01 E03 都已入库，跳过")
+        self.assertEqual(provider._client.calls, [])
+        self.assertEqual(await self.decide(tv_ctx(msg_id="3", episodes=(3, 4))), Decision.SAVE)  # E04 是新的
+        # TMDB 没匹配上时拿不准是不是同一部，仍交给你确认
+        self.assertEqual(await self.decide(tv_ctx(msg_id="4", episodes=(3,), matched=False)), Decision.ASK)
 
     async def test_episodes_of_a_same_title_remake_do_not_count_as_stored(self):
         remake = tv_ctx(episodes=(3,), tmdbid=999)  # 同名的另一部剧
@@ -79,17 +88,17 @@ class TestSubscriptionDecision(ServiceCase):
 
     async def test_preferences_can_still_veto_a_subscription(self):
         provider = LLMDecision()
-        provider._client = FakeAI({"decision": "skip", "save_to": None, "reason": "不要 1080p"})
+        provider._client = FakeAI({"decision": "skip", "reason": "不要 1080p"})
         ctx = tv_ctx()
         ctx.source_rule["preferences"] = "只要 4K"
         self.assertEqual(await self.decide(ctx, provider), Decision.SKIP)
         # 处理过程里写明 AI 的结论与理由、撤回了订阅放行，不再是「新集自动放行」之后直接「决策 = ask」
-        provider._client = FakeAI({"decision": "ask", "save_to": None, "reason": "目录不明确，\n需要确认"})
+        provider._client = FakeAI({"decision": "ask", "reason": "拿不准，\n需要确认"})
         ctx = tv_ctx(msg_id="2")
         ctx.source_rule["preferences"] = "只要 4K"
         self.assertEqual(await self.decide(ctx, provider), Decision.ASK)
         self.assertEqual([line.split(" ", 1)[1] for line in ctx.trail[-3:]],
-                         ["订阅《剧》第 1 季：新集自动放行", "AI 按偏好判断：交给你确认（目录不明确， 需要确认）",
+                         ["订阅《剧》第 1 季：新集自动放行", "AI 按偏好判断：交给你确认（拿不准， 需要确认）",
                           "偏好判断没有放行，撤回订阅《剧》的自动放行"])
 
     async def test_subscription_input_is_validated_and_duplicates_are_rejected(self):

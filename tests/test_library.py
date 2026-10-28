@@ -62,6 +62,10 @@ class TestLibraryAndQuality(ServiceCase):
         self.assertTrue(all("<链接>" in s or "http" not in s for s in payload[0]["rejected_samples"]))
         slow = next(item for item in payload if item["source"] == "@slow")
         self.assertEqual(slow["rejected_samples"], [])
+        # 有的模型（如经中转的 Gemini）不包一层 {"items": …}，直接回数组
+        self.parser._client = FakeAI([{"source": "@noisy", "summary": "几乎都是推广", "suggestions": [],
+                                       "add_block_keywords": ["进群"]}])
+        self.assertEqual((await self.service.source_quality_advice())["changes"], advice["changes"])
 
     def test_rates_are_none_without_data(self):
         self.assertEqual(library.source_quality([], {}), [])

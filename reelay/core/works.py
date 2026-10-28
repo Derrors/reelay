@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from . import tmdb
+from .media import planned_pairs
 
 _TMDB = re.compile(r"(tv|movie):\d+")
 
@@ -61,3 +62,14 @@ def episodes(stored: list[dict], work: dict, season: int) -> set[int]:
     """已入库汇总（Store.stored_series）里属于这部作品这一季的集。"""
     return set().union(*(entry["episodes"] for entry in stored
                          if entry["season"] == season and same(entry["work"], work)))
+
+
+def already_stored(stored: list[dict], ctx) -> list[tuple[int, int]]:
+    """任务涉及的（季, 集）都已入库时返回它们，否则返回空列表；电影等没有集数的不算。
+
+    stored 是 Store.stored_series 的结果。与待审批里「都已入库」的建议一样，按作品与季集核对。
+    """
+    p = ctx.parsed
+    pairs = sorted(set(planned_pairs(ctx))) if p and p.title else []
+    work = of(p, ctx.meta.get("tmdb")) if pairs else None
+    return pairs if pairs and all(ep in episodes(stored, work, season) for season, ep in pairs) else []

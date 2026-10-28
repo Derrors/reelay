@@ -166,6 +166,16 @@ async def request(client, *, purpose: str = "other", task_id: str | None = None,
             attempt += 1
 
 
+def _bare_list(reply: Any, schema: dict) -> Any:
+    """要的是只有一个数组字段的对象（如 {"items": [...]}）时，有的模型（如经中转的 Gemini）会直接回数组：替它包上。"""
+    fields = schema.get("properties") or {}
+    if isinstance(reply, list) and len(fields) == 1:
+        (name, spec), = fields.items()
+        if spec.get("type") == "array":
+            return {name: reply}
+    return reply
+
+
 def response_format(schema: dict, name: str, rule: dict | None) -> dict:
     # 显式兼容 JSON mode 时仍执行完整本地校验，不在 API 报错后静默降级格式。
     if (rule or {}).get("llm_response_format") == "json_object":
@@ -198,7 +208,7 @@ async def complete_json(client, *, model: str, purpose: str, messages: list[dict
             record(purpose, model, started, outcome="refused", usage=usage, task_id=task_id)
             raise AIError("refused")
         try:
-            result = validate(json.loads(message.content or "{}"))
+            result = validate(_bare_list(json.loads(message.content or "{}"), schema))
         except (ValueError, TypeError, KeyError) as exc:
             record(purpose, model, started, outcome="invalid", error=str(exc), usage=usage, task_id=task_id)
             if attempts > invalid_retries:

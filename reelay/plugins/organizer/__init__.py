@@ -62,22 +62,19 @@ def _layout() -> tuple[str, dict]:
     return organizer.get("layout", "category"), organizer.get("type_dirs") or DEFAULT_TYPE_DIRS
 
 
-def route(p, source_rule: dict, *, current: str | None = None, pinned: str | None = None,
-          preferred: str | None = None) -> dict:
+def route(p, source_rule: dict, *, current: str | None = None, pinned: str | None = None) -> dict:
     """按当前作用域的配置算出目标目录，不修改任务。
 
     返回 alias（None 表示沿用任务/来源目录）、category_path / relative_category（保存目录下的子目录）
-    与写入轨迹的 note。指定的目录与分类结果不一致时直接存进该目录、不套用分类子目录：
-    两者不一致通常说明分类本身就不对。人工指定（pinned）优先于 AI 按偏好选出的目录（preferred）。
+    与写入轨迹的 note。人工指定的目录（pinned）与分类结果不一致时直接存进该目录、不套用分类子目录：
+    两者不一致通常说明分类本身就不对。
     """
-    chosen = pinned or preferred
-    if chosen:
+    if pinned:
         auto = route(p, source_rule)
-        if chosen == (auto["alias"] or source_rule.get("save_to") or "默认"):
+        if pinned == (auto["alias"] or source_rule.get("save_to") or "默认"):
             return auto
-        who = "手动指定目录" if pinned else "AI 按偏好选择目录"
-        return {"alias": chosen, "category_path": None, "relative_category": "",
-                "note": f"{who}「{chosen}」，不套用分类子目录"}
+        return {"alias": pinned, "category_path": None, "relative_category": "",
+                "note": f"手动指定目录「{pinned}」，不套用分类子目录"}
     result = {"alias": None, "category_path": None, "relative_category": "", "note": None}
     layout, type_dirs = _layout()
     if layout == "none":
@@ -310,8 +307,7 @@ class LibraryRouter(_MediaLibrary):
 
     async def run(self, ctx: PipelineContext) -> bool:
         ns = ctx.ns("library")
-        target = route(ctx.parsed, ctx.source_rule, current=ctx.save_dir_alias, pinned=ns.get("pinned"),
-                       preferred=ns.get("preferred"))
+        target = route(ctx.parsed, ctx.source_rule, current=ctx.save_dir_alias, pinned=ns.get("pinned"))
         if target["alias"]:
             ctx.save_dir_alias = target["alias"]
         ns.pop("category_path", None)
@@ -326,8 +322,8 @@ class LibraryRouter(_MediaLibrary):
         return True
 
     def preview(self, ctx: PipelineContext) -> str:
-        """待审批任务不改目录时将存入的位置，如「剧集/国产剧集」；含 AI 按偏好选出的目录。"""
-        target = route(ctx.parsed, ctx.source_rule, preferred=ctx.ns("library").get("preferred"))
+        """待审批任务不改目录时将存入的位置，如「剧集/国产剧集」。"""
+        target = route(ctx.parsed, ctx.source_rule)
         alias = target["alias"] or ctx.source_rule.get("save_to") or "默认"
         return f"{alias}/{target['relative_category']}" if target["relative_category"] else alias
 

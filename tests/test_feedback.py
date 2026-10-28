@@ -15,53 +15,22 @@ from reelay.providers.storage import P115Storage, _select_video_items
 from tests.fakes import APITimeoutError, FakeAI, ServiceCase, done_task, media, message
 
 
-class TestPreferredDirectory(ServiceCase):
-    def decided(self, save_to):
+class TestPreferenceKeepsTheDirectory(ServiceCase):
+    """AI 按偏好判断只决定放不放行：保存位置按来源的「保存到」与二级分类，偏好里写了目录也不改。"""
+
+    async def test_preferences_never_change_where_it_is_saved(self):
         ctx = message()
         ctx.parsed = ParsedResource(**{**media(media_type="anime", genre_ids=[16], origin_country=["JP"])},
                                     share_code="abc123")
         ctx.source_rule = {"preferences": "动画都放默认目录", "approval_mode": "auto"}
         provider = LLMDecision()
-        provider._client = FakeAI({"decision": "save", "save_to": save_to, "reason": "偏好"})
-        return ctx, provider
-
-    async def route(self, ctx):
-        with runtime.scope(self.pl.cfg):
-            await LibraryRouter().run(ctx)
-        return ctx
-
-    async def test_category_no_longer_overrides_the_preferred_directory(self):
-        ctx, provider = self.decided("默认")
+        provider._client = FakeAI({"decision": "save", "reason": "偏好"})
         with runtime.scope(self.pl.cfg):
             self.assertEqual(await provider.decide(ctx), Decision.SAVE)
-        self.assertEqual(self.pl.target_preview(ctx), "默认")  # 审批卡片与管理台显示 AI 选出的目录
-        await self.route(ctx)
-        self.assertEqual(ctx.save_dir_alias, "默认")
-        self.assertNotIn("relative_category", ctx.meta["library"])
-        self.assertTrue(any("AI 按偏好选择目录「默认」" in line for line in ctx.trail))
-
-    async def test_preferred_directory_matching_category_root_keeps_subfolder(self):
-        ctx, provider = self.decided("动漫")
+        self.assertEqual(self.pl.target_preview(ctx), "动漫/日本番剧")  # 审批卡片与管理台显示的去向
         with runtime.scope(self.pl.cfg):
-            await provider.decide(ctx)
-        await self.route(ctx)
+            await LibraryRouter().run(ctx)
         self.assertEqual((ctx.save_dir_alias, ctx.meta["library"]["relative_category"]), ("动漫", "日本番剧"))
-
-    async def test_manual_choice_beats_preferred_directory(self):
-        ctx, provider = self.decided("默认")
-        with runtime.scope(self.pl.cfg):
-            await provider.decide(ctx)
-        ctx.ns("library")["pinned"] = "电影"
-        await self.route(ctx)
-        self.assertEqual(ctx.save_dir_alias, "电影")
-
-    async def test_a_new_decision_drops_the_previous_preferred_directory(self):
-        ctx, provider = self.decided("默认")
-        with runtime.scope(self.pl.cfg):
-            await provider.decide(ctx)
-            provider._client = FakeAI({"decision": "ask", "save_to": None, "reason": "拿不准"})
-            await provider.decide(ctx)
-        self.assertNotIn("preferred", ctx.meta["library"])
 
 
 class TestFeedbackSamples(ServiceCase):
@@ -116,7 +85,7 @@ class TestFeedbackSamples(ServiceCase):
         await self.service.approve(approved.task_id, save_dir_alias="剧集")
         await self.service.reject(rejected.task_id)
         provider = LLMDecision()
-        provider._client = FakeAI({"decision": "ask", "save_to": None, "reason": "看记录"})
+        provider._client = FakeAI({"decision": "ask", "reason": "看记录"})
         ctx = message(msg_id="9")
         ctx.parsed = ParsedResource(**media(), share_code="abc123")
         ctx.source_rule = {"preferences": "只收国产剧", "approval_mode": "auto"}
@@ -124,7 +93,8 @@ class TestFeedbackSamples(ServiceCase):
             await provider.decide(ctx)
         payload = json.loads(provider._client.calls[0]["messages"][1]["content"])
         self.assertEqual([item["decision"] for item in payload["history"]], ["reject", "approve"])
-        self.assertEqual(payload["history"][1]["save_to"], "剧集")
+        self.assertNotIn("save_to", payload["history"][1])  # 目录不归 AI 管，批准时选的目录也不交给它
+        self.assertNotIn("allowed_dirs", payload)
 
 
     async def test_rejecting_episodes_already_in_the_library_is_not_a_sample(self):
@@ -150,9 +120,9 @@ class TestFeedbackSamples(ServiceCase):
                 decision = await provider.decide(ctx)
             return decision, ctx.trail[-1].split(" ", 1)[1]
 
-        self.assertEqual(await decide({"decision": "save", "save_to": "剧集", "reason": "国产剧"}, "auto"),
-                         (Decision.SAVE, "AI 按偏好判断：转存，存到「剧集」（国产剧）"))
-        self.assertEqual(await decide({"decision": "save", "save_to": None, "reason": "长" * 200}),  # 人工确认的来源
+        self.assertEqual(await decide({"decision": "save", "reason": "国产剧"}, "auto"),
+                         (Decision.SAVE, "AI 按偏好判断：转存（国产剧）"))
+        self.assertEqual(await decide({"decision": "save", "reason": "长" * 200}),  # 人工确认的来源
                          (Decision.ASK, f"AI 按偏好判断：转存（{'长' * 150}…）；这条本来就要等你确认，仍交给你确认"))
         self.assertEqual(await decide(APITimeoutError("slow")),
                          (Decision.ASK, "按偏好判断时 AI 没有给出结果（APITimeoutError），交给你确认"))

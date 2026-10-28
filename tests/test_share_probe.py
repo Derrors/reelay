@@ -261,7 +261,7 @@ class TestMultiSeasonAndShareProbe(ServiceCase):
 
     async def test_preferences_veto_withdraws_the_pinned_season(self):
         provider = LLMDecision()
-        provider._client = FakeAI({"decision": "skip", "save_to": None, "reason": "不要"})
+        provider._client = FakeAI({"decision": "skip", "reason": "不要"})
         ctx = self.probed([(2, 1)])
         ctx.source_rule["preferences"] = "只要 4K"
         self.assertEqual(await self.decide(ctx, provider), Decision.SKIP)

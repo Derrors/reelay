@@ -11,7 +11,6 @@ from typing import Any
 
 from .. import messages, subscriptions, works
 from ..contracts import ParsedResource, PipelineContext, TaskState
-from ..media import planned_pairs
 from ..validation import MEDIA_SCHEMA, validate_resource
 from .base import ConflictError, NotFoundError, ServiceBase
 
@@ -113,17 +112,9 @@ class TaskOpsMixin(ServiceBase):
             raise ConflictError("任务不是待审批状态")
         # 分享已失效、或消息里的集都已入库（重复）时忽略，不说明你不想要这部资源：不记为样本，
         # 以免影响偏好参考（AI 会当成你不想要这部剧）、通过率与来源质量建议
-        if (ctx.meta.get("share") or {}).get("status") != "unavailable" and not self._already_stored(ctx):
+        if (ctx.meta.get("share") or {}).get("status") != "unavailable" and \
+                not works.already_stored(self.store.stored_series(), ctx):
             self._record(ctx, "reject", {}, advice)
-
-    def _already_stored(self, ctx: PipelineContext) -> bool:
-        """消息里的集都已入库（与待审批里「都已入库」的建议同样按作品与季集核对）；电影等没有集数的不算。"""
-        p = ctx.parsed
-        pairs = set(planned_pairs(ctx)) if p and p.title else set()
-        if not pairs:
-            return False
-        stored, work = self.store.stored_series(), works.of(p, ctx.meta.get("tmdb"))
-        return all(ep in works.episodes(stored, work, season) for season, ep in pairs)
 
     def dismiss(self, ctx: PipelineContext) -> None:
         """失败或待人工的任务不再处理，转为已忽略（如分享已失效）。
@@ -173,7 +164,6 @@ class TaskOpsMixin(ServiceBase):
         self.pipeline.stamp_config(ctx)
         ctx.meta.pop("parse", None)
         ctx.meta.pop("preference", None)
-        ctx.meta.get("library", {}).pop("preferred", None)
         ctx.meta.pop("storage", None)  # 无远端写检查点，显式重新解析可重新选择 Provider。
         ctx.meta["parse_request"] = {"bypass_cache": True}  # 人工要求重新解析，不复用缓存结果
         ctx.state = TaskState.RECEIVED
