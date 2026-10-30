@@ -101,6 +101,21 @@ class TestSubscriptionDecision(ServiceCase):
                          ["订阅《剧》第 1 季：新集自动放行", "AI 按偏好判断：交给你确认（拿不准， 需要确认）",
                           "偏好判断没有放行，撤回订阅《剧》的自动放行"])
 
+    async def test_preference_ai_is_told_about_the_subscription(self):
+        """AI 知道这部剧已经订阅：不会再因为历史里忽略过单集而交给你确认；没订阅的不带这一项。"""
+        provider = LLMDecision()
+        provider._client = FakeAI({"decision": "save", "reason": "已订阅"})
+        ctx = tv_ctx()
+        ctx.source_rule["preferences"] = "只要 4K"
+        self.assertEqual(await self.decide(ctx, provider), Decision.SAVE)
+        request = provider._client.calls[0]["messages"]
+        self.assertEqual(json.loads(request[1]["content"])["subscribed"], {"title": "剧", "season": 1})
+        self.assertIn("subscribed", request[0]["content"])
+        other = tv_ctx(msg_id="2", tmdbid=999)  # 没订阅的剧
+        other.source_rule["preferences"] = "只要 4K"
+        await self.decide(other, provider)
+        self.assertNotIn("subscribed", json.loads(provider._client.calls[1]["messages"][1]["content"]))
+
     async def test_subscription_input_is_validated_and_duplicates_are_rejected(self):
         for bad in ({"title": "剧", "tmdbid": "100"}, {"title": "剧", "auto": "yes"}, {"title": " "}, {"season": 1}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
