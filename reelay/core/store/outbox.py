@@ -7,6 +7,12 @@ import time
 from ..contracts import PipelineContext
 from .base import SYSTEM_TASK, _dump_ctx, _locked
 
+MAX_ATTEMPTS = 8  # 一般投递最多尝试几次（退避到 5 分钟，约 7 分钟内放弃）
+# 告警与恢复通知多半在 Telegram 断开时产生，那时 Bot 也发不出去：不按次数放弃，24 小时内每分钟重试，恢复后补发
+URGENT_EVENTS = ("alert", "recovered")
+URGENT_RETRY_SEC = 60
+URGENT_WINDOW_SEC = 24 * 3600
+
 
 class OutboxRepository:
     """通知、事件与系统通知的投递记录。"""
@@ -33,13 +39,20 @@ class OutboxRepository:
     def finish_delivery(self, delivery_id: int, *, error: str | None = None,
                         retry_after: float | None = None, skipped: bool = False) -> None:
         with self._lock, self._conn:
-            row = self._conn.execute("SELECT attempts FROM outbox WHERE id=?", (delivery_id,)).fetchone()
+            row = self._conn.execute("SELECT attempts, kind, event, created_at FROM outbox WHERE id=?",
+                                     (delivery_id,)).fetchone()
             if not row:
                 return
             attempts = row["attempts"] + (0 if skipped else 1)
-            status = "skipped" if skipped else ("done" if error is None else ("failed" if attempts >= 8 else "pending"))
             now = time.time()
-            delay = retry_after if retry_after is not None else min(2 ** attempts, 300)
+            urgent = row["kind"] == "notice" and row["event"] in URGENT_EVENTS
+            if urgent:
+                give_up = now - row["created_at"] >= URGENT_WINDOW_SEC
+                backoff = min(2 ** attempts, URGENT_RETRY_SEC)
+            else:
+                give_up, backoff = attempts >= MAX_ATTEMPTS, min(2 ** attempts, 300)
+            status = "skipped" if skipped else ("done" if error is None else ("failed" if give_up else "pending"))
+            delay = retry_after if retry_after is not None else backoff
             self._conn.execute("UPDATE outbox SET status=?, attempts=?, error=?, next_attempt=?, lease_until=0, updated_at=? WHERE id=?",
                                (status, attempts, error, now + delay, now, delivery_id))
 

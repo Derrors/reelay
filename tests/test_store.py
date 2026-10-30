@@ -329,6 +329,50 @@ class TestHousekeeping(unittest.TestCase):
 
 
 
+class TestAlertsWaitForTelegram(PipelineCase):
+    """断线告警在 Telegram 断开时发不出：不按次数放弃，恢复后补发并写明发生时间，恢复通知排在它后面。"""
+
+    def rows(self):
+        return [dict(r) for r in self.store._conn.execute("SELECT id, event, status, attempts FROM outbox ORDER BY id")]
+
+    def test_alerts_keep_retrying_while_other_notices_give_up(self):
+        self.store.raise_alert("source", "连不上 Telegram", ["console"])
+        self.store.stage_notice("daily", "日报", ["other"])
+        alert, daily = [row["id"] for row in self.rows()]
+        for _ in range(20):  # 断了很久：一般通知 8 次就放弃，告警继续等
+            self.store.finish_delivery(alert, error="ConnectionError")
+            self.store.finish_delivery(daily, error="ConnectionError")
+        self.assertEqual([(r["status"], r["attempts"]) for r in self.rows()], [("pending", 20), ("failed", 20)])
+        next_attempt = self.store._conn.execute("SELECT next_attempt FROM outbox WHERE id=?", (alert,)).fetchone()[0]
+        self.assertLessEqual(next_attempt - time.time(), 61)  # 恢复后一分钟内补发
+        with self.store._conn:  # 超过 24 小时仍发不出才放弃
+            self.store._conn.execute("UPDATE outbox SET created_at=? WHERE id=?", (time.time() - 86401, alert))
+        self.store.finish_delivery(alert, error="ConnectionError")
+        self.assertEqual(self.rows()[0]["status"], "failed")
+
+    async def test_late_alert_is_marked_and_sent_before_the_recovery(self):
+        sent = []
+
+        async def sender(**kwargs):
+            sent.append(kwargs["text"])
+
+        pipeline = self.pipeline(registry=discover())
+        console = pipeline.reg.get_provider("notify", "console")
+        console.configure(sender=sender)
+        self.addCleanup(console.configure)
+        self.store.raise_alert("source", "连不上 Telegram", ["console"])
+        with self.store._conn:  # 断线时发出的告警，13 分钟后才连上
+            self.store._conn.execute("UPDATE outbox SET created_at=created_at-780")
+        self.store.clear_alert("source", "已恢复连接，断开了约 13 分钟", ["console"])
+        while await pipeline.dispatch_deliveries():
+            pass
+        self.assertEqual(len(sent), 2)
+        self.assertTrue(sent[0].startswith("⚠️ 连不上 Telegram\n（") and sent[0].endswith("发生，当时发不出，恢复后补发）"))
+        self.assertEqual(sent[1], "✅ 已恢复连接，断开了约 13 分钟")
+        self.store.raise_alert("source", "又断了", ["console"])  # 及时送达的告警不加说明
+        await pipeline.dispatch_deliveries()
+        self.assertEqual(sent[-1], "⚠️ 又断了")
+
 class TestWorkIdentity(unittest.TestCase):
     """内容级去重按作品区分：同名的不同作品（如翻拍剧）不会互相当成已入库。"""
 

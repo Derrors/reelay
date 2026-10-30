@@ -41,6 +41,7 @@ from .media import pairs_label, summarize_pairs
 from . import confidence, ignored, messages, runtime, works
 
 log = logging.getLogger("reelay.pipeline")
+LATE_ALERT_SEC = 120  # 告警晚于发生这么久才送达时，注明发生的时间
 
 
 class Pipeline:
@@ -260,6 +261,10 @@ class Pipeline:
                         self.store.finish_delivery(row["id"], skipped=True)
                         return
                     notice = json.loads(row["snapshot"])
+                    if row["event"] == "alert" and time.time() - row["created_at"] >= LATE_ALERT_SEC:
+                        # 断线期间发不出、恢复后补发的告警：写明发生的时间，不当成新的故障
+                        notice["text"] += (f"\n（{time.strftime('%m-%d %H:%M', time.localtime(row['created_at']))} "
+                                           "发生，当时发不出，恢复后补发）")
                     accepts = inspect.signature(obj.notice).parameters
                     extra = {"buttons": notice["buttons"]} if notice.get("buttons") and "buttons" in accepts else {}
                     if not notice.get("html"):
