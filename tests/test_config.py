@@ -13,7 +13,8 @@ from unittest.mock import patch
 import yaml
 
 from reelay.core import secret_store
-from reelay.core.config import ensure_config, load_config, normalize_config, render, to_file
+from reelay.core.config import (ensure_config, find_source, load_config, normalize_config, render, to_file,
+                                without_sources)
 from reelay.core.registry import Registry, discover
 
 
@@ -156,6 +157,27 @@ class TestSecretStore(unittest.TestCase):
             self.assertIsNone(secret_store.get("llm_api_key"))
         with secret_store.override(llm_api_key="k"):
             self.assertEqual(secret_store.get("llm_api_key"), "k")
+
+
+class TestSharedSourceCards(unittest.TestCase):
+    """一张来源卡片可以写多个来源，共用这张卡片的设置。"""
+
+    def test_cards_list_several_sources_and_each_source_appears_once(self):
+        base = {"save_dirs": {"默认": "1"}}
+        cfg = normalize_config({**base, "sources": [{"bot": ["@a", "@B"], "approval_mode": "auto"}, {"bot": ["@c"]}]})
+        self.assertEqual(cfg["sources"][1]["bot"], "@c")  # 只有一个时仍写成字符串
+        self.assertIs(find_source(cfg["sources"], "@b"), cfg["sources"][0])
+        self.assertIsNone(find_source(cfg["sources"], "@d"))
+        for bad, message in (([{"bot": ["@a"]}, {"bot": "@A"}], "重复"), ([{"bot": []}], "非空"),
+                             ([{"bot": ["@a", " "]}], "非空"), ([{"bot": ["@a", 1]}], "非空")):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, message):
+                normalize_config({**base, "sources": bad})
+
+    def test_removing_a_source_keeps_the_rest_of_its_card(self):
+        sources = [{"bot": ["@a", "@b", "@c"], "save_to": "默认"}, {"bot": "@d"}]
+        self.assertEqual(without_sources(sources, ["@B"]), [{"bot": ["@a", "@c"], "save_to": "默认"}, {"bot": "@d"}])
+        self.assertEqual(without_sources(sources, ["@a", "@c"]), [{"bot": "@b", "save_to": "默认"}, {"bot": "@d"}])
+        self.assertEqual(without_sources(sources, ["@d"]), sources[:1])
 
 
 if __name__ == "__main__":

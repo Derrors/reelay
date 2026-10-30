@@ -2,6 +2,7 @@ import { Download, Eraser, Loader2, Play, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { sourceApi, type IParseRulesPreview } from '@/api/sources';
+import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -29,7 +30,8 @@ function filled(rules: Rules): Rules | undefined {
 interface ParseRulesDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  bot: string;
+  /** 卡片上的来源；有多个时选从哪个来源取样例消息。 */
+  bots: string[];
   parser: string;
   rules: Obj;
   /** 写回来源设置（undefined 表示清除），仍需用户在页面底部保存。 */
@@ -38,7 +40,8 @@ interface ParseRulesDialogProps {
 
 /** 来源的识别规则：取样例消息（读取频道或手动粘贴）→ AI 起草或手写正则 → 逐条试跑 → 写回来源设置。
  *  打开时才挂载（见 SourcesTab），每次打开都从已保存的规则开始。 */
-export function ParseRulesDialog({ open, onOpenChange, bot, parser, rules: saved, onSave }: ParseRulesDialogProps) {
+export function ParseRulesDialog({ open, onOpenChange, bots, parser, rules: saved, onSave }: ParseRulesDialogProps) {
+  const [bot, setBot] = useState(bots[0] ?? '');
   const [rules, setRules] = useState<Rules>(
     () => Object.fromEntries(PARSE_RULE_FIELDS.map(f => [f, text(saved[f])])) as Rules);
   const [samples, setSamples] = useState<string[]>(['']);
@@ -86,19 +89,26 @@ export function ParseRulesDialog({ open, onOpenChange, bot, parser, rules: saved
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[88vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="space-y-1 px-5 pb-3 pr-12 pt-5 text-left">
-          <DialogTitle className="text-base">识别规则 · {bot.trim() || '未命名来源'}</DialogTitle>
+          <DialogTitle className="text-base">识别规则 · {bots.join('、') || '未命名来源'}</DialogTitle>
           <DialogDescription className="text-xs leading-5">
             按字段写正则，从这个来源的消息里取片名、季集等；没写或在某条消息上没匹配到的字段，沿用通用规则。{usage}
+            {bots.length > 1 ? '这张卡片上的来源共用这套规则，消息格式不一样时最好分开设置。' : ''}
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 pb-4">
           <section className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[13px] font-medium">样例消息</span>
+              <div className="flex flex-wrap items-center gap-2">
+              {bots.length > 1 ? (
+                <Select className="w-44" value={bot} onValueChange={setBot} aria-label="从哪个来源取样例"
+                  options={bots.map((b) => ({ value: b, label: b }))} />
+              ) : null}
               <Button size="sm" variant="outline" disabled={!!busy || !bot.trim()} onClick={() => void fetchMessages()}
                 title={bot.trim() ? '用监听账号读取这个来源最近的 10 条消息' : '先填写来源'}>
                 {busy === 'fetch' ? <Loader2 className="animate-spin" /> : <Download />}获取最近消息
               </Button>
+              </div>
             </div>
             {origin ? <p className="text-xs text-muted-foreground">{origin}</p> : null}
             <SampleList samples={samples} onChange={setSamples} max={MAX_SAMPLES} mono />

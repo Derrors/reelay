@@ -7,18 +7,17 @@ import { Notice } from '@/components/app/Notice';
 import { Panel } from '@/components/app/Panel';
 import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useAsync } from '@/hooks/useAsync';
 import { percent } from '@/lib/format';
 import { approvalLabels, PARSE_RULE_FIELDS, PARSE_RULE_LABELS, SLOT_LABELS } from '@/lib/status';
 import { cn } from '@/lib/utils';
 import { obj, prune, rows, strings, text, type Obj } from '@/lib/values';
-import { LinesField } from './fields';
+import { LinesField, ListInput } from './fields';
 import { ParseRulesDialog } from './ParseRulesDialog';
 import { ParseTestDialog } from './ParseTestDialog';
 import { SourceWizard } from './SourceWizard';
-import { APPROVAL_OPTIONS, NOTIFY_OPTIONS, notifyValue, providerHint, providerLabel, type Catalog } from './shared';
+import { APPROVAL_OPTIONS, botValue, NOTIFY_OPTIONS, notifyValue, providerHint, providerLabel, sourceBots, type Catalog } from './shared';
 
 /** 识别方式与放行方式只在来源上设置（defaults 里的值只是没写时的兜底）；网盘有多个可选时才出现在高级设置里。 */
 const MAIN_SLOTS = ['parser', 'decision'];
@@ -40,7 +39,8 @@ interface SourceCardProps {
 }
 
 function SourceCard({ index, source, defaults, aliases, catalog, open, insight, onToggle, onChange, onRemove }: SourceCardProps) {
-  const name = text(source.bot).trim();
+  const bots = sourceBots(source);
+  const name = bots.join('、');
   const filters = obj(source.filters);
   const mode = text(source.approval_mode || defaults.approval_mode);
   const notify = (source.bot_notify ?? defaults.bot_notify) !== false;
@@ -84,10 +84,10 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
         </Notice>
       ) : null}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <Field label="Bot 或频道">
-          <Input
-            id={`source-${index}`} className="bg-card" placeholder="@resource_bot"
-            value={text(source.bot)} onChange={e => onChange({ bot: e.target.value })}
+        <Field label="Bot 或频道" hint={bots.length > 1 ? `这 ${bots.length} 个来源共用这张卡片的设置。` : undefined}>
+          <ListInput
+            id={`source-${index}`} placeholder="@resource_bot；多个用逗号分开，共用这张卡片的设置"
+            value={bots} onChange={list => onChange({ bot: botValue(list) })}
           />
         </Field>
         <Field label="确认方式">
@@ -146,10 +146,10 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
           </Button>
         </div>
       </div>
-      {testing ? <ParseTestDialog open onOpenChange={setTesting} source={source} /> : null}
+      {testing ? <ParseTestDialog open onOpenChange={setTesting} source={source} bot={bots[0] ?? ''} /> : null}
       {rulesOpen ? (
         <ParseRulesDialog
-          open onOpenChange={setRulesOpen} bot={name} parser={parser} rules={parseRules}
+          open onOpenChange={setRulesOpen} bots={bots} parser={parser} rules={parseRules}
           onSave={rules => onChange({ parse_rules: rules })}
         />
       ) : null}
@@ -229,8 +229,13 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
   // 新来源直接写明识别方式与放行方式（取推荐值），卡片上看到的就是它实际用的
   const engines = { parser: text(defaults.parser) || 'llm', decision: text(defaults.decision) || 'subscription' };
   const addDraft = (draft: Obj) => {
+    // 接入向导起草的来源单独成一张卡片：已在别的卡片上时从那张卡片里拿掉，卡片空了才删
     const name = text(draft.bot).trim().toLowerCase();
-    const kept = sources.filter((s) => text(s.bot).trim().toLowerCase() !== name);
+    const kept = sources.flatMap((s) => {
+      const bots = sourceBots(s);
+      const rest = bots.filter((bot) => bot.toLowerCase() !== name);
+      return rest.length === bots.length ? [s] : rest.length ? [{ ...s, bot: botValue(rest) }] : [];
+    });
     update('sources', [...kept, { ...engines, ...draft }]);
   };
   const wizardDialog = <SourceWizard open={wizard} onOpenChange={setWizard} onAdd={addDraft} />;
@@ -276,7 +281,7 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-[13px] leading-6 text-muted-foreground">
-          共 <b className="font-semibold tabular-nums text-foreground">{sources.length}</b> 个来源。每个来源可以单独设置确认方式与保存位置，未设置的项沿用「基础」中的默认规则。
+          共 <b className="font-semibold tabular-nums text-foreground">{sources.reduce((n, s) => n + Math.max(sourceBots(s).length, 1), 0)}</b> 个来源。每张卡片可以单独设置确认方式与保存位置，一张卡片可以填多个来源、共用它的设置；未设置的项沿用「基础」中的默认规则。
         </p>
         <div className="flex shrink-0 gap-2 self-start sm:self-auto">
           <Button variant="outline" onClick={() => setWizard(true)} title="贴几条样例消息，AI 起草这个来源的规则并试跑">
@@ -295,7 +300,7 @@ export function SourcesTab({ config, catalog, update }: SourcesTabProps) {
           aliases={aliases}
           catalog={catalog}
           open={open.has(i)}
-          insight={insights[text(source.bot).trim().toLowerCase()]}
+          insight={insights[(sourceBots(source)[0] ?? '').toLowerCase()]}
           onToggle={() => toggle(i)}
           onChange={patch => update('sources', sources.map((s, n) => (n === i ? prune({ ...s, ...patch }) : s)))}
           onRemove={() => remove(i)}

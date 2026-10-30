@@ -8,6 +8,7 @@ from typing import Any
 
 
 from .. import ai, inbox, messages, release, subscriptions, tmdb
+from ..config import find_source, source_bots
 from ..contracts import ParsedResource, PipelineContext, TaskState
 from ..media import multi_season
 from .base import ServiceBase
@@ -161,11 +162,13 @@ class ReviewMixin(ServiceBase):
         cfg = self.get_config()
         rule = cfg["ai"]["suggest_auto"]
         window = max(30, rule["min_decisions"])
-        stats = self.store.decision_stats(window)
-        names = {item["bot"].lower(): item["bot"] for item in cfg["sources"]}
-        names.update({key: names.get(key, key) for key in stats if key})
+        # 一张卡片上的来源共用设置，也合起来统计（按卡片上的第一个来源归组）
+        cards = {bots[0].lower(): bots for item in cfg["sources"] if (bots := source_bots(item))}
+        stats = self.store.decision_stats(window, {bot.lower(): key for key, bots in cards.items() for bot in bots})
+        cards.update({key: [key] for key in stats if key and key not in cards})
         sources = []
-        for key, bot in sorted(names.items()):
+        for key, bots in sorted(cards.items()):
+            bot = bots[0]
             item = stats.get(key, {"decisions": 0, "approved": 0, "rejected": 0, "corrected": 0,
                                    "advised": 0, "followed": 0})
             mode = self.pipeline.rule_for(bot).get("approval_mode", "manual")
@@ -184,20 +187,20 @@ class ReviewMixin(ServiceBase):
                 reason = f"批准率 {approve_rate:.0%}，低于 {rule['approve_rate']:.0%}"
             else:
                 reason = f"修正识别占 {correct_rate:.0%}，高于 {rule['max_correct_rate']:.0%}"
-            sources.append({"source": bot, "approval_mode": mode, **item, "approve_rate": approve_rate,
+            sources.append({"source": bot, "bots": bots, "approval_mode": mode, **item, "approve_rate": approve_rate,
                             "correct_rate": correct_rate, "suggest_auto": suggest, "reason": reason})
         return {"window": window, "rule": rule, "sources": sources}
 
     async def enable_auto_approval(self, source: str) -> dict[str, Any]:
-        """采纳建议：把来源的确认方式改为 auto（没有来源规则时新增一条）。"""
+        """采纳建议：把来源所在卡片的确认方式改为 auto（卡片上的来源都生效；没有来源规则时新增一条）。"""
         if not isinstance(source, str) or not source.strip():
             raise ValueError("缺少来源")
 
         def change(cfg: dict) -> None:
-            for item in cfg["sources"]:
-                if item["bot"].lower() == source.strip().lower():
-                    item["approval_mode"] = "auto"
-                    return
-            cfg["sources"].append({"bot": source.strip(), "approval_mode": "auto"})
+            item = find_source(cfg["sources"], source)
+            if item is None:
+                cfg["sources"].append({"bot": source.strip(), "approval_mode": "auto"})
+            else:
+                item["approval_mode"] = "auto"
 
         return await self.update_config(change)

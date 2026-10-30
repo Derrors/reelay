@@ -38,7 +38,7 @@ plugins:
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `save_dirs` | — | 目录别名 → 115 目录 CID（十进制字符串）。必须至少有一个；`0` 表示根目录 |
-| `sources[].bot` | — | 要监听的 `@username` 或数字 ID，不区分大小写 |
+| `sources[].bot` | — | 要监听的 `@username` 或数字 ID，不区分大小写；也可以写成列表（如 `["@a", "@b"]`），列表里的来源共用这张卡片的设置。一个来源只能出现在一张卡片里 |
 | `sources[].*` | 同 `defaults` | 来源级覆盖：确认方式、保存目录、解析器、过滤规则、偏好等 |
 | `providers.source` | `telegram` | 消息源 Provider |
 | `providers.notify` | `[console]` | 通知渠道列表；`console` 在配置了控制 Bot 时发到 Telegram，否则写日志 |

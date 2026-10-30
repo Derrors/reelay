@@ -147,6 +147,36 @@ def merge_config(base: dict, override: dict) -> dict:
     return result
 
 
+MAX_SOURCE_BOTS = 50  # 一张来源卡片最多填几个来源
+
+
+def source_bots(source: dict) -> list[str]:
+    """来源卡片监听的 Bot 或频道。``bot`` 可以写一个，也可以写成列表：列表里的来源共用这张卡片的设置。"""
+    value = source.get("bot")
+    items = value if isinstance(value, list) else [value]
+    return [item.strip() for item in items if isinstance(item, str) and item.strip()]
+
+
+def find_source(sources: list[dict], name: str) -> dict | None:
+    """包含这个来源的卡片（不区分大小写）；没有时为 None。"""
+    key = (name or "").strip().lower()
+    return next((s for s in sources if key in {bot.lower() for bot in source_bots(s)}), None)
+
+
+def without_sources(sources: list[dict], names: list[str]) -> list[dict]:
+    """去掉这些来源：多来源的卡片里只去掉它们，卡片里一个都不剩时才删掉卡片。"""
+    drop = {name.strip().lower() for name in names}
+    out = []
+    for source in sources:
+        bots = source_bots(source)
+        kept = [bot for bot in bots if bot.lower() not in drop]
+        if len(kept) == len(bots):
+            out.append(source)
+        elif kept:
+            out.append({**source, "bot": kept[0] if len(kept) == 1 else kept})
+    return out
+
+
 def normalize_config(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("配置根节点必须是对象")
@@ -188,12 +218,20 @@ def normalize_config(data: Any) -> dict[str, Any]:
     bots = set()
     for i, source in enumerate(cfg["sources"]):
         label = f"sources[{i}]"
-        if not isinstance(source, dict) or type(source.get("bot")) is not str or not source["bot"].strip():
+        if not isinstance(source, dict):
+            raise ValueError(f"{label} 必须是对象")
+        value = source.get("bot")
+        if isinstance(value, list):
+            if not value or len(value) > MAX_SOURCE_BOTS or any(type(v) is not str or not v.strip() for v in value):
+                raise ValueError(f"{label}.bot 必须是 1 到 {MAX_SOURCE_BOTS} 个非空的来源")
+            if len(value) == 1:
+                source["bot"] = value[0]  # 只有一个时写成字符串，与以前的配置一致
+        elif type(value) is not str or not value.strip():
             raise ValueError(f"{label} 缺少 bot")
-        bot = source["bot"].lower()
-        if bot in bots:
-            raise ValueError(f"{label} bot 重复")
-        bots.add(bot)
+        for bot in source_bots(source):
+            if bot.lower() in bots:
+                raise ValueError(f"来源 {bot} 重复：一个来源只能出现在一张卡片里")
+            bots.add(bot.lower())
         _validate_rule(merge_config(cfg["defaults"], source), dirs, label)
         if "forward" in source:
             if not isinstance(source["forward"], dict):

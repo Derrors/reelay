@@ -19,7 +19,7 @@ import logging
 import time
 
 from .core import messages, paths
-from .core.config import ensure_config, load_config, normalize_config
+from .core.config import ensure_config, load_config, normalize_config, source_bots
 from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
 from .core.registry import discover
@@ -148,7 +148,7 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
         name = pipeline.cfg["providers"]["source"]
         source = pipeline.reg.get_provider("source", name)
         if hasattr(source, "configure"):
-            source.configure([item["bot"] for item in pipeline.cfg["sources"]])
+            source.configure([bot for item in pipeline.cfg["sources"] for bot in source_bots(item)])
         if hasattr(source, "bind_watermark"):
             source.bind_watermark(pipeline.store.source_watermark)
         listener = asyncio.create_task(source.listen(emit))
@@ -162,7 +162,7 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                     await listener
                     raise RuntimeError("消息源意外停止")
                 if hasattr(source, "configure"):
-                    source.configure([item["bot"] for item in pipeline.cfg["sources"]])
+                    source.configure([bot for item in pipeline.cfg["sources"] for bot in source_bots(item)])
                 pipeline.sources_ready = getattr(source, "backfill_done", True)
                 if getattr(source, "backfilled", 0) > backfilled:
                     count, backfilled = source.backfilled - backfilled, source.backfilled

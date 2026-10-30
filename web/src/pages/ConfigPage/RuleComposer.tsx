@@ -9,7 +9,8 @@ import { Select } from '@/components/app/Select';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { errorMessage } from '@/lib/utils';
-import { rows, text, type Obj } from '@/lib/values';
+import { rows, type Obj } from '@/lib/values';
+import { sourceBots } from './shared';
 
 interface RuleComposerProps {
   config: Obj;
@@ -20,7 +21,8 @@ interface RuleComposerProps {
 
 /** 一句话偏好 → 确定性规则：AI 起草，后端按正式配置校验并列出改动，用户确认后才写入。 */
 export function RuleComposer({ config, dirty, onApply }: RuleComposerProps) {
-  const sources = rows(config.sources).map((s) => text(s.bot).trim()).filter(Boolean);
+  // 范围按卡片：多来源的卡片共用规则，用第一个来源指代整张卡片
+  const sources = rows(config.sources).map(sourceBots).filter((bots) => bots.length);
   const [scope, setScope] = useState('defaults');
   const [request, setRequest] = useState('');
   const [result, setResult] = useState<ICompileResult | null>(null);
@@ -68,7 +70,7 @@ export function RuleComposer({ config, dirty, onApply }: RuleComposerProps) {
           <label className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 text-[13px] text-muted-foreground">作用于</span>
             <Select className="min-w-0 flex-1 sm:w-64 sm:flex-none" value={scope} onValueChange={setScope}
-              options={[{ value: 'defaults', label: '所有来源（默认规则）' }, ...sources.map((bot) => ({ value: bot, label: bot }))]} />
+              options={[{ value: 'defaults', label: '所有来源（默认规则）' }, ...sources.map((bots) => ({ value: bots[0], label: bots.join('、') }))]} />
           </label>
           <Button disabled={busy || !request.trim()} onClick={() => void compile()}>
             {busy && !result ? <Loader2 className="animate-spin" /> : <Wand2 />}生成规则

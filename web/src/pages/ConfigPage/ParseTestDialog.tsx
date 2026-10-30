@@ -150,17 +150,18 @@ interface ParseTestDialogProps {
   onOpenChange: (open: boolean) => void;
   /** 来源卡片上当前的设置（sources[] 的一项，可能还没保存）。 */
   source: Obj;
+  /** 卡片上的来源（有多个时取第一个）：只用来标注消息来源，识别按 source 的设置。 */
+  bot: string;
 }
 
 /** 来源卡片的「测试识别」：按这张卡片当前的设置（含未保存的修改）把一条消息完整识别一遍，不转存、不产生任务。
  *  打开时才挂载（见 SourcesTab），每次打开都是空白的。 */
-export function ParseTestDialog({ open, onOpenChange, source }: ParseTestDialogProps) {
+export function ParseTestDialog({ open, onOpenChange, source, bot }: ParseTestDialogProps) {
   const [text, setText] = useState(SAMPLE);
   const [urls, setUrls] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ITestParseResp | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
-  const bot = String(source.bot ?? '').trim();
 
   const run = async () => {
     if (!text.trim() || busy) return;

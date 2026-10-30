@@ -155,6 +155,22 @@ class TestAutoApprovalSuggestion(ServiceCase):
         saved = await self.service.enable_auto_approval("@new")
         self.assertIn({"bot": "@new", "approval_mode": "auto"}, saved["sources"])
 
+    async def test_sources_sharing_a_card_are_counted_and_switched_together(self):
+        """一张卡片上的多个来源共用设置：确认统计合起来算，「改为 AI 处理」改的是整张卡片。"""
+        self.configure({**self.CFG, "sources": [{"bot": ["@a", "@b"]}, {"bot": "@c"}],
+                        "ai": {"suggest_auto": {"min_decisions": 10}}})
+        self.record("@a", "approve", 6)
+        self.record("@b", "approve", 6)  # 各自只有 6 次，合起来 12 次
+        by_source = {item["source"]: item for item in self.service.insights()["sources"]}
+        self.assertEqual(set(by_source), {"@a", "@c"})
+        self.assertEqual((by_source["@a"]["bots"], by_source["@a"]["decisions"]), (["@a", "@b"], 12))
+        self.assertTrue(by_source["@a"]["suggest_auto"])
+        saved = await self.service.enable_auto_approval("@B")
+        self.assertEqual(saved["sources"][0], {"bot": ["@a", "@b"], "approval_mode": "auto"})
+        # 卡片上的每个来源收到的消息都按这张卡片的设置处理
+        self.assertEqual([self.pl.rule_for(bot)["approval_mode"] for bot in ("@A", "@b", "@c")],
+                         ["auto", "auto", "manual"])
+
     async def test_frequent_corrections_block_the_suggestion(self):
         cfg = {**self.CFG, "ai": {"suggest_auto": {"min_decisions": 10}}}
         self.configure(cfg)

@@ -36,7 +36,7 @@ from .contracts import (
 )
 from .registry import Registry
 from .store import Store, _load_ctx
-from .config import config_revision, load_config, merge_config, normalize_config
+from .config import config_revision, find_source, load_config, merge_config, normalize_config
 from .media import pairs_label, summarize_pairs
 from . import confidence, ignored, messages, runtime, works
 
@@ -826,10 +826,8 @@ class Pipeline:
     def rule_for(self, source: str) -> dict[str, Any]:
         merged = copy.deepcopy(self.cfg.get("defaults", {}))
         merged["forward"] = copy.deepcopy(self.cfg.get("forward", {}))
-        for rule in self.cfg.get("sources", []):
-            if rule.get("bot", "").lower() == source.lower():
-                return merge_config(merged, rule)
-        return merged
+        rule = find_source(self.cfg.get("sources", []), source)  # 一张卡片可以写多个来源，共用它的设置
+        return merge_config(merged, rule) if rule else merged
 
     # ------------------------------------------------------------------ #
     # 审批超时清扫：待审批久未处理的兜底

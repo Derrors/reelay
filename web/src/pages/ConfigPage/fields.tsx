@@ -1,6 +1,7 @@
 /** 设置页的表单控件；通用的 Field、Notice 在 components/app。 */
 import { useState, type ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
@@ -66,6 +67,32 @@ export function RadioCards({ value, options, onChange, label }: {
 }
 
 const cleanLines = (raw: string) => raw.split('\n').map(s => s.trim()).filter(Boolean);
+const cleanItems = (raw: string) => raw.split(/[\s,，、;；]+/).filter(Boolean);
+
+/** 一行里填多个值（逗号、空格或顿号分隔），如一张卡片上的多个来源：输入时保留分隔符，写回时拆成列表。 */
+export function ListInput({ value, onChange, placeholder, id }: {
+  value: string[]; onChange: (value: string[]) => void; placeholder?: string; id?: string;
+}) {
+  const joined = value.join(', ');
+  const [draft, setDraft] = useState(joined);
+  const [synced, setSynced] = useState(joined);
+  if (joined !== synced) {
+    // 外部改动（如放弃修改）时同步草稿
+    setSynced(joined);
+    setDraft(joined);
+  }
+  return (
+    <Input
+      id={id} className="bg-card" value={draft} placeholder={placeholder}
+      onChange={e => {
+        const next = cleanItems(e.target.value);
+        setDraft(e.target.value);
+        setSynced(next.join(', '));
+        onChange(next);
+      }}
+    />
+  );
+}
 
 /** 每行一个值的文本框：输入时保留空行，写回配置时去掉空行（后端不接受空字符串）。 */
 export function LinesField({ value, onChange, placeholder, ariaLabel }: {

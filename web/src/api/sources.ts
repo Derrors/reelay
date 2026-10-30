@@ -34,6 +34,8 @@ export interface ISourceInsight {
   approve_rate: number | null;
   correct_rate: number | null;
   suggest_auto: boolean;
+  /** 同一张卡片上的来源（合起来统计，source 是其中第一个）。 */
+  bots?: string[];
   reason: string;
 }
 

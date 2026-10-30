@@ -15,6 +15,12 @@ export const NOTIFY_OPTIONS = [{ value: 'on', label: '开' }, { value: 'off', la
 export const notifyValue = (v: unknown) => (v === undefined || v === null ? '' : v ? 'on' : 'off');
 
 export const SLOT_ORDER = ['source', 'parser', 'decision', 'storage'];
+
+/** 来源卡片上的来源：bot 可以是一个，也可以是多个（共用这张卡片的设置）。 */
+export const sourceBots = (source: Obj): string[] =>
+  (Array.isArray(source.bot) ? source.bot : [source.bot]).map(v => text(v).trim()).filter(Boolean);
+/** 写回卡片：一个时写成字符串（与以前的配置一致），多个时写成列表。 */
+export const botValue = (bots: string[]): string | string[] => (bots.length === 1 ? bots[0] : bots.length ? bots : '');
 /** 只在来源卡片上设置的能力；defaults 里的值只是来源没写时的兜底。 */
 export const PER_SOURCE_SLOTS = ['parser', 'decision'];
 

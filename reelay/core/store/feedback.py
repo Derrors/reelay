@@ -91,14 +91,15 @@ class FeedbackRepository:
             f"SELECT * FROM feedback WHERE kind IN ({','.join('?' * len(kinds))}) ORDER BY id", kinds)]
 
     @_locked
-    def decision_stats(self, window: int) -> dict[str, dict[str, Any]]:
+    def decision_stats(self, window: int, groups: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
         """按来源统计最近 window 次人工批准 / 忽略（同一任务只算最新一次），以及其中被修正过识别结果的任务数
-        与「按建议处理」的次数。"""
+        与「按建议处理」的次数。groups 把来源（小写）归到一组（如同一张来源卡片），按组统计。"""
         latest: dict[str, dict[str, sqlite3.Row]] = {}
         for row in self._conn.execute(
                 "SELECT id, task_id, source, kind, advice FROM feedback WHERE kind IN ('approve','reject') "
                 "ORDER BY id DESC LIMIT 20000"):
             source = (row["source"] or "").lower()
+            source = (groups or {}).get(source, source)
             tasks = latest.setdefault(source, {})
             if row["task_id"] not in tasks and len(tasks) < window:
                 tasks[row["task_id"]] = row

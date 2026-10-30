@@ -10,7 +10,7 @@ from typing import Any
 
 
 from .. import ai, library
-from ..config import config_revision, merge_config, normalize_config
+from ..config import config_revision, find_source, merge_config, normalize_config, source_bots, without_sources
 from ..contracts import PipelineContext
 from .base import ConflictError, ServiceBase
 
@@ -29,12 +29,11 @@ class SourceMixin(ServiceBase):
     # ------------------------------------------------------------------ #
     def draft_source_rule(self, draft: Any) -> dict[str, Any]:
         """来源卡片上还没保存的设置 → 与真实管线一样合并默认规则后的来源规则；按正式配置校验。"""
-        if not isinstance(draft, dict) or type(draft.get("bot")) is not str or not draft["bot"].strip():
+        if not isinstance(draft, dict) or not source_bots(draft):
             raise ValueError("请先填写来源（Bot 或频道的用户名）")
         cfg = self.get_config()
-        bot = draft["bot"].strip()
         candidate = copy.deepcopy(cfg)
-        candidate["sources"] = [s for s in candidate["sources"] if s["bot"].lower() != bot.lower()] + [draft]
+        candidate["sources"] = without_sources(candidate["sources"], source_bots(draft)) + [draft]
         self.pipeline.reg.validate_config(normalize_config(candidate))
         return merge_config({**copy.deepcopy(cfg["defaults"]), "forward": copy.deepcopy(cfg["forward"])}, draft)
 
@@ -121,7 +120,7 @@ class SourceMixin(ServiceBase):
             except ai.AIError as exc:
                 raise ConflictError(f"AI 起草失败（{exc.category}），请稍后重试") from None
         candidate = copy.deepcopy(cfg)
-        candidate["sources"] = [s for s in candidate["sources"] if s["bot"].lower() != bot.lower()] + [result["draft"]]
+        candidate["sources"] = without_sources(candidate["sources"], [bot]) + [result["draft"]]
         candidate = normalize_config(candidate)
         self.pipeline.reg.validate_config(candidate)
         rule = merge_config({**copy.deepcopy(cfg["defaults"]), "forward": copy.deepcopy(cfg["forward"])},
@@ -147,7 +146,7 @@ class SourceMixin(ServiceBase):
             if reason:
                 blocked.append({"preview": (ai.scrub(past.raw.text).splitlines() or [""])[0][:80], "reason": reason})
         return {**result, "results": results, "approved_checked": checked, "blocked_approved": blocked,
-                "exists": any(s["bot"].lower() == bot.lower() for s in cfg["sources"])}
+                "exists": find_source(cfg["sources"], bot) is not None}
 
     # ------------------------------------------------------------------ #
     # 来源的识别规则（core/parse_rules.py）：取样例消息、AI 起草、试跑
@@ -320,18 +319,21 @@ class SourceMixin(ServiceBase):
                 raise ConflictError(f"AI 评估失败（{exc.category}），请稍后重试") from None
         candidate, changes = copy.deepcopy(cfg), []
         for item in items:
-            texts = approved.get(item["source"].lower(), [])
+            # 多来源的卡片共用屏蔽词：卡片上任一来源批准过的消息里出现的词都不加
+            entry = find_source(candidate["sources"], item["source"])
+            bots = source_bots(entry) if entry else [item["source"]]
+            texts = [t for bot in bots for t in approved.get(bot.lower(), [])]
             item["dropped_keywords"] = [w for w in item["add_block_keywords"] if any(w in t for t in texts)]
-            current = self.pipeline.rule_for(item["source"]).get("filters", {}).get("block_keywords", [])
+            current = ((entry or {}).get("filters") or {}).get("block_keywords") \
+                or self.pipeline.rule_for(item["source"]).get("filters", {}).get("block_keywords", [])
             keep = [w for w in item["add_block_keywords"] if w not in item["dropped_keywords"] and w not in current]
             if not keep:
                 continue
-            entry = next((s for s in candidate["sources"] if s["bot"].lower() == item["source"].lower()), None)
             if entry is None:
                 entry = {"bot": item["source"]}
                 candidate["sources"].append(entry)
             entry.setdefault("filters", {})["block_keywords"] = [*current, *keep]
-            changes += [{"section": f"来源 {item['source']}", "kind": "add", "text": f"屏蔽关键词：{word}"}
+            changes += [{"section": f"来源 {'、'.join(bots)}", "kind": "add", "text": f"屏蔽关键词：{word}"}
                         for word in keep]
         candidate = normalize_config(candidate)
         self.pipeline.reg.validate_config(candidate)

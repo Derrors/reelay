@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 from . import ai, release
-from .config import config_revision, normalize_config
+from .config import config_revision, find_source, normalize_config
 from .rules import CONDITION_FIELDS, GENRES, MIN_RESOLUTIONS, csv_set
 
 _NULLABLE_STR = {"type": ["string", "null"]}
@@ -102,10 +102,10 @@ def _scope_filters(cfg: dict, scope: str) -> tuple[dict | None, dict]:
     defaults = {**base, **copy.deepcopy(cfg["defaults"].get("filters") or {})}
     if scope == "defaults":
         return None, defaults
-    for item in cfg["sources"]:
-        if item["bot"].lower() == scope.lower():
-            return item, {**defaults, **copy.deepcopy(item.get("filters") or {})}
-    raise ValueError(f"来源不存在：{scope}")
+    item = find_source(cfg["sources"], scope)  # 多来源的卡片：改的是整张卡片，卡片上的来源都生效
+    if item is None:
+        raise ValueError(f"来源不存在：{scope}")
+    return item, {**defaults, **copy.deepcopy(item.get("filters") or {})}
 
 
 def apply(cfg: dict, scope: str, proposal: dict) -> dict:

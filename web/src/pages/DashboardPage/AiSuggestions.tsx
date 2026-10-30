@@ -66,7 +66,7 @@ export function AiSuggestions() {
         <div className="space-y-3">
           {state.auto.map((s) => (
             <div key={s.source} className="rounded-lg border border-success/25 bg-success/5 p-3">
-              <p className="flex items-center gap-1.5 text-[13px] font-medium"><TrendingUp className="size-3.5 text-success" />{s.source}</p>
+              <p className="flex items-center gap-1.5 text-[13px] font-medium"><TrendingUp className="size-3.5 text-success" />{(s.bots ?? [s.source]).join('、')}</p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">{s.reason}。拿不准的资源仍会交给你。</p>
               <Button size="sm" variant="outline" className="mt-2 bg-card" disabled={busy} onClick={() => void enableAuto(s.source)}>
                 改为 AI 处理

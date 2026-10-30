@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from .. import ai, ignored, messages, subscriptions, tmdb, works
+from ..config import source_bots
 from ..contracts import PipelineContext, TaskState
 from ..media import format_episodes
 from ..rules import tv_category
@@ -45,7 +46,7 @@ class FollowMixin(ServiceBase):
                           "category": self._tv_category(item, sorted(titles))})
         # 放行方式按来源设置，defaults 只是兜底，只报告实际在监听的来源
         deciders = self.pipeline.reg.providers.get("decision", {})
-        inactive = [s["bot"] for s in cfg["sources"]
+        inactive = ["、".join(source_bots(s)) for s in cfg["sources"]
                     if not getattr(deciders.get({**cfg["defaults"], **s}.get("decision")), "releases_subscriptions", False)]
         return {"items": items, "suggestions": self.subscription_suggestions(subs), "inactive": inactive}
 
