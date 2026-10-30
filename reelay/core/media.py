@@ -11,6 +11,12 @@ def is_video(name: str) -> bool:
     return any((name or '').lower().endswith(ext) for ext in VIDEO_EXT)
 
 
+def size_text(size: int) -> str:
+    """字节数 → 「2.6 GB」「650 MB」。"""
+    gb = size / 1024 ** 3
+    return f"{gb:.1f} GB" if gb >= 1 else f"{size / 1024 ** 2:.0f} MB"
+
+
 def strip_ext(name: str) -> str:
     """去掉文件扩展名：「繁花.S01E01.mkv」→「繁花.S01E01」。"""
     return _EXT_RE.sub('', name or '')

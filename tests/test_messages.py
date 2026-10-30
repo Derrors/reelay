@@ -117,6 +117,22 @@ class TestTemplates(unittest.TestCase):
         self.assertIn("🖥 分辨率：1080p", messages.saved_message(ctx, "/测试"))
         self.assertIn("🖥 分辨率：2160p", messages.approval_card(tv(resolution="4K")))
 
+    def test_source_and_size_fall_back_to_files(self):
+        """消息没写片源与大小：入库通知按实际转存的文件，待审批卡片按分享根目录里这次要转存的视频。"""
+        ctx = tv(resolution=None, size=None, episodes=[7, 8])
+        ctx.meta["share"] = {"status": "available", "resolution": "1080p", "release": {"source": "web-dl"},
+                             "root": {"videos": 2, "size": 5 * 1024 ** 3}}
+        card = messages.approval_card(ctx)
+        self.assertIn("🖥 分辨率：1080p\n💿 片源：WEB-DL\n📦 大小：5.0 GB\n", card)
+        ctx.meta["share"]["root"]["videos"] = 12  # 分享里还有别的集：总大小不是这次转存的
+        self.assertIn("📦 大小：未标注", messages.approval_card(ctx))
+        ctx.meta["storage"] = {"landed": [{"id": "1", "name": "Show.S01E07.BluRay.mkv", "size": 3 * 1024 ** 3},
+                                          {"id": "2", "name": "Show.S01E08.BluRay.mkv", "size": 3 * 1024 ** 3}]}
+        saved = messages.saved_message(ctx, "/测试")
+        self.assertIn("💿 片源：蓝光", saved)  # 已转存文件的文件名优先于分享根目录
+        self.assertIn("📦 大小：6.0 GB", saved)
+        self.assertIn("📦 大小：2.53 GB", messages.saved_message(tv(), "/测试"))  # 消息写了的照旧
+
     def test_subscribe_button_only_for_matched_single_season_shows(self):
         ctx = tv(raw_fields={"tmdbid": 7})
         ctx.meta["tmdb"] = {"matched": True, "tmdbid": 7, "kind": "tv"}

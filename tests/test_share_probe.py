@@ -202,16 +202,32 @@ class TestShareProbe(PipelineCase):
 
 
 class TestShareCheck(unittest.TestCase):
-    def test_one_request_returns_status_and_root_file_names(self):
+    def test_one_request_returns_status_and_root_files(self):
         from reelay.providers.storage import share_check
         snaps = []
         client = types.SimpleNamespace(share_snap=lambda payload: snaps.append(payload) or {
             "state": True, "data": {"shareinfo": {"forbid_reason": ""},
-                                     "list": [{"n": "Movie.2026.2160p.WEB-DL.mkv"}, {"n": "Movie.2026.nfo"}, {}]}})
-        self.assertEqual(share_check(client, "abc", None), (None, ["Movie.2026.2160p.WEB-DL.mkv", "Movie.2026.nfo"]))
+                                     "list": [{"n": "Movie.2026.2160p.WEB-DL.mkv", "s": 5, "vdi": 5}, {"n": "Movie.2026.nfo"}, {}]}})
+        self.assertEqual(share_check(client, "abc", None),
+                         (None, [{"name": "Movie.2026.2160p.WEB-DL.mkv", "size": 5, "vdi": 5},
+                                 {"name": "Movie.2026.nfo", "size": None, "vdi": None}], True))
         self.assertEqual(len(snaps), 1)
         gone = types.SimpleNamespace(share_snap=lambda payload: {"state": True, "data": {"shareinfo": {"forbid_reason": "已取消"}}})
-        self.assertEqual(share_check(gone, "abc", None), ("已取消", []))
+        self.assertEqual(share_check(gone, "abc", None), ("已取消", [], False))
+
+    def test_root_videos_fill_resolution_source_and_size(self):
+        """文件名没写分辨率时用 115 识别的清晰度（vdi 5 = 2160p、4 = 1080p，别的值不认）；片源按文件名。"""
+        from reelay.providers.storage import share_root_facts
+        plain = [{"name": f"在你灿烂的季节(2026) - S01E0{i} - 第 {i} 集.mkv", "size": 2 * 1024 ** 3, "vdi": 4}
+                 for i in (7, 8)]
+        self.assertEqual(share_root_facts([*plain, {"name": "封面.jpg", "size": 1, "vdi": None}], True),
+                         {"resolution": "1080p", "root": {"videos": 2, "size": 4 * 1024 ** 3}})
+        named = [{"name": "Show.S01E01.2160p.WEB-DL.H265.mkv", "size": 1, "vdi": 4}]
+        self.assertEqual(share_root_facts(named, False),  # 根目录没列全：不记总大小
+                         {"resolution": "2160p", "release": {"source": "web-dl", "codec": "h265"}})
+        self.assertEqual(share_root_facts([{"name": "a.mkv", "size": 1, "vdi": 2}], True),
+                         {"root": {"videos": 1, "size": 1}})
+        self.assertEqual(share_root_facts([{"name": "第一季", "size": None, "vdi": None}], True), {})
 
 
 class TestMultiSeasonAndShareProbe(ServiceCase):

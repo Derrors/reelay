@@ -18,22 +18,17 @@ import time
 
 from ...core import runtime
 from ...core.contracts import PipelineContext, StorageBusy, TaskState
-from ...core.media import format_episodes, pairs_label
+from ...core.media import format_episodes, pairs_label, size_text
 from ...core.registry import register
 
 log = logging.getLogger("reelay.plugin.share_probe")
 
 PROBE_INTERVAL = 2.0
 # 选集规则变化时加一，启动时重读按旧规则得出的结果（2：跨多季的合集按季转存，不再转人工；
-# 3：所有分享都查询是否过期）
-PROBE_VERSION = 3
+# 3：所有分享都查询是否过期；4：记下根目录视频的大小、115 识别的清晰度与文件名里的片源）
+PROBE_VERSION = 4
 # 分享状态会随时间变化（过期）：待审批条目超过这么久没查过就在启动时重查
 CHECK_TTL = 12 * 3600
-
-
-def size_text(size: int) -> str:
-    gb = size / 1024 ** 3
-    return f"{gb:.1f} GB" if gb >= 1 else f"{size / 1024 ** 2:.0f} MB"
 
 
 @register(kind="hook", stage="after_parse", order=60)

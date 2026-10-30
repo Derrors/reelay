@@ -19,7 +19,7 @@ import time
 from typing import Any
 from urllib.error import HTTPError
 
-from ..core import ai, assist, runtime
+from ..core import ai, assist, release, runtime
 from ..core.auth115 import AUTH_ERRNOS, OPEN_AUTH_CODES, get_store, is_auth_error
 from ..core.contracts import (AlreadyStored, NeedsManual, PipelineContext, ShareUnavailable, StorageBusy,
                               TransferRejected, TransferUncertain)
@@ -236,26 +236,57 @@ def share_problem(client, share_code: str, receive_code: str | None) -> str | No
     return share_check(client, share_code, receive_code)[0]
 
 
-def share_check(client, share_code: str, receive_code: str | None) -> tuple[str | None, list[str]]:
-    """（不可用的原因或 None, 分享根目录的文件名）。同一次请求顺带列出根目录前 20 项，不多调 115。"""
+SHARE_ROOT_LIMIT = 20  # 查询分享状态时顺带列出的根目录项数
+# 115 识别的视频清晰度（分享列表的 vdi）：只认核对过的两档（对照文件名里写明 2160p、1080p 的分享）
+VDI_RESOLUTION = {5: '2160p', 4: '1080p'}
+
+
+def share_check(client, share_code: str, receive_code: str | None) -> tuple[str | None, list[dict], bool]:
+    """（不可用的原因或 None, 分享根目录的条目, 根目录是否列全）。同一次请求顺带列出根目录前 20 项，不多调 115。
+
+    条目是 ``{name, size, vdi}``：size 是文件大小，vdi 是 115 识别的视频清晰度（见 VDI_RESOLUTION），没有时为 None。
+    """
     try:
-        resp = client.share_snap({'share_code': share_code, 'receive_code': receive_code or '', 'cid': 0, 'limit': 20})
+        resp = client.share_snap({'share_code': share_code, 'receive_code': receive_code or '', 'cid': 0,
+                                  'limit': SHARE_ROOT_LIMIT})
     except Exception as exc:
         reason = business_error(exc)
         if reason is None:
             raise
-        return reason, []
+        return reason, [], False
     if not resp.get('state'):
-        return str(resp.get('error') or resp.get('msg') or '分享无法访问')[:100], []
+        return str(resp.get('error') or resp.get('msg') or '分享无法访问')[:100], [], False
     data = resp.get('data') or {}
     info = data.get('shareinfo') or {}
     if info.get('forbid_reason'):
-        return str(info['forbid_reason'])[:100], []
+        return str(info['forbid_reason'])[:100], [], False
     expire = str(info.get('expire_time') or '')
     if expire.isdigit() and 0 < int(expire) < time.time():
-        return '链接已过期', []
-    names = [str(item.get('n') or item.get('name') or '') for item in data.get('list') or [] if isinstance(item, dict)]
-    return None, [name for name in names if name]
+        return '链接已过期', [], False
+    listed = [item for item in data.get('list') or [] if isinstance(item, dict)]
+    entries = [{'name': str(item.get('n') or item.get('name') or ''),
+                'size': item.get('s') if type(item.get('s')) is int else None,
+                'vdi': item.get('vdi') if type(item.get('vdi')) is int else None} for item in listed]
+    return None, [entry for entry in entries if entry['name']], len(listed) < SHARE_ROOT_LIMIT
+
+
+def share_root_facts(entries: list[dict], complete: bool) -> dict[str, Any]:
+    """消息没写版本信息时卡片按分享根目录里的视频补：分辨率（文件名，没写时用 115 识别的清晰度）、
+    片源等（文件名），以及根目录列全时这些视频的个数与总大小（与这次要转存的对得上时卡片才用）。"""
+    videos = [entry for entry in entries if is_video(entry['name'])]
+    if not videos:
+        return {}
+    out: dict[str, Any] = {}
+    resolution = next(filter(None, (resolution_label(v['name']) for v in videos)), None) or next(
+        filter(None, (VDI_RESOLUTION.get(v['vdi']) for v in videos)), None)
+    if resolution:
+        out['resolution'] = resolution
+    info = {key: value for key, value in release.from_text(videos[0]['name']).items() if value}
+    if info:
+        out['release'] = info
+    if complete and all(v['size'] is not None for v in videos):
+        out['root'] = {'videos': len(videos), 'size': sum(v['size'] for v in videos)}
+    return out
 
 
 def _file_record(item: dict) -> dict:
@@ -432,12 +463,11 @@ class P115Storage(ShareStorage):
         """只读查询分享：是否过期、取消或违规；describe 时再列出分享，按文件名得到季、集与大小（见 describe_share）。"""
         from p115client import P115ShareFileSystem
         client = self._cookie_client()
-        problem, names = share_check(client, parsed.share_code, parsed.receive_code)
+        problem, entries, complete = share_check(client, parsed.share_code, parsed.receive_code)
         if problem:
             return {'status': 'unavailable', 'note': f'分享无法访问：{problem}'}
-        # 消息没写分辨率时，卡片按分享根目录里视频的文件名补（同一次请求取到，不多调 115）
-        resolution = next(filter(None, (resolution_label(n) for n in names if is_video(n))), None)
-        extra = {'resolution': resolution} if resolution else {}
+        # 消息没写分辨率、片源、大小时，卡片按分享根目录里的视频补（同一次请求取到，不多调 115）
+        extra = share_root_facts(entries, complete)
         if not describe:
             return {'status': 'available', **extra}
         return {**describe_share(P115ShareFileSystem(client, parsed.share_code, parsed.receive_code), parsed), **extra}

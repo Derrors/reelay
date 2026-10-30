@@ -16,7 +16,7 @@ from typing import Any
 from . import release
 from .contracts import PipelineContext
 from .rules import COUNTRIES, GENRES
-from .media import format_episodes, pairs_label, planned_pairs, resolution_label
+from .media import format_episodes, is_video, pairs_label, planned_pairs, resolution_label, size_text
 
 # 识别不可靠的原因 → 提示（见 core/confidence.py）
 _CAPS = {
@@ -76,15 +76,46 @@ def _field(icon: str, label: str, value: str | None) -> list[str]:
     return [f"{icon} {label}：{value}"] if value else []
 
 
+def _file_names(ctx: PipelineContext) -> list[str]:
+    """已转存（或整理计划里）的视频文件名。"""
+    items = [*((ctx.meta.get("organize") or {}).get("plan") or []), *((ctx.meta.get("storage") or {}).get("landed") or [])]
+    return [name for item in items if is_video(name := item.get("src_name") or item.get("name") or "")]
+
+
 def _resolution(ctx: PipelineContext) -> str | None:
-    """识别结果的分辨率；消息里没写时按分享里（或已转存）视频的文件名补。"""
+    """识别结果的分辨率；消息里没写时按分享里（或已转存）视频的文件名补，文件名没写时用 115 识别的清晰度。"""
     p = ctx.parsed
     if p and p.resolution:
         return resolution_label(p.resolution) or p.resolution
-    names = [*((ctx.meta.get("organize") or {}).get("plan") or []), *((ctx.meta.get("storage") or {}).get("landed") or [])]
     found = (ctx.meta.get("share") or {}).get("resolution") or next(
-        filter(None, (resolution_label(item.get("src_name") or item.get("name")) for item in names)), None)
+        filter(None, (resolution_label(name) for name in _file_names(ctx))), None)
     return found or resolution_label(ctx.raw.text)
+
+
+def _release(ctx: PipelineContext) -> dict:
+    """版本信息（片源、编码、HDR、字幕）：识别结果为主，消息没写的项按已转存或分享里视频的文件名补。"""
+    p = ctx.parsed
+    names = _file_names(ctx)
+    info = release.fill(p.release if p else None, release.from_text(names[0]) if names else {})
+    return release.fill(info, (ctx.meta.get("share") or {}).get("release") or {})
+
+
+def size_label(ctx: PipelineContext) -> str | None:
+    """大小：消息里写的；没写时按实际转存的文件、读分享列出的视频，或分享根目录里正好是这次要转存的
+    那些视频（个数与消息里的集数对得上，电影为 1 个）算。"""
+    p = ctx.parsed
+    if p and p.size:
+        return p.size
+    sizes = [item.get("size") for item in (ctx.meta.get("storage") or {}).get("landed") or []]
+    if sizes and all(type(size) is int for size in sizes):
+        return size_text(sum(sizes))
+    share = ctx.meta.get("share") or {}
+    if share.get("size_text"):
+        return share["size_text"]
+    root = share.get("root") or {}
+    if root and p and root["videos"] == (len(set(planned_pairs(ctx))) or 1):
+        return size_text(root["size"])
+    return None
 
 
 def _facts(ctx: PipelineContext) -> list[str]:
@@ -95,7 +126,7 @@ def _facts(ctx: PipelineContext) -> list[str]:
     rating = fields.get("rating")
     genres = [re.sub(r"（.*?）", "", GENRES[g]) for g in (p.genre_ids if p else []) if g in GENRES][:3]
     countries = [COUNTRIES.get(c, c) for c in dict.fromkeys(p.origin_country if p else [])][:3]
-    info = (p.release if p else None) or {}
+    info = _release(ctx)
     label = release.LABELS.get
     resolution = _resolution(ctx)
     video = [*([resolution] if resolution else []), *(label(x, x) for x in info.get("hdr") or [])]
@@ -115,7 +146,7 @@ def _facts(ctx: PipelineContext) -> list[str]:
     version = [
         *_field("🖥", "分辨率", join(video) or unknown),
         *_field("💿", "片源", join(source) or unknown),
-        *_field("📦", "大小", _size(ctx) or unknown),
+        *_field("📦", "大小", esc(size_label(ctx)) if size_label(ctx) else unknown),
         *_field("💬", "字幕", join(subtitles)),
     ]
     return [*work, *([""] if work and version else []), *version]
@@ -152,12 +183,6 @@ def _episodes(ctx: PipelineContext) -> str | None:
     if len(seasons) > 1:
         return pairs_label(pairs)
     return f"S{seasons.pop():02d} {format_episodes([ep for _, ep in pairs], limit=4)}"
-
-
-def _size(ctx: PipelineContext) -> str | None:
-    p = ctx.parsed
-    share = ctx.meta.get("share") or {}
-    return esc(p.size) if p and p.size else (esc(share["size_text"]) if share.get("size_text") else None)
 
 
 def approval_target(ctx: PipelineContext) -> str:

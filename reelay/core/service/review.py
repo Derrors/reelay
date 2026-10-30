@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 
-from .. import ai, inbox, release, subscriptions, tmdb
+from .. import ai, inbox, messages, release, subscriptions, tmdb
 from ..contracts import ParsedResource, PipelineContext, TaskState
 from ..media import multi_season
 from .base import ServiceBase
@@ -42,7 +42,7 @@ class ReviewMixin(ServiceBase):
                 "season": share.get("season") if from_share else p.season,
                 "episodes": share["episodes"] if from_share else p.episodes,
                 "episode_pairs": multi_season(pairs),
-                "resolution": p.resolution, "size": p.size or share.get("size_text"), "reason": p.reason,
+                "resolution": p.resolution, "size": messages.size_label(ctx), "reason": p.reason,
                 "share": {"status": share.get("status"), "note": share.get("note"), "videos": share.get("videos"),
                           "from_share": from_share} if share else None,
                 "confidence": p.confidence,
