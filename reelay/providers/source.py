@@ -258,7 +258,8 @@ def _entity_name(entity: Any) -> str:
 
 
 def _extract_urls(msg: Any) -> list[str]:
-    """从消息 entity 里取超链接真实 URL（"点击跳转"这种藏在 text_link 里）。"""
+    """从消息 entity 里取超链接真实 URL（"点击跳转"这种藏在 text_link 里），以及消息下方按钮里的链接
+    （链接按钮的地址、「点击复制」按钮要复制的内容，如完整的电驴链接）。"""
     urls: list[str] = []
     try:
         from telethon.tl.types import MessageEntityTextUrl
@@ -267,10 +268,25 @@ def _extract_urls(msg: Any) -> list[str]:
                 urls.append(ent.url)
     except Exception:
         pass
+    urls += _button_links(getattr(msg, "reply_markup", None))
     # 兜底：正文里的明文链接
     import re
     urls += re.findall(r"https?://[^\s]+", msg.raw_text or "")
     return list(dict.fromkeys(urls))
+
+
+def _button_links(markup: Any) -> list[str]:
+    """内联按钮里的链接与复制内容。新版按钮把种类放在 type 里（InlineButtonTypeUrl、InlineButtonTypeCopy），
+    旧版直接是 KeyboardButtonUrl、KeyboardButtonCopy：两种都按属性读。"""
+    out = []
+    for row in getattr(markup, "rows", None) or []:
+        for button in getattr(row, "buttons", None) or []:
+            for part in (getattr(button, "type", None), button):
+                for attr in ("url", "copy_text"):
+                    value = getattr(part, attr, None)
+                    if isinstance(value, str) and value.strip():
+                        out.append(value.strip())
+    return out
 
 
 def _peer_name(event: Any) -> str:

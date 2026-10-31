@@ -36,7 +36,7 @@ MEDIA_SCHEMA["required"] = list(MEDIA_SCHEMA["properties"])
 def validate_resource(data: Any, *, complete: bool = False) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("解析结果必须是对象")
-    allowed = set(MEDIA_SCHEMA["properties"]) | {"share_code", "receive_code", "raw_fields"}
+    allowed = set(MEDIA_SCHEMA["properties"]) | {"share_code", "receive_code", "ed2k", "raw_fields"}
     if complete:
         allowed = set(MEDIA_SCHEMA["properties"])
         optional_new = {"genre_ids", "origin_country"}
@@ -76,6 +76,12 @@ def validate_resource(data: Any, *, complete: bool = False) -> dict[str, Any]:
                      and len({c.upper() for c in value}) == len(value))
         elif key == "raw_fields":
             valid = isinstance(value, dict)
+        elif key == "ed2k":
+            valid = type(value) is list and len(value) <= 200 and all(
+                isinstance(item, dict) and type(item.get("name")) is str and item["name"]
+                and type(item.get("size")) is int and item["size"] >= 0
+                and type(item.get("hash")) is str and re.fullmatch(r"[0-9a-f]{32}", item["hash"])
+                and type(item.get("url")) is str and item["url"].startswith("ed2k://") for item in value)
         elif key in {"share_code", "receive_code"}:
             pattern = r"[A-Za-z0-9]{1,100}" if key == "share_code" else r"[A-Za-z0-9]{4}"
             valid = value is None or (type(value) is str and re.fullmatch(pattern, value) is not None)

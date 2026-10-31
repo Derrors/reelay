@@ -14,6 +14,7 @@ prepare 只创建暂存目录并枚举分享；save 只发送一次转存请求�
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any
@@ -26,6 +27,8 @@ from ..core.contracts import (AlreadyStored, NeedsManual, PipelineContext, Share
 from ..core.io import run_blocking
 from ..core.registry import register
 from ..core.media import episode_of, is_extra, is_video, resolution_label, resolution_rank, summarize_pairs
+
+log = logging.getLogger('reelay.storage')
 
 
 # 电影分享中小于最大文件该比例的视频视为花絮/样片。
@@ -44,8 +47,8 @@ def _response_text(response: Any, limit: int = 300) -> str:
     return text if len(text) <= limit else text[:limit] + '…'
 
 
-def _await_landing(verify):
-    deadline = time.monotonic() + LANDING_WAIT
+def _await_landing(verify, wait: float | None = None):
+    deadline = time.monotonic() + (LANDING_WAIT if wait is None else wait)
     delay = 2.0
     while True:
         try:
@@ -210,6 +213,11 @@ def describe_share(share_fs, parsed, *, max_dirs: int = DESCRIBE_MAX_DIRS) -> di
                 queue.append((item['id'], depth + 1))
             elif is_video(item.get('name', '')):
                 videos.append(_file_record(item))
+    return _describe_videos(videos, parsed)
+
+
+def _describe_videos(videos: list[dict], parsed) -> dict[str, Any]:
+    """视频清单 → 视频数、总大小、季与集（与转存同一套选集规则），选不出时 status 为 issue。"""
     result: dict[str, Any] = {'status': 'ok', 'videos': len(videos),
                               'size': sum(x['size'] for x in videos if type(x.get('size')) is int)}
     try:
@@ -234,6 +242,63 @@ def share_problem(client, share_code: str, receive_code: str | None) -> str | No
     列出分享内容不能说明分享可用：过期的分享仍能列出文件，转存时才被拒绝。
     """
     return share_check(client, share_code, receive_code)[0]
+
+
+def ed2k_listing(parsed) -> list[dict]:
+    """电驴链接 → 与分享清单同样的文件记录（id 是链接的哈希，url 是链接本身），只留视频。"""
+    return [{'id': item['hash'], 'name': item['name'], 'size': item['size'], 'sha1': None, 'is_dir': False,
+             'url': item['url']} for item in parsed.ed2k if is_video(item['name'])]
+
+
+def describe_ed2k(parsed) -> dict[str, Any]:
+    """电驴链接的文件名与大小就写在链接里：不访问 115，按与分享同样的规则得出季、集、大小与版本信息。"""
+    videos = ed2k_listing(parsed)
+    if not videos:
+        return {'status': 'issue', 'videos': 0, 'note': '电驴链接里没有视频文件', 'kind': 'ed2k'}
+    entries = [{'name': v['name'], 'size': v['size'], 'vdi': None} for v in videos]
+    return {**_describe_videos(videos, parsed), **share_root_facts(entries, True), 'kind': 'ed2k'}
+
+
+# --------------------------------------------------------------------------- #
+# 115 云下载（电驴链接）
+# --------------------------------------------------------------------------- #
+CLOUD_WAIT = 60.0      # 加任务后等多久看文件到没到（115 已有这个文件时几秒内就到）
+CLOUD_EXISTS = 10008   # 云下载里已有同一个链接的任务：115 不会再下一份，文件也不会放进新目录
+CLOUD_DONE = 2         # 任务状态：已完成；小于 0 为失败，其余为等待或下载中
+CLOUD_PAGES = 10       # 找任务时最多翻几页
+
+
+def _cloud_tasks(client, hashes: set[str]) -> dict[str, dict]:
+    """115 云下载里这些链接（按哈希）的任务。"""
+    found: dict[str, dict] = {}
+    for page in range(1, CLOUD_PAGES + 1):
+        resp = client.clouddownload_task_list({'page': page})
+        tasks = resp.get('tasks') or []
+        for task in tasks:
+            digest = str(task.get('info_hash') or '').lower()
+            if digest in hashes:
+                found[digest] = task
+        if not tasks or found.keys() >= hashes or page >= int(resp.get('page_count') or 1):
+            break
+    return found
+
+
+def _cloud_drop(client, hashes: list[str]) -> None:
+    """删掉云下载里的任务记录，不删已下载的文件（flag=0）。同一个链接的旧记录在，就没法再下一份。"""
+    if hashes:
+        client.clouddownload_task_del({**{f'hash[{i}]': h for i, h in enumerate(hashes)}, 'flag': 0})
+
+
+def _cloud_results(resp: dict, files: list[dict]) -> dict[str, dict]:
+    """批量添加的回应 → 每个链接（按哈希）的结果；回应里没有逐条结果时按整体结果算。"""
+    data = resp.get('data') if isinstance(resp.get('data'), dict) else resp
+    results = data.get('result') if isinstance(data.get('result'), list) else None
+    if results is None:
+        return {f['id']: data for f in files}
+    out = {str(r.get('info_hash') or '').lower(): r for r in results if isinstance(r, dict)}
+    by_url = {r.get('url'): r for r in results if isinstance(r, dict)}
+    return {f['id']: out.get(f['id']) or by_url.get(f['url']) or {'state': False, 'error_msg': '115 没有返回结果'}
+            for f in files}
 
 
 SHARE_ROOT_LIMIT = 20  # 查询分享状态时顺带列出的根目录项数
@@ -461,6 +526,8 @@ class P115Storage(ShareStorage):
 
     def inspect_share(self, parsed, *, describe: bool) -> dict[str, Any]:
         """只读查询分享：是否过期、取消或违规；describe 时再列出分享，按文件名得到季、集与大小（见 describe_share）。"""
+        if not parsed.share_code and parsed.ed2k:
+            return describe_ed2k(parsed)
         from p115client import P115ShareFileSystem
         client = self._cookie_client()
         problem, entries, complete = share_check(client, parsed.share_code, parsed.receive_code)
@@ -482,7 +549,12 @@ class P115Storage(ShareStorage):
 
     async def prepare(self, ctx: PipelineContext) -> dict[str, Any]:
         self._require_client()
-        listing = await run_blocking(self._list_share_sync, ctx)
+        if ctx.parsed.share_code:
+            listing = await run_blocking(self._list_share_sync, ctx)
+        else:  # 电驴链接：文件名与大小就写在链接里
+            listing = ed2k_listing(ctx.parsed)
+            if not listing:
+                raise NeedsManual('电驴链接里没有视频文件')
         selection = await self.select(ctx, listing)
         return await run_blocking(self._stage_sync, ctx, selection)
 
@@ -520,7 +592,14 @@ class P115Storage(ShareStorage):
         删除可以重复执行：结果不明时再点一次即可。"""
         manifest = ctx.ns('storage')['manifest']
         self._require_client()
+        if not ctx.parsed.share_code:
+            await run_blocking(self._cloud_cancel_sync, manifest)
         await run_blocking(self._abandon_sync, int(manifest['staging_cid']), int(manifest['to_cid']))
+
+    def _cloud_cancel_sync(self, manifest: dict) -> None:
+        """放弃电驴链接的转存：删掉还在云下载里的任务（已下到暂存目录的文件随目录一起删）。"""
+        client = self._cookie_client()
+        _cloud_drop(client, sorted(_cloud_tasks(client, {f['id'] for f in manifest['files']})))
 
     def _abandon_sync(self, stage: int, parent: int) -> None:
         from p115client import P115FileSystem
@@ -543,6 +622,8 @@ class P115Storage(ShareStorage):
         """只读核验。暂存目录为空且分享已不可用时，转存确定没有发生、以后也不会发生，按失败处理。"""
         from p115client import P115FileSystem
         manifest, p = ctx.ns('storage')['manifest'], ctx.parsed
+        if not p.share_code:
+            return self._cloud_verify_sync(manifest)
         client = self._cookie_client()
         if not list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
             problem = share_problem(client, p.share_code, p.receive_code)
@@ -580,10 +661,12 @@ class P115Storage(ShareStorage):
         from p115client import P115FileSystem, P115ShareFileSystem
         client = self._cookie_client()
         manifest = ctx.ns('storage')['manifest']
+        p = ctx.parsed
+        if not p.share_code:
+            return self._cloud_receive_sync(client, manifest)
         # 独占目录非空时只能核验，绝不追加一份转存。
         if list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
             return self._reconcile_sync(manifest)
-        p = ctx.parsed
         share_fs = P115ShareFileSystem(client, p.share_code, p.receive_code)
         # SDK check_response 检查业务状态；异常结果交给 reconcile，不能自动重发。
         try:
@@ -611,6 +694,95 @@ class P115Storage(ShareStorage):
             raise
         receipt['received'] = recv
         return receipt
+
+    def _cloud_receive_sync(self, client, manifest: dict) -> dict[str, Any]:
+        """把电驴链接交给 115 云下载，下到独占暂存目录。115 已有这个文件时几秒内就到；
+        没到时结果不明，交给 reconcile 只读核验（之后后台按云下载的进度复查）。"""
+        from p115client import P115FileSystem
+        stage = manifest['staging_cid']
+        if list(P115FileSystem(client).iterdir(stage)):
+            return self._cloud_verify_sync(manifest)  # 独占目录非空：已经发过，只核验
+        files = manifest['files']
+        resp = self._cloud_add(client, files, stage)
+        try:
+            receipt = _await_landing(lambda: self._cloud_verify_sync(manifest, just_added=True), CLOUD_WAIT)
+        except StorageBusy as busy:
+            uncertain = TransferUncertain(f'云下载任务已添加，核验时 {busy}')
+            uncertain.response = _response_text(resp)
+            raise uncertain from None
+        except TransferUncertain as uncertain:
+            uncertain.response = _response_text(resp)
+            raise
+        receipt['received'] = resp
+        return receipt
+
+    def _cloud_add(self, client, files: list[dict], stage: int) -> dict:
+        """批量添加云下载任务。同一个链接已有任务时（115 不会再下一份），已完成或失败的旧记录删掉再添加；
+        还在下载的不动，稍后重试。一个都没加上时抛 TransferRejected（没有发生下载，可以安全地重新发送）。"""
+        def add(items):
+            payload = {f'url[{i}]': f['url'] for i, f in enumerate(items)}
+            return client.clouddownload_task_add_urls({**payload, 'wp_path_id': stage})
+
+        resp = add(files)
+        results = _cloud_results(resp, files)
+        existing = [f for f in files if int(results[f['id']].get('errcode') or 0) == CLOUD_EXISTS]
+        if existing:
+            tasks = _cloud_tasks(client, {f['id'] for f in existing})
+            busy = [f['name'] for f in existing
+                    if f['id'] in tasks and 0 <= int(tasks[f['id']].get('status') or 0) < CLOUD_DONE]
+            if busy:
+                raise TransferRejected(f'「{busy[0]}」已在 115 云下载里下载中，等它下完后自动重试')
+            _cloud_drop(client, [f['id'] for f in existing])
+            retried = _cloud_results(add(existing), existing)
+            results.update(retried)
+            resp = {'first': resp, 'retried': retried}
+        failed = {f['name']: results[f['id']] for f in files if not results[f['id']].get('state')}
+        if len(failed) == len(files):
+            reason = next(iter(failed.values())).get('error_msg') or '115 没有接受云下载任务'
+            raise TransferRejected(f'115 云下载没有接受：{reason}')
+        return resp
+
+    def _cloud_verify_sync(self, manifest: dict, *, just_added: bool = False) -> dict[str, Any]:
+        """只读核验电驴链接的转存：暂存目录里的文件与清单（文件名、大小）都对得上就通过；没到齐时看云下载任务——
+        下载失败且一个都没到时抛 TransferRejected（permanent），任务不见了且一个都没到时可以重新发送，
+        还在下载时抛 TransferUncertain 并写明进度。核验通过后删掉云下载里的任务记录（不删文件）。"""
+        from p115client import P115FileSystem
+        client = self._cookie_client()
+        actual = [_file_record(x) for x in P115FileSystem(client).iterdir(manifest['staging_cid'])]
+        expected = manifest['files']
+        try:
+            landed = _verified_files(expected, actual)
+        except TransferUncertain as uncertain:
+            names = {x['name'] for x in actual}
+            missing = [f for f in expected if f['name'] not in names]
+            if not missing:
+                raise  # 都到了但对不上（大小不同、多出文件）：交给人工核验
+            tasks = _cloud_tasks(client, {f['id'] for f in missing})
+            failed = [f['name'] for f in missing if f['id'] in tasks and int(tasks[f['id']].get('status') or 0) < 0]
+            absent = [f['name'] for f in missing if f['id'] not in tasks]
+            arrived = len(expected) - len(missing)
+            if failed and not arrived:
+                raise TransferRejected(f'115 云下载失败：{"、".join(failed[:2])}{" 等" if len(failed) > 2 else ""}',
+                                       permanent=True) from None
+            if absent and not arrived and not just_added:
+                raise TransferRejected('115 云下载里没有这次的任务（没加上或已被删除）') from None
+            running = [tasks[f['id']] for f in missing if f['id'] in tasks and f['name'] not in failed]
+            progress = (sum(float(t.get('percentDone') or 0) for t in running) / len(running)) if running else 0
+            parts = [f'已到 {arrived}/{len(expected)} 个文件']
+            if running:
+                parts.append(f'{len(running)} 个还在下载，进度 {progress:.0f}%')
+            if failed:
+                parts.append(f'{len(failed)} 个下载失败：{"、".join(failed[:2])}')
+            if absent:
+                parts.append(f'{len(absent)} 个在云下载里找不到')
+            error = TransferUncertain(f'115 云下载还没完成：{"，".join(parts)}')
+            error.partial = getattr(uncertain, 'partial', None)
+            raise error from None
+        try:
+            _cloud_drop(client, [f['id'] for f in expected])
+        except Exception as exc:  # noqa: BLE001 - 记录删不掉不影响已入库的文件
+            log.warning('删除云下载任务记录失败：%s', exc)
+        return self._receipt(manifest, landed, via='cloud_download')
 
     def _reconcile_sync(self, manifest: dict) -> dict[str, Any]:
         from p115client import P115FileSystem

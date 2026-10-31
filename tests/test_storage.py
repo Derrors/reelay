@@ -46,6 +46,8 @@ class Cloud:
         self.fail_move_after_effect = False
         self.ignore_move = False
         self.fail_delete = None  # 'before'：请求失败未生效；'after'：已删除但响应中断；'ignore'：返回成功却没删
+        self.cloud_tasks = {}  # 云下载任务：哈希 -> 任务（与 115 返回的字段一致）
+        self.cloud_mode = {}   # 哈希 -> 'instant'（115 已有，马上到）/'slow'（下载中）/'fail'（下载失败）
 
     @staticmethod
     def directory(fid, pid, name):
@@ -223,6 +225,48 @@ class Cloud:
 
     def receives(self):
         return [x for x in self.calls if x[0] == 'receive']
+
+    # 115 云下载（与 p115client 的 clouddownload_* 方法、115 的返回结构一致）
+    def clouddownload_task_add_urls(self, payload):
+        stage, results = int(payload['wp_path_id']), []
+        for key in sorted(k for k in payload if k.startswith('url[')):
+            url = payload[key]
+            _, _, name, size, digest, _ = url.split('|', 5)
+            with self.lock:
+                self.calls.append(('cloud_add', digest, stage))
+                if digest in self.cloud_tasks:
+                    results.append({'state': False, 'errcode': 10008, 'info_hash': digest, 'url': url,
+                                    'error_msg': '任务已存在，请勿输入重复的链接地址'})
+                    continue
+                mode = self.cloud_mode.get(digest, 'instant')
+                status = {'instant': 2, 'slow': 1, 'fail': -1}[mode]
+                self.cloud_tasks[digest] = {'info_hash': digest, 'name': name, 'size': int(size), 'status': status,
+                                            'percentDone': 100 if status == 2 else 40, 'wp_path_id': str(stage)}
+                if mode == 'instant':
+                    self.add({'name': name, 'size': int(size), 'sha1': None, 'is_dir': False}, stage)
+                results.append({'state': True, 'errcode': 0, 'info_hash': digest, 'url': url})
+        ok = all(r['state'] for r in results)
+        return {'state': ok, 'data': {'state': ok, 'result': results}}
+
+    def clouddownload_task_list(self, payload):
+        with self.lock:
+            return {'state': True, 'page': 1, 'page_count': 1, 'tasks': [dict(t) for t in self.cloud_tasks.values()]}
+
+    def clouddownload_task_del(self, payload):
+        with self.lock:
+            hashes = [v for k, v in payload.items() if k.startswith('hash[')]
+            self.calls.append(('cloud_del', sorted(hashes), payload['flag']))
+            for digest in hashes:
+                self.cloud_tasks.pop(digest, None)
+        return {'state': True}
+
+    def cloud_finish(self, digest):
+        """慢的云下载下完了：文件出现在保存目录里。"""
+        with self.lock:
+            task = self.cloud_tasks[digest]
+            task.update(status=2, percentDone=100)
+            self.add({'name': task['name'], 'size': task['size'], 'sha1': None, 'is_dir': False},
+                     int(task['wp_path_id']))
 
 
 class CloudCredentials(CredentialStore):
@@ -1178,6 +1222,106 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await operation
         self.assertEqual(completed, [True])
+
+
+def ed2k(name, size=1412118844, digest="5cb8d06865e9eec6fec50acf81818cde"):
+    return {"name": name, "size": size, "hash": digest, "url": f"ed2k://|file|{name}|{size}|{digest}|/"}
+
+
+class TestCloudDownload(unittest.IsolatedAsyncioTestCase):
+    """只有电驴链接的资源：交给 115 云下载到独占暂存目录，按链接里的文件名与大小核对，再照常整理入库。"""
+
+    setUp, tearDown, execute = TestTransferRecovery.setUp, TestTransferRecovery.tearDown, TestTransferRecovery.execute
+
+    DOULUO = "斗罗大陆Ⅱ绝世唐门.2023.S01E177.WEB-DL.2160p.SDR.HEVC.EAC3.mkv"
+    HASH = "5cb8d06865e9eec6fec50acf81818cde"
+
+    def task(self, code=None, *, title="斗罗大陆Ⅱ绝世唐门", episodes=(177,), alias="默认", links=None, rule=None):
+        ctx = PipelineContext(RawMessage("@bot", str(len(self.store.list_tasks())), "message"))
+        ctx.parsed = ParsedResource(is_media=True, media_type="anime", title=title, year=2023, season=1,
+                                    episodes=list(episodes), ed2k=links or [ed2k(self.DOULUO)])
+        ctx.source_rule = rule or {}
+        ctx.save_dir_alias = alias
+        ctx.state = TaskState.QUEUED
+        self.store.save_task(ctx)
+        return ctx
+
+    def cloud_calls(self, kind):
+        return [c for c in self.cloud.calls if c[0] == kind]
+
+    async def test_file_115_already_has_lands_at_once_and_is_organized(self):
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        stage = done.ns("storage")["manifest"]["staging_cid"]
+        self.assertEqual(self.cloud_calls("cloud_add"), [("cloud_add", self.HASH, stage)])  # 加到独占暂存目录
+        self.assertEqual(done.result["via"], "cloud_download")
+        fid = int(done.ns("storage")["landed"][0]["id"])
+        self.assertEqual(self.cloud.items[fid]["name"], "斗罗大陆Ⅱ绝世唐门 - S01E177 - 第 177 集 - 2160p H265 DDP.mkv")
+        self.assertEqual(self.cloud.cloud_tasks, {})  # 核验通过后删掉任务记录（不删文件）
+        self.assertEqual(self.cloud_calls("cloud_del")[-1], ("cloud_del", [self.HASH], 0))
+
+    async def test_an_old_finished_task_for_the_same_link_is_replaced(self):
+        """115 只认一次同一个链接：已完成的旧任务记录在时文件不会放进新目录，删掉记录再加。"""
+        self.cloud.cloud_tasks[self.HASH] = {"info_hash": self.HASH, "status": 2, "percentDone": 100,
+                                             "name": self.DOULUO, "size": 1412118844, "wp_path_id": "2"}
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual(len(self.cloud_calls("cloud_add")), 2)
+        self.assertEqual(self.cloud_calls("cloud_del")[0], ("cloud_del", [self.HASH], 0))
+
+    async def test_same_link_still_downloading_elsewhere_is_retried_later(self):
+        self.cloud.cloud_tasks[self.HASH] = {"info_hash": self.HASH, "status": 1, "percentDone": 30,
+                                             "name": self.DOULUO, "size": 1412118844, "wp_path_id": "2"}
+        failed = await self.execute(self.task())
+        self.assertEqual(failed.state, TaskState.FAILED)
+        self.assertEqual(failed.ns("storage")["phase"], "ready")  # 没有发生下载，稍后重新发送
+        self.assertIn("已在 115 云下载里下载中", self.store.get_task_record(failed.task_id)["error"])
+        self.assertNotIn("cloud_del", [c[0] for c in self.cloud.calls])  # 别处还在下的任务不动
+
+    async def test_slow_download_waits_with_progress_then_lands_on_recheck(self):
+        self.cloud.cloud_mode[self.HASH] = "slow"
+        with patch("reelay.providers.storage.CLOUD_WAIT", 0):
+            manual = await self.execute(self.task())
+        self.assertEqual(manual.state, TaskState.NEED_MANUAL)
+        error = self.store.get_task_record(manual.task_id)["error"]
+        self.assertIn("115 云下载还没完成：已到 0/1 个文件，1 个还在下载，进度 40%", error)
+        self.cloud.cloud_finish(self.HASH)
+        await self.service.reconcile_transfer(manual.task_id)
+        done = await self.execute(manual)
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertEqual(len(self.cloud_calls("cloud_add")), 1)  # 复查只读核验，不重新加任务
+
+    async def test_failed_download_fails_the_task_without_retry(self):
+        self.cloud.cloud_mode[self.HASH] = "fail"
+        with patch("reelay.providers.storage.CLOUD_WAIT", 0):
+            failed = await self.execute(self.task())
+        self.assertEqual(failed.state, TaskState.FAILED)
+        self.assertIn("无法转存：115 云下载失败", self.store.get_task_record(failed.task_id)["error"])
+        self.assertTrue(failed.ns("task")["no_auto_retry"])
+
+    async def test_abandoning_a_slow_download_removes_the_cloud_task(self):
+        self.cloud.cloud_mode[self.HASH] = "slow"
+        with patch("reelay.providers.storage.CLOUD_WAIT", 0):
+            manual = await self.execute(self.task())
+        stage = manual.ns("storage")["manifest"]["staging_cid"]
+        await self.service.abandon_transfer(manual.task_id)
+        self.assertEqual((await self.execute(manual)).state, TaskState.SKIPPED)
+        self.assertEqual(self.cloud.cloud_tasks, {})  # 不再往删掉的目录里下
+        self.assertNotIn(stage, self.cloud.items)
+
+    async def test_episode_choice_follows_the_source_setting_and_non_videos_are_ignored(self):
+        """消息里的电驴链接相当于分享里的文件：默认都下；「只转存消息写明的集」时只下写明的那集。字幕等不下。"""
+        links = [ed2k(f"Show.S01E0{i}.1080p.mkv", 100 + i, f"{i:032x}") for i in (1, 2)]
+        links.append(ed2k("Show.S01E01.ass", 5, "f" * 32))
+        done = await self.execute(self.task(title="Show", episodes=(2,), links=links))
+        self.assertEqual(done.result["saved_files"], ["Show.S01E01.1080p.mkv", "Show.S01E02.1080p.mkv"])
+        self.assertNotIn("f" * 32, [c[1] for c in self.cloud_calls("cloud_add")])
+        self.cloud.calls.clear()
+        links = [ed2k(f"Other.S01E0{i}.1080p.mkv", 200 + i, f"{i + 10:032x}") for i in (1, 2)]
+        done = await self.execute(self.task(title="Other", episodes=(2,), links=links,
+                                            rule={"episodes_from": "message"}))
+        self.assertEqual(done.result["saved_files"], ["Other.S01E02.1080p.mkv"])
+        self.assertEqual([c[1] for c in self.cloud_calls("cloud_add")], [f"{12:032x}"])
 
 
 class TestStorageEpisodeSelection(unittest.TestCase):

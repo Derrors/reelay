@@ -42,6 +42,11 @@ describe('读取分享的提示', () => {
     expect(shareBadge(share('ok'))).toBeNull();
     expect(shareBadge(null)).toBeNull();
   });
+  it('只有电驴链接时注明由 115 云下载', () => {
+    expect(shareBadge({ ...share('ok'), kind: 'ed2k' })).toMatchObject({ tone: 'info', label: '电驴链接' });
+    expect(shareBadge({ ...share('issue', '电驴链接里没有视频文件'), kind: 'ed2k' }))
+      .toMatchObject({ tone: 'warning', label: '电驴链接里没有视频文件' });
+  });
   it('转存时会转人工的情况提前标出，读取出错不提示', () => {
     expect(shareBadge(share('unavailable'))).toMatchObject({ tone: 'danger' });
     expect(shareBadge(share('issue', '含多季：S01、S02'))).toMatchObject({ tone: 'warning', label: '含多季' });

@@ -465,7 +465,8 @@ class Pipeline:
             self._resolve_directory(ctx)
             ctx.state = TaskState.SAVING
             ns["phase"] = "preparing"
-            key = f"{storage.name}:{ctx.save_dir_cid}:{ctx.parsed.share_code}"
+            # 资源键：115 分享码；只有电驴链接时按链接的哈希（见 ParsedResource.link_code）
+            key = f"{storage.name}:{ctx.save_dir_cid}:{ctx.parsed.link_code()}"
             # 先按消息提示的集数占位，尽早串行化同一集的不同分享；清单确定后再按实际集数占位。
             if not self.store.claim_resource(ctx, key, content_keys=self._content_keys(storage.name, ctx)):
                 ctx.state = TaskState.QUEUED
@@ -473,7 +474,7 @@ class Pipeline:
                 return
             # 剧集分享链接常在追更中原地增加新集：剧集按集去重，其他按分享去重。
             if not self._episodic(ctx) and self.store.saved_share(
-                    ctx.parsed.share_code, ctx.save_dir_cid, provider_name):
+                    ctx.parsed.link_code(), ctx.save_dir_cid, provider_name):
                 ctx.state = TaskState.SKIPPED
                 ctx.log("执行前去重命中，分享已转存到该目录")
                 self.store.save_task(ctx)
@@ -481,7 +482,7 @@ class Pipeline:
             # work 是作品身份（TMDB ID、规范片名与年份）：同名的不同作品不会互相当成已入库
             ns["identity"] = {
                 "provider": provider_name,
-                "cid": ctx.save_dir_cid, "share_code": ctx.parsed.share_code,
+                "cid": ctx.save_dir_cid, "share_code": ctx.parsed.link_code(),
                 "title": ctx.parsed.title, "season": ctx.parsed.season,
                 "episodes": list(ctx.parsed.episodes), "work": works.of(ctx.parsed, ctx.meta.get("tmdb")),
             }
@@ -749,7 +750,7 @@ class Pipeline:
         manifest = ns["manifest"]
         reason = None
         if not manifest.get("episodes") and self.store.saved_share(
-                ctx.parsed.share_code, ctx.save_dir_cid, provider_name):
+                ctx.parsed.link_code(), ctx.save_dir_cid, provider_name):
             reason = "分享已转存到该目录"
         elif manifest.get("episodes") and ctx.parsed.title:
             work = ns.get("identity", {}).get("work") or works.of(ctx.parsed, ctx.meta.get("tmdb"))
@@ -784,7 +785,8 @@ class Pipeline:
         ns = ctx.ns("storage")
         if not exc.permanent:
             ns["phase"] = "ready"
-            await self._fail(ctx, f"115 拒绝转存：{exc}，稍后重试", retry_from=TaskState.QUEUED)
+            await self._fail(ctx, f"115 拒绝转存：{exc}，稍后重试" if ctx.parsed.share_code else f"{exc}，稍后重试",
+                             retry_from=TaskState.QUEUED)
             return
         if hasattr(storage, "discard"):
             try:
@@ -794,7 +796,8 @@ class Pipeline:
                 log.warning("清理未使用的暂存目录失败：%s", error)
         for key in ("manifest", "phase", "identity", "content_keys"):
             ns.pop(key, None)
-        await self._fail(ctx, f"分享不可用，无法转存：{exc}", retry_from=TaskState.QUEUED, auto_retry=False)
+        await self._fail(ctx, f"分享不可用，无法转存：{exc}" if ctx.parsed.share_code else f"无法转存：{exc}",
+                         retry_from=TaskState.QUEUED, auto_retry=False)
 
     async def _fail(self, ctx: PipelineContext, message: str, *, retry_from: TaskState,
                     auto_retry: bool = True) -> None:

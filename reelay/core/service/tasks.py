@@ -257,6 +257,8 @@ class TaskOpsMixin(ServiceBase):
         if storage.get("manifest") and storage.get("phase") != "stored":
             raise ConflictError("转存结果未核验，不能修改解析结果")
         validate_resource(patch)
+        if "ed2k" in patch:
+            raise ValueError("电驴链接按消息原文识别，不能修改")
         if storage.get("landed") and set(patch) & {"share_code", "receive_code"}:
             raise ConflictError("已转存任务不能修改分享标识")
         before = asdict(ctx.parsed or ParsedResource())

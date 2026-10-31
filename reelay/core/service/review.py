@@ -45,7 +45,8 @@ class ReviewMixin(ServiceBase):
                 "episode_pairs": multi_season(pairs),
                 "resolution": p.resolution, "size": messages.size_label(ctx), "reason": p.reason,
                 "share": {"status": share.get("status"), "note": share.get("note"), "videos": share.get("videos"),
-                          "from_share": from_share} if share else None,
+                          "from_share": from_share, **({"kind": share["kind"]} if share.get("kind") else {})}
+                if share else None,
                 "confidence": p.confidence,
                 "confidence_caps": meta.get("confidence", {}).get("caps", []),
                 "fallback": bool(meta.get("parse", {}).get("fallback")),

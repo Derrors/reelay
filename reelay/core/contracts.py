@@ -157,8 +157,24 @@ class ParsedResource:
     release: dict[str, Any] = field(default_factory=dict)
     share_code: str | None = None     # 115 分享码（资源级去重键）
     receive_code: str | None = None   # 访问码
+    # 电驴链接（没有 115 分享时由 115 云下载）：[{name, size, hash, url}]，见 parse_rules.parse_ed2k
+    ed2k: list[dict[str, Any]] = field(default_factory=list)
     reason: str | None = None         # AI 判定理由（便于回查）
     raw_fields: dict[str, Any] = field(default_factory=dict)
+
+    def has_link(self) -> bool:
+        """有可以转存的链接：115 分享，或电驴链接。"""
+        return bool(self.share_code or self.ed2k)
+
+    def link_code(self) -> str | None:
+        """资源级去重键：115 分享码；只有电驴链接时按链接的哈希（多个时取它们合起来的摘要）。"""
+        if self.share_code or not self.ed2k:
+            return self.share_code
+        hashes = sorted(item["hash"] for item in self.ed2k)
+        if len(hashes) == 1:
+            return f"ed2k{hashes[0]}"
+        import hashlib
+        return "ed2k" + hashlib.sha1(",".join(hashes).encode()).hexdigest()[:32]
 
 
 @dataclass

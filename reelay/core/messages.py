@@ -201,6 +201,8 @@ def approval_card(ctx: PipelineContext, target: str | None = None) -> str:
     share = meta.get("share") or {}
     if share.get("status") in ("unavailable", "issue") and share.get("note"):
         warnings.append(share["note"])
+    if ctx.parsed and not ctx.parsed.share_code and ctx.parsed.ed2k:
+        warnings.append("电驴链接：由 115 云下载，115 已有的文件几秒就到，冷门的可能要等很久")
     if warnings:
         lines += ["", *(f"⚠️ {esc(w)}" for w in warnings)]
     reminders = (meta.get("task") or {}).get("approval_reminders", 0)
@@ -317,6 +319,15 @@ def problem_reason(ctx: PipelineContext, event: str | None = None) -> tuple[str,
                     [f"缺 {len(missing)} 个文件：", *missing[:5], *([f"…等 {len(missing)} 个"] if len(missing) > 5 else [])],
                     "可以按已到的文件继续入库，或放弃并删除")
         record = storage.get("auto_recheck") or {}
+        if ctx.parsed and not ctx.parsed.share_code and ctx.parsed.ed2k:  # 电驴链接：在 115 云下载里下载
+            result = str(record.get("result") or "")
+            if record.get("gave_up"):
+                return ("115 云下载 24 小时内都没有下完", [result] if result else [],
+                        "可能没人做源；到 115 云下载里看看，下完后点「核验转存」，或放弃并删除")
+            if record.get("notified"):
+                return ("115 云下载多次复查都没有进展", [result] if result else [],
+                        "后台仍在复查；冷门资源下载慢，可以再等等，或放弃并删除")
+            return "已交给 115 云下载，还没下完", [], "后台会定时复查，下完后自动入库；也可以点「核验转存」"
         if record.get("gave_up"):
             return "后台 24 小时的自动复查都没有核验通过", [], "系统不会自动重发；到网盘确认后点「核验转存」，或放弃并删除"
         if record.get("notified"):  # 连续几次核验结果一样，提前提醒（见 Worker.recheck_transfers）

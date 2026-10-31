@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import functools
 import re
+import urllib.parse
 from typing import Any
 
 from .media import CN_NUMBER, resolution_name, season_of
@@ -144,6 +145,27 @@ def parse_115_url(text: str, urls: list[str]) -> tuple[str | None, str | None, s
     return None, None, None
 
 
+# 电驴链接：ed2k://|file|文件名|字节数|MD4 哈希|（后面可带 h=、来源等，忽略）
+_ED2K_RE = re.compile(r"ed2k://\|file\|([^|\r\n]+)\|(\d{1,15})\|([0-9A-Fa-f]{32})\|")
+ED2K_LIMIT = 200  # 一条消息最多认多少个电驴链接
+
+
+def parse_ed2k(text: str, urls: list[str]) -> list[dict[str, Any]]:
+    """从正文、超链接与按钮里提取电驴链接：``{name, size, hash, url}``，按哈希去重，顺序与消息里一致。
+
+    文件名、大小与哈希都写在链接里，不用访问网络就能据此选集、核对落地的文件。
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for content in [text, *urls]:
+        for m in _ED2K_RE.finditer(content or ""):
+            digest = m.group(3).lower()
+            if digest not in found and len(found) < ED2K_LIMIT:
+                name = urllib.parse.unquote(m.group(1)).strip()
+                found[digest] = {"name": name, "size": int(m.group(2)), "hash": digest,
+                                 "url": f"ed2k://|file|{m.group(1)}|{m.group(2)}|{digest}|/"}
+    return [item for item in found.values() if item["name"]]
+
+
 # --------------------------------------------------------------------------- #
 # 规则解析（兜底 / 降级）
 # --------------------------------------------------------------------------- #
@@ -237,10 +259,10 @@ def regex_fields(text: str, rules: dict | None = None) -> dict:
     return fields
 
 
-def prefilter_reason(ctx, share_code: str | None) -> str | None:
-    """与 DefaultDecision 的硬过滤一致；命中则无论 LLM 怎么判都会被跳过。"""
-    if not share_code:
-        return "无 115 链接"
+def prefilter_reason(ctx, has_link: Any) -> str | None:
+    """与 DefaultDecision 的硬过滤一致；命中则无论 LLM 怎么判都会被跳过。has_link：有 115 分享或电驴链接。"""
+    if not has_link:
+        return "无 115 链接或电驴链接"
     filters = (ctx.source_rule or {}).get("filters", {}) or {}
     text = ctx.raw.text or ""
     must = filters.get("must_have") or []

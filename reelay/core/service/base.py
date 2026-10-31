@@ -30,6 +30,7 @@ def parsed_sample(parsed: ParsedResource | None) -> dict | None:
     values = asdict(parsed)
     values.pop("share_code", None)
     values.pop("receive_code", None)
+    values.pop("ed2k", None)
     raw = values.pop("raw_fields", None) or {}
     if raw.get("tmdbid"):
         values["tmdbid"] = raw["tmdbid"]

@@ -22,7 +22,7 @@ import time
 from collections import OrderedDict
 
 from ..core import ai, parse_rules, release, runtime
-from ..core.parse_rules import AD_KEYWORDS, parse_115_url, prefilter_reason, regex_fields
+from ..core.parse_rules import AD_KEYWORDS, parse_115_url, parse_ed2k, prefilter_reason, regex_fields
 from ..core.ai import response_format
 from ..core.contracts import ParsedResource, PipelineContext
 from ..core.registry import register
@@ -32,9 +32,10 @@ from ..core.validation import MEDIA_SCHEMA, validate_resource
 def _regex_parse(ctx: PipelineContext) -> ParsedResource:
     text = ctx.raw.text or ""
     share_url, share_code, recv = parse_115_url(text, ctx.raw.urls)
+    ed2k = [] if share_code else parse_ed2k(text, ctx.raw.urls)  # 有 115 分享时只转存分享
 
-    is_ad = any(kw in text for kw in AD_KEYWORDS) and share_code is None
-    is_media = share_code is not None
+    is_ad = any(kw in text for kw in AD_KEYWORDS) and share_code is None and not ed2k
+    is_media = share_code is not None or bool(ed2k)
     fields = regex_fields(text, (ctx.source_rule or {}).get("parse_rules"))
     if not is_media:  # 不是资源时只留集数、清晰度这些不影响判断的字段
         fields.update(title=None, year=None, season=None, from_rules=[])
@@ -56,6 +57,7 @@ def _regex_parse(ctx: PipelineContext) -> ParsedResource:
         release=release.from_text(text) if is_media else {},
         share_code=share_code,
         receive_code=recv,
+        ed2k=ed2k,
         reason=reason,
         raw_fields={"share_url": share_url},
     )
@@ -171,11 +173,12 @@ class LLMParser(ai.UsesAI):
     async def parse(self, ctx: PipelineContext) -> ParsedResource:
         # 链接始终用确定性代码抽，不依赖 LLM
         share_url, share_code, recv = parse_115_url(ctx.raw.text, ctx.raw.urls)
+        ed2k = [] if share_code else parse_ed2k(ctx.raw.text, ctx.raw.urls)  # 有 115 分享时只转存分享
 
         ctx.ns("parse").clear()
         request = ctx.meta.pop("parse_request", {})
         bypass_cache = bool(request.get("bypass_cache"))
-        reason = prefilter_reason(ctx, share_code)
+        reason = prefilter_reason(ctx, share_code or ed2k)
         if reason:
             ctx.ns("parse")["prefilter"] = reason
             resource = _regex_parse(ctx)
@@ -222,6 +225,7 @@ class LLMParser(ai.UsesAI):
             release=release.fill(data.get("release"), release.from_text(ctx.raw.text)) if data["is_media"] else {},
             share_code=share_code,          # 以确定性结果为准
             receive_code=recv,
+            ed2k=ed2k,
             reason=data.get("reason") or "LLM 解析",
             raw_fields={"share_url": share_url, "llm_raw": data},
         )

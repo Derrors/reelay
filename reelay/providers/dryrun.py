@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable
 
 from ..core.contracts import PipelineContext, RawMessage, TransferUncertain
 from ..core.media import resolution_name
-from .storage import ShareStorage, _file_record, _landing_progress, _verified_files, describe_share
+from .storage import ShareStorage, _file_record, _landing_progress, _verified_files, describe_ed2k, describe_share
 
 EmitFn = Callable[[RawMessage], Awaitable[None]]
 
@@ -173,6 +173,8 @@ class DryRunStorage(ShareStorage):
         return self.drive
 
     def inspect_share(self, parsed, *, describe: bool) -> dict[str, Any]:
+        if not parsed.share_code and parsed.ed2k:
+            return describe_ed2k(parsed)
         if not describe:
             return {"status": "available"}
         return describe_share(_SampleShare(parsed), parsed)

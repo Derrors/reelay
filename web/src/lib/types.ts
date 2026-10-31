@@ -123,6 +123,8 @@ export interface IShareProbe {
   note: string | null;
   videos: number | null;
   from_share: boolean;
+  /** ed2k：消息里只有电驴链接，由 115 云下载（季集、大小按链接里的文件名得出，不访问 115）。 */
+  kind?: 'ed2k' | null;
 }
 
 export interface IInboxItem {

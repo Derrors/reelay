@@ -5,6 +5,8 @@
 得到实际的季、集与总大小，并提前标出多季合集、文件名无法识别等转存时会转人工的情况。结果只记在
 ``meta["share"]``，不改识别结果：转存时仍以那时的分享为准（追更的分享会原地增加新集）。
 
+只有电驴链接的消息不访问 115：文件名与大小就写在链接里，按同样的规则得出季、集、大小与版本信息。
+
 读取经存储 Provider 的 ``inspect_share``（115 或模拟存储）。为避免触发 115 风控：同一时间只读一个分享，
 两次读取至少间隔 ``PROBE_INTERVAL`` 秒，单个分享最多列出 ``DESCRIBE_MAX_DIRS`` 个目录；风控冷却期间不读。
 读取出错不影响识别；启动时为仍待审批、还没读过、上次出错或超过 ``CHECK_TTL`` 没有查过状态的条目补读
@@ -47,7 +49,7 @@ class ShareProbe:
     def _storage(ctx: PipelineContext):
         """任务的存储 Provider，能只读查询分享且凭证就绪时才返回。"""
         p = ctx.parsed
-        if not (p and p.is_media and not p.is_ad and p.share_code):
+        if not (p and p.is_media and not p.is_ad and p.has_link()):
             return None
         try:
             storage = runtime.services().storage(ctx.source_rule.get("storage", "p115"))
@@ -74,19 +76,10 @@ class ShareProbe:
         storage = self._storage(ctx)
         if storage is None:
             return True
-        async with self._lock:  # 同一时间只读一个分享，并与上一次读取拉开间隔
-            wait = self._last + PROBE_INTERVAL - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            try:
-                result = await asyncio.to_thread(storage.inspect_share, ctx.parsed, describe=self._wanted(ctx))
-            except StorageBusy as exc:
-                result = {"status": "error", "note": str(exc)}
-            except Exception as exc:  # noqa: BLE001 - 读取失败只影响展示
-                log.warning("读取分享失败：%s", exc)
-                result = {"status": "error", "note": type(exc).__name__}
-            finally:
-                self._last = time.monotonic()
+        if not ctx.parsed.share_code:  # 电驴链接：文件名与大小就写在链接里，不访问 115
+            result = storage.inspect_share(ctx.parsed, describe=True)
+        else:
+            result = await self._read_share(storage, ctx)
         if result.get("size"):
             result["size_text"] = size_text(result["size"])
         result.update(probed_at=time.time(), version=PROBE_VERSION)
@@ -96,14 +89,30 @@ class ShareProbe:
         ctx.log(self._summary(result))
         return True
 
+    async def _read_share(self, storage, ctx: PipelineContext) -> dict:
+        async with self._lock:  # 同一时间只读一个分享，并与上一次读取拉开间隔
+            wait = self._last + PROBE_INTERVAL - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                return await asyncio.to_thread(storage.inspect_share, ctx.parsed, describe=self._wanted(ctx))
+            except StorageBusy as exc:
+                return {"status": "error", "note": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - 读取失败只影响展示
+                log.warning("读取分享失败：%s", exc)
+                return {"status": "error", "note": type(exc).__name__}
+            finally:
+                self._last = time.monotonic()
+
     @staticmethod
     def _summary(result: dict) -> str:
+        what = "电驴链接" if result.get("kind") == "ed2k" else "分享"
         if result["status"] == "ok":
             episodes = (pairs_label(result["pairs"]) if result["season"] is None
                         else f"S{result['season']:02d} {format_episodes(result['episodes'])}")
-            return f"读取分享：{result['videos']} 个视频 {result.get('size_text', '')}，{episodes}"
+            return f"读取{what}：{result['videos']} 个视频 {result.get('size_text', '')}，{episodes}"
         if result["status"] == "error":
             return f"读取分享失败（{result['note']}），稍后重试"
         if result["status"] == "available":
             return "分享有效"
-        return f"读取分享：{result['note']}"
+        return f"读取{what}：{result['note']}"

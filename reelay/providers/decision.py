@@ -1,7 +1,7 @@
 """决策器 Provider —— 结合过滤规则与审批模式，判定 save / ask / skip。
 
 判定顺序：
-1. 硬过滤：非影视资源、广告、缺 115 链接、命中黑名单、缺 must_have，以及结构化规则
+1. 硬过滤：非影视资源、广告、缺 115 分享与电驴链接、命中黑名单、缺 must_have，以及结构化规则
    （allow / deny / min_resolution，见 ``core/rules.py``）→ SKIP；清晰度未知无法核对 → ASK
 2. 低置信度（可配阈值）→ ASK（交人工兜底），避免 AI 误判直接放行
 3. 识别可靠、TMDB 已匹配，且消息里的集都已入库 → SKIP（重复，批准了也会在转存前被去重拦下）
@@ -49,8 +49,8 @@ class DefaultDecision:
         if not p or not p.is_media or p.is_ad:
             ctx.log("过滤：非影视 / 广告")
             return Decision.SKIP
-        if not p.share_code:
-            ctx.log("过滤：无 115 链接")
+        if not p.has_link():
+            ctx.log("过滤：无 115 链接或电驴链接")
             return Decision.SKIP
 
         filters = rule.get("filters", {}) or {}
@@ -164,7 +164,7 @@ class SubscriptionDecision(DefaultDecision):
 
 def _resource(parsed) -> dict:
     return {key: value for key, value in asdict(parsed).items()
-            if key not in {"share_code", "receive_code", "raw_fields"}}
+            if key not in {"share_code", "receive_code", "ed2k", "raw_fields"}}
 
 
 def decision_history(source: str, limit: int) -> list[dict]:

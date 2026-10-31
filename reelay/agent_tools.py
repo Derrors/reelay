@@ -210,7 +210,7 @@ def _brief(item: dict[str, Any]) -> dict[str, Any]:
 def _safe_parsed(parsed: dict[str, Any] | None) -> dict[str, Any] | None:
     if not parsed:
         return None
-    parsed = {key: value for key, value in parsed.items() if key not in ("share_code", "receive_code")}
+    parsed = {key: value for key, value in parsed.items() if key not in ("share_code", "receive_code", "ed2k")}
     raw = parsed.pop("raw_fields", None) or {}
     kept = {key: raw[key] for key in _SAFE_RAW_FIELDS if key in raw}
     if kept:

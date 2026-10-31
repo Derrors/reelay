@@ -25,6 +25,9 @@ export function visibleItems(items: IInboxItem[], query: string, sort: InboxSort
 export function shareBadge(share: IShareProbe | null): { tone: Tone; label: string; title: string } | null {
   if (!share?.status) return null;
   const note = share.note ?? '';
+  if (share.kind === 'ed2k' && share.status === 'ok') {
+    return { tone: 'info', label: '电驴链接', title: `${share.videos ?? 0} 个视频，由 115 云下载；115 已有的几秒就到，冷门的可能要等很久` };
+  }
   switch (share.status) {
     case 'ok':
       return share.from_share ? { tone: 'info', label: '集数来自分享', title: `读取分享：${share.videos ?? 0} 个视频` } : null;
