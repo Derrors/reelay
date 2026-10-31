@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import struct
 import time
 import types
@@ -16,7 +17,7 @@ from reelay.core import messages, secret_store
 from reelay.core.messages import parse_callback
 from reelay.core.contracts import TaskState
 
-from tests.fakes import ServiceCase, bot_for
+from tests.fakes import ServiceCase, bot_for, tv_ctx
 
 
 class TestParseCorrection(unittest.TestCase):
@@ -140,11 +141,15 @@ class TestLists(ServiceCase):
         self.assertIn("🗑 已取消订阅《繁花》第 1 季", text)
         self.assertEqual(self.store.subscriptions(), [])
         self.assertEqual((await bot.callback(f"usy:{item['id']}"))[2], "这条订阅已经不在了")
-        # 自动结束的订阅：继续订阅
+        # 已播完、自动结束的订阅不在列表里；播完时通知上的「继续订阅」照常可用
         item = self.subscribe({"title": "繁花", "season": 1, "tmdbid": 9})
         self.store.set_subscription_finished(item["id"], {"date": "2026-10-01", "episodes": 30})
-        self.assertEqual(manage.subs_list(self.service)[1], [[("▶️ 继续订阅 繁花 S01", f"so:{item['id']}")]])
+        text, buttons = manage.subs_list(self.service)
+        self.assertNotIn("繁花", text)
+        self.assertIn("没有在追的剧", text)
+        self.assertNotIn(f"so:{item['id']}", [data for row in buttons for _, data in row])
         await bot.callback(f"so:{item['id']}")
+        self.assertIn("繁花", manage.subs_list(self.service)[0])  # 继续订阅后回到列表
         self.assertIsNone(self.store.subscription(item["id"])["finished"])
         text, buttons = manage.ignored_list(self.service)
         self.assertIn("广告剧", text)
@@ -320,6 +325,78 @@ class TestReconnect(ServiceCase):
             clients[-1].drop()
             with self.assertRaises(ValueError):
                 await asyncio.wait_for(runner, 2)
+
+class TestFindShow(ServiceCase):
+    """「/subs 片名」：在 TMDB 找剧，点选一季订阅；待审批里已有这部剧时可以一并转存。"""
+
+    SHOW = {"tmdbid": 300146, "title": "嫁金钗", "original_title": "Where the Mask Ends", "year": 2026,
+            "poster_path": None, "overview": "古装剧", "seasons": [{"season": 1, "episodes": 24}, {"season": 2, "episodes": 30}]}
+    DETAILS = {"id": 300146, "name": "嫁金钗", "genre_ids": [18], "seasons": [{"season": 1, "episodes": 24},
+                                                                          {"season": 2, "episodes": 30}]}
+
+    def setUp(self):
+        super().setUp()
+        for patcher in (patch("reelay.core.tmdb.api_key", return_value="key"),
+                        patch("reelay.core.tmdb.tv_details", return_value=self.DETAILS)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.bot = bot_for(self.service)
+
+    def resolved(self, *candidates, season=None):
+        async def resolve(text):
+            return {"query": {"title": "嫁金钗", "season": season, "year": None}, "candidates": list(candidates),
+                    "tmdb": True}
+        self.service.resolve_subscription = resolve
+
+    async def test_search_lists_seasons_and_marks_the_subscribed_ones(self):
+        self.subscribe({"title": "嫁金钗", "season": 1, "tmdbid": 300146})
+        self.resolved(self.SHOW)
+        text, buttons = await self.bot.find_show("嫁金钗")
+        self.assertIn("📺 <b>嫁金钗</b> (2026)\nWhere the Mask Ends", text)
+        self.assertEqual(buttons, [[("✅ 嫁金钗 S01 已订阅", "sl"), ("🔔 嫁金钗 S02 · 30 集", "sa:300146:2")]])
+        self.resolved(self.SHOW, season=2)  # 「/subs 嫁金钗 第二季」：只列这一季
+        self.assertEqual((await self.bot.find_show("嫁金钗 第二季"))[1], [[("🔔 嫁金钗 S02 · 30 集", "sa:300146:2")]])
+        self.resolved()
+        self.assertIn("TMDB 上没找到「嫁金钗」", (await self.bot.find_show("嫁金钗"))[0])
+
+    async def test_subscribing_a_season_offers_to_save_its_pending_episodes(self):
+        waiting = tv_ctx(title="嫁金钗", tmdbid=300146, episodes=(19,))
+        waiting.state = TaskState.PENDING_APPROVAL
+        self.store.save_task(waiting)
+        text, buttons, toast = await self.bot.callback("sa:300146:1")
+        self.assertEqual(text, "🔔 已订阅《嫁金钗》第 1 季（共 24 集），之后的新集自动转存。\n待审批里还有 1 条这部剧。")
+        self.assertEqual(toast, "已订阅")
+        (label, data), = buttons[0]
+        self.assertEqual((label, data.split(":")[0]), ("✅ 一并转存 1 条", "pay"))
+        self.assertEqual([(s["title"], s["season"], s["total"]) for s in self.store.subscriptions()], [("嫁金钗", 1, 24)])
+        self.assertIn("已批准", (await self.bot.callback(data))[0])
+        self.assertEqual(self.store.get_task(waiting.task_id).state, TaskState.QUEUED)
+        self.assertEqual((await self.bot.callback("sa:300146:1"))[2], "已经订阅过《嫁金钗》第 1 季")  # 重复点
+        self.assertEqual((await self.bot.callback("sa:300146:9"))[2], "TMDB 上《嫁金钗》没有第 9 季")
+
+    async def test_subs_with_a_title_searches_and_without_lists(self):
+        handlers, replies = {}, []
+
+        class Client:
+            def on(self, event):
+                return lambda handler: handlers.setdefault(event.get("pattern"), handler)
+
+        events = types.SimpleNamespace(NewMessage=lambda **kw: kw, CallbackQuery=lambda **kw: kw)
+        self.bot._client, self.bot._owner, self.bot._Button = Client(), "42", None
+        self.bot._register_handlers(events)
+        pattern = next(p for p in handlers if p and "subs" in p)
+        self.resolved(self.SHOW)
+
+        async def send(text):
+            async def reply(body, **kwargs):
+                replies.append(body)
+            await handlers[pattern](types.SimpleNamespace(sender_id=42, raw_text=text, reply=reply,
+                                                          pattern_match=re.match(pattern, text)))
+        await send("/subs 嫁金钗")
+        await send("/subs")
+        self.assertTrue(replies[0].startswith("🔔 <b>找剧订阅</b> · 嫁金钗"))
+        self.assertTrue(replies[1].startswith("🔔 <b>追剧订阅</b>"))
+        self.assertIn("/subs 片名", replies[1])  # 还没有订阅时提示可以直接找剧
 
 class TestHealth(ServiceCase):
     def test_unconfigured_bot_is_not_reported_as_disconnected(self):

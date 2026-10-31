@@ -3,7 +3,7 @@
 用你自己的 Telegram Bot（管理台「设置」中填写 Bot Token）作为控制入口，提供：
 
 - 命令：``/status``（队列积压、各状态计数、在线状态）、``/pending``（待审批与待人工，点开卡片处理，可一键全部批准
-  或忽略）、``/failed``（失败任务）、``/subs``（追剧订阅，可取消或继续订阅）、``/ignored``（不再接收的作品，可恢复）、
+  或忽略）、``/failed``（失败任务）、``/subs``（追剧订阅，可取消或继续订阅；``/subs 片名`` 在 TMDB 找剧，点选一季订阅）、``/ignored``（不再接收的作品，可恢复）、
   ``/retry <task_id>``、``/help``；列表与修正识别见 ``control/manage.py``，不依赖 AI
 - 对话：不以 ``/`` 开头的文字交给对话助手（``control/assistant.py``），如「我有哪些 4K 日本动画」
   「把《X》这几集都批了，存到动漫」；写操作先回显要执行的动作，点「执行」后才执行
@@ -13,7 +13,7 @@
   ``ap``（按已到的文件继续）/ ``cf`` → ``cy``（删除转存文件、覆盖保存、放弃并删除，先确认再执行）/ ``pb``；
   修正识别 ``fx``（发出提示，回复它写要改的项）/ ``rp``（重新识别）/ ``fxn``；列表 ``cd``（重新发出卡片）/ ``pl`` ``fl``（翻页）/
   ``pa`` ``pr`` → ``pay`` ``pry``（全部批准、全部忽略：先列出计划，确认时只处理计划里的任务）/ ``us`` → ``usy``（取消订阅）/
-  ``so``（继续订阅）/ ``ui``（恢复接收）；订阅建议 ``ss``（订阅）/ ``sd``（不用了）；对话助手的确认按钮 ``do`` / ``cancel``；
+  ``so``（继续订阅）/ ``sa``（找剧后订阅某一季）/ ``ui``（恢复接收）；订阅建议 ``ss``（订阅）/ ``sd``（不用了）；对话助手的确认按钮 ``do`` / ``cancel``；
   其他前缀交给声明了 ``bot_action:<前缀>`` 能力的扩展（如缺集追更提醒上的按钮）
 - 对外暴露 ``send(...)``：给 NotifyProvider 用来推确认卡片（带按钮）与结果通知
 - 审批卡片的同步：发出时记下消息（``send(card=...)``），每 ``CARD_SYNC_SEC`` 秒检查一次，任务在管理台、对话助手、
@@ -115,7 +115,11 @@ class ControlBot:
         async def _list(e):
             if not self._is_owner(e):
                 return
-            text, buttons = views[e.pattern_match.group(1)](self.service)
+            command, rest = e.pattern_match.group(1), (e.raw_text.split(maxsplit=1)[1:] or [""])[0].strip()
+            if command == "subs" and rest:  # 「/subs 片名」：找剧订阅
+                text, buttons = await self.find_show(rest)
+            else:
+                text, buttons = views[command](self.service)
             await e.reply(text, buttons=self._buttons(buttons), parse_mode="html")
 
         @c.on(events.NewMessage(pattern=r"/retry (\w+)"))
@@ -335,6 +339,8 @@ class ControlBot:
             return f"{done}\n\n{text}", buttons, None
         if action in ("ss", "sd"):
             return await self._suggestion(action, args, original)
+        if action == "sa":
+            return await self._subscribe_show(args)
         if action in ("sl", "st"):
             text, buttons = (manage.subs_list if action == "sl" else manage.status_view)(service)
             return text, buttons, None
@@ -349,6 +355,31 @@ class ControlBot:
             text, buttons = manage.ignored_list(service)
             return f"↩️ 已恢复接收《{messages.esc(item['title'])}》\n\n{text}", buttons, None
         return None
+
+    async def find_show(self, text: str) -> tuple[str, list]:
+        """「/subs 片名」：AI 取出片名与季号，在 TMDB 找候选（与管理台「一句话找剧」同一套），返回候选卡片。"""
+        try:
+            result = await self.service.resolve_subscription(text)
+        except (ConflictError, ValueError) as exc:
+            return f"ℹ️ {messages.esc(exc)}", [[("🔔 追剧订阅", messages.callback("sl"))]]
+        return manage.show_search(self.service, result)
+
+    async def _subscribe_show(self, args: list[str]):
+        """候选卡片上点了某一季：订阅它；待审批里已有这部剧这一季的条目时，给一个「一并转存」。"""
+        tmdbid, season = (args + ["", ""])[:2]
+        if not (tmdbid.isdigit() and season.isdigit()):
+            return None, None, "这个按钮已失效"
+        try:
+            result = await self.service.subscribe_show(int(tmdbid), int(season))
+        except (ConflictError, NotFoundError, ValueError) as exc:
+            return None, None, str(exc)[:190]
+        item, pending = result["subscription"], result["pending"]
+        total = f"（共 {item['total']} 集）" if item.get("total") else ""
+        text = (f"🔔 已订阅《{messages.esc(item['title'])}》第 {item['season']} 季{total}，之后的新集自动转存。"
+                + (f"\n待审批里还有 {len(pending)} 条这部剧。" if pending else ""))
+        buttons = [[(f"✅ 一并转存 {len(pending)} 条", messages.callback("pay", manage.plan("approve", pending)))]] \
+            if pending else []
+        return text, [*buttons, [("🔔 追剧订阅", messages.callback("sl"))]], "已订阅"
 
     async def _extension(self, action: str, args: list[str], original: str):
         """扩展声明的按钮（能力 ``bot_action:<前缀>``，如缺集追更提醒上的按钮）；没有扩展处理时返回 None。"""

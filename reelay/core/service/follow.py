@@ -186,6 +186,24 @@ class FollowMixin(ServiceBase):
                        auto_only=False)]
         return {"subscription": record, "pending": pending}
 
+    async def subscribe_show(self, tmdbid: int, season: int) -> dict[str, Any]:
+        """按 TMDB 条目与季号订阅（控制 Bot 里「/subs 片名」找到后点选的那一季）：片名与总集数取 TMDB 条目详情。"""
+        if not tmdb.api_key():
+            raise ConflictError("没有配置 TMDB，请在管理台「追剧订阅」里按片名订阅")
+        language = self.pipeline.cfg.get("tmdb", {}).get("language", "zh-CN")
+        try:
+            details = await asyncio.to_thread(tmdb.tv_details, int(tmdbid), language=language, timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            raise ConflictError(f"TMDB 查询失败（{type(exc).__name__}），请稍后再试") from None
+        found = next((s for s in details["seasons"] if s["season"] == season), None)
+        title = details.get("name") or str(tmdbid)
+        if found is None:
+            raise ConflictError(f"TMDB 上《{title}》没有第 {season} 季")
+        item = {"title": title, "season": season, "tmdbid": int(tmdbid)}
+        if found.get("episodes"):
+            item["total"] = found["episodes"]
+        return await self.add_subscription(item)
+
     async def subscribe_from_task(self, task_id: str) -> dict[str, Any]:
         """收件箱「追这部剧」：用任务识别出的 TMDB 条目与季号订阅。"""
         ctx = self._require_context(task_id)

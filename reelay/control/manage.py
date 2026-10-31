@@ -1,4 +1,5 @@
-"""控制 Bot 里不依赖 AI 的管理操作：修正识别结果的文字解析，以及 /pending、/failed、/subs、/ignored 列表。
+"""控制 Bot 里不依赖 AI 的管理操作：修正识别结果的文字解析，/pending、/failed、/subs、/ignored 列表，
+以及「/subs 片名」找剧订阅的候选卡片。
 
 列表都是「正文 + 按钮」：每条一个按钮，点开重新发出那条任务的卡片（``cd``），或直接取消订阅、恢复接收。
 按钮数据用 ``messages.callback`` 拼接（不超过 64 字节）：订阅与不再接收的作品用数据库 ID，订阅建议用短键。
@@ -179,18 +180,23 @@ BULK_TTL = 600
 _BULK_PLANS: dict[str, dict] = {}
 
 
+def plan(action: str, task_ids: list[str]) -> str:
+    """记下一组待确认的批量操作（approve / reject），返回计划 ID；按钮 ``pay`` / ``pry`` 带着它执行。"""
+    now = time.time()
+    for plan_id in [key for key, item in _BULK_PLANS.items() if item["expires"] < now]:
+        _BULK_PLANS.pop(plan_id, None)
+    plan_id = uuid.uuid4().hex[:12]
+    _BULK_PLANS[plan_id] = {"action": action, "task_ids": list(task_ids), "expires": now + BULK_TTL}
+    return plan_id
+
+
 def bulk_confirm(service, action: str) -> tuple[str, list]:
     """列出现在待审批的任务并记成计划；确认按钮只带计划 ID。之后新到的任务不在计划里。"""
-    now = time.time()
-    for plan_id in [key for key, plan in _BULK_PLANS.items() if plan["expires"] < now]:
-        _BULK_PLANS.pop(plan_id, None)
     task_ids = [row["task_id"] for row in service.store.list_by_state(TaskState.PENDING_APPROVAL, 500)]
     verb = "批准转存" if action == "pa" else "忽略"
     if not task_ids:
         return "✅ 待审批里已经没有资源了。", [[("📋 查看待处理", callback("pl", 0))]]
-    plan_id = uuid.uuid4().hex[:12]
-    _BULK_PLANS[plan_id] = {"action": "approve" if action == "pa" else "reject", "task_ids": task_ids,
-                            "expires": now + BULK_TTL}
+    plan_id = plan("approve" if action == "pa" else "reject", task_ids)
     return (f"⚠️ 确认{verb}待审批里的这 <b>{len(task_ids)}</b> 条？之后新到的不包括在内，十分钟内有效。",
             [[(f"确认{verb}", callback(f"{action}y", plan_id)), ("↩ 返回", callback("pl", 0))]])
 
@@ -248,32 +254,72 @@ def _suggestions(suggestions: list[dict]) -> tuple[str, list]:
 
 
 def subs_list(service) -> tuple[str, list]:
-    """订阅：每部一段（类型图标、片名与季、入库与缺集），下方每部一个取消或继续订阅的按钮；
-    最后是还没处理的订阅建议，可以订阅或点「不用了」。"""
+    """在追的订阅：每部一段（类型图标、片名与季、入库与缺集），下方每部一个取消订阅的按钮；
+    最后是还没处理的订阅建议，可以订阅或点「不用了」。已播完、自动结束的订阅不列出（播完时的通知上可以继续订阅，
+    管理台「追剧订阅」页也能看到）。"""
     data = service.list_subscriptions()
-    items = data["items"]
+    items = [item for item in data["items"] if not item.get("finished")]
     suggested, suggestion_buttons = _suggestions(data["suggestions"])
     if not items:
-        empty = "还没有订阅。\n在审批卡片上点「🔔 追剧」，或对我说「我在追《X》第二季」。"
+        empty = ("没有在追的剧。" if data["items"] else "还没有订阅。") + \
+            "\n发 <code>/subs 片名</code> 找剧订阅，或在审批卡片上点「🔔 追剧并转存」。"
         return (_view("🔔 <b>追剧订阅</b>", empty, suggested),
                 suggestion_buttons or _nav(service))
     blocks, buttons = [], []
     for item in items[:20]:
         icon = "🍥" if item.get("category") == "动漫" else "📺"
-        if item.get("finished"):
-            state = "🏁 已播完，订阅已结束"
-        elif item.get("missing"):
+        if item.get("missing"):
             state = f"缺 {format_episodes(item['missing'], limit=3)}"
         else:
             state = "不缺集"
         blocks.append(f"{icon} <b>{messages.esc(item['title'])}</b> · S{item['season']:02d}\n"
                       f"已入库 {len(item['have'])} 集 · {state}")
         name = f"{item['title']} S{item['season']:02d}"
-        buttons.append([(f"▶️ 继续订阅 {name}"[:40], callback("so", item["id"]))] if item.get("finished")
-                       else [(f"🗑 取消订阅 {name}"[:40], callback("us", item["id"]))])
+        buttons.append([(f"🗑 取消订阅 {name}"[:40], callback("us", item["id"]))])
     if len(items) > 20:
         blocks.append(f"… 另有 {len(items) - 20} 部")
     return _view(f"🔔 <b>追剧订阅</b> · {len(items)} 部", *blocks, suggested), buttons + suggestion_buttons
+
+
+SHOW_SEASONS = 8  # 候选卡片上每部剧最多列几季（季多时列最近的几季）
+
+
+def show_search(service, result: dict) -> tuple[str, list]:
+    """「/subs 片名」：TMDB 候选（resolve_subscription 的结果），每部一段、每季一个订阅按钮，已订阅的季标出来。"""
+    query, candidates = result["query"], result["candidates"]
+    name = messages.esc(query.get("title") or "")
+    if not result.get("tmdb"):
+        return ("🔔 没有配置 TMDB，找不到剧集条目。\n在管理台「设置 → AI 与 TMDB」填写 TMDB 密钥，或到「追剧订阅」页按片名订阅。",
+                _nav(service))
+    if not candidates:
+        return f"🔔 TMDB 上没找到「{name}」，换个写法试试，比如写全片名或加上年份。", _nav(service)
+    subscribed = {(s["tmdbid"], s["season"]) for s in service.store.subscriptions() if s["tmdbid"]}
+    blocks, buttons = [], []
+    for item in candidates:
+        year = f" ({item['year']})" if item.get("year") else ""
+        original = item.get("original_title")
+        head = f"📺 <b>{messages.esc(item['title'])}</b>{year}"
+        if original and original != item["title"]:
+            head += f"\n{messages.esc(original)}"
+        seasons = item["seasons"]
+        if query.get("season") and any(s["season"] == query["season"] for s in seasons):
+            seasons = [s for s in seasons if s["season"] == query["season"]]
+        shown = seasons[-SHOW_SEASONS:]
+        if len(seasons) > len(shown):
+            head += f"\n共 {len(seasons)} 季，下面列最近 {len(shown)} 季"
+        blocks.append(head + (f"\n{messages.esc(item['overview'])}" if item.get("overview") else ""))
+        row = []
+        for season in shown:
+            episodes = f" · {season['episodes']} 集" if season.get("episodes") else ""
+            if (item["tmdbid"], season["season"]) in subscribed:
+                row.append((f"✅ {item['title']} S{season['season']:02d} 已订阅"[:40], callback("sl")))
+            else:
+                row.append((f"🔔 {item['title']} S{season['season']:02d}{episodes}"[:40],
+                            callback("sa", item["tmdbid"], season["season"])))
+        if not row:
+            blocks[-1] += "\nTMDB 上还没有季信息，暂时不能订阅"
+        buttons += [row[i:i + 2] for i in range(0, len(row), 2)]
+    return _view(f"🔔 <b>找剧订阅</b> · {name}", "点要追的那一季订阅；之后的新集自动转存。", *blocks), buttons
 
 
 def find_ignored(service, key: str) -> dict | None:
@@ -360,5 +406,5 @@ def help_view(service) -> tuple[str, list]:
 
 
 # 命令菜单（control/bot.py 启动时登记，输入 / 时列出）与 /help 共用
-COMMAND_MENU = [("pending", "待审批与待人工"), ("failed", "失败任务"), ("subs", "追剧订阅"),
+COMMAND_MENU = [("pending", "待审批与待人工"), ("failed", "失败任务"), ("subs", "追剧订阅；/subs 片名 找剧订阅"),
                 ("ignored", "不再接收的作品"), ("status", "运行概况"), ("help", "能做什么")]
