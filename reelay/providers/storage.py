@@ -753,10 +753,14 @@ class P115Storage(ShareStorage):
         try:
             landed = _verified_files(expected, actual)
         except TransferUncertain as uncertain:
+            # 只有空目录或严格匹配的部分文件才能按下载进度等待；名称、大小等不符时
+            # 保留原始核验原因，不能误报成「还在下载」，更不能据任务消失判定可以重发。
+            if actual and not getattr(uncertain, 'partial', None):
+                raise
             names = {x['name'] for x in actual}
             missing = [f for f in expected if f['name'] not in names]
             if not missing:
-                raise  # 都到了但对不上（大小不同、多出文件）：交给人工核验
+                raise
             tasks = _cloud_tasks(client, {f['id'] for f in missing})
             failed = [f['name'] for f in missing if f['id'] in tasks and int(tasks[f['id']].get('status') or 0) < 0]
             absent = [f['name'] for f in missing if f['id'] not in tasks]
@@ -766,16 +770,28 @@ class P115Storage(ShareStorage):
                                        permanent=True) from None
             if absent and not arrived and not just_added:
                 raise TransferRejected('115 云下载里没有这次的任务（没加上或已被删除）') from None
-            running = [tasks[f['id']] for f in missing if f['id'] in tasks and f['name'] not in failed]
-            progress = (sum(float(t.get('percentDone') or 0) for t in running) / len(running)) if running else 0
+            completed = [t for t in tasks.values() if int(t.get('status') or 0) == CLOUD_DONE]
+            pending = [t for t in tasks.values() if int(t.get('status') or 0) >= 0
+                       and int(t.get('status') or 0) != CLOUD_DONE]
+            settling = [t for t in pending if float(t.get('percentDone') or 0) >= 100]
+            downloading = [t for t in pending if float(t.get('percentDone') or 0) < 100]
+            waiting = [t for t in downloading if t.get('display_status') == 'waiting']
+            running = [t for t in downloading if t.get('display_status') != 'waiting']
             parts = [f'已到 {arrived}/{len(expected)} 个文件']
-            if running:
-                parts.append(f'{len(running)} 个还在下载，进度 {progress:.0f}%')
+            if completed:
+                parts.append(f'{len(completed)} 个已完成，等待暂存目录文件核验')
+            if settling:
+                parts.append(f'{len(settling)} 个进度已到 100%，等待 115 确认完成')
+            for group, label in ((waiting, '在 115 等待下载'), (running, '还在下载')):
+                if group:
+                    progress = sum(float(t.get('percentDone') or 0) for t in group) / len(group)
+                    parts.append(f'{len(group)} 个{label}，进度 {int(progress)}%')
             if failed:
                 parts.append(f'{len(failed)} 个下载失败：{"、".join(failed[:2])}')
             if absent:
                 parts.append(f'{len(absent)} 个在云下载里找不到')
-            error = TransferUncertain(f'115 云下载还没完成：{"，".join(parts)}')
+            status = '等待文件核验' if completed or settling else '还没完成'
+            error = TransferUncertain(f'115 云下载{status}：{"，".join(parts)}')
             error.partial = getattr(uncertain, 'partial', None)
             raise error from None
         try:

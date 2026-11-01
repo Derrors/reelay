@@ -172,6 +172,10 @@ Do not treat “not yet verified” as “definitely not transferred.” 115 may
 
 Prefer waiting for the background read-only check or using “Verify transfer” (「核验转存」). If some files have already been verified, follow the prompt to keep waiting or “Continue with arrived files” (「按已到的继续」). The latter does not automatically download the missing files.
 
+**Why is verification still pending when 115 shows 100% or completed and the file is visible?** Download progress and verification of saved files are separate. Reelay must read every expected file in this task's dedicated staging directory (`.reelay-taskID`), with names and byte sizes matching the manifest. Files in another directory, different names, or a directory listing that has not caught up do not establish success. Older versions may also describe a completed download as “still downloading, 100%,” hiding a filename mismatch. Check the staging directory and manifest before verifying again. Do not resend the transfer or use “Abandon” (「放弃」) as a refresh button: it deletes this task's staged files.
+
+**What if progress stays at 0% and 115 says “Waiting” (「等待中」)?** 115 has accepted the task but is still waiting to download. This does not mean Reelay failed to submit it, nor does waiting alone prove that the resource will never have a download source. “No change after three checks” is an early alert; background checks continue. “Verify transfer” does not resend the cloud download or speed up 115's download task.
+
 For recheck timing and stop conditions, see [Deployment and operations](deployment.md#health-checks-and-recovery).
 
 ### 20. The transfer finished, but organization failed. What should I do?

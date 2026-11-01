@@ -1291,6 +1291,150 @@ class TestCloudDownload(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done.state, TaskState.DONE)
         self.assertEqual(len(self.cloud_calls("cloud_add")), 1)  # 复查只读核验，不重新加任务
 
+    async def waiting_task(self, links=None, *, title='示例剧集'):
+        links = links or [ed2k('Example.S01E18.2160p.mkv')]
+        self.cloud.cloud_mode.update({f['hash']: 'slow' for f in links})
+        with patch('reelay.providers.storage.CLOUD_WAIT', 0):
+            return await self.execute(self.task(title=title, episodes=(18,), links=links))
+
+    async def test_completed_download_waits_for_files_without_saying_still_downloading(self):
+        manual = await self.waiting_task()
+        self.cloud.cloud_tasks[self.HASH].update(status=2, percentDone=100)
+        await self.service.reconcile_transfer(manual.task_id)
+        checked = await self.execute(manual)
+        self.assertEqual(checked.state, TaskState.NEED_MANUAL)
+        error = self.store.get_task_record(manual.task_id)['error']
+        self.assertIn('已到 0/1 个文件', error)
+        self.assertIn('1 个已完成，等待暂存目录文件核验', error)
+        self.assertNotIn('还在下载', error)
+        self.assertIsNone(checked.result)
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 1)
+        self.assertEqual(self.cloud_calls('cloud_del'), [])
+        self.cloud.cloud_finish(self.HASH)
+        await self.service.reconcile_transfer(manual.task_id)
+        self.assertEqual((await self.execute(manual)).state, TaskState.DONE)
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 1)
+
+    async def test_full_progress_without_done_status_still_requires_verification(self):
+        manual = await self.waiting_task()
+        self.cloud.cloud_tasks[self.HASH].update(percentDone=100)
+        await self.service.reconcile_transfer(manual.task_id)
+        checked = await self.execute(manual)
+        self.assertEqual(checked.state, TaskState.NEED_MANUAL)
+        error = self.store.get_task_record(manual.task_id)['error']
+        self.assertIn('进度已到 100%，等待 115 确认完成', error)
+        self.assertIsNone(checked.result)
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 1)
+        self.assertEqual(self.cloud_calls('cloud_del'), [])
+
+    async def test_waiting_download_uses_115_waiting_state_instead_of_running(self):
+        manual = await self.waiting_task()
+        self.cloud.cloud_tasks[self.HASH].update(
+            status=1, percentDone=0, display_status='waiting', status_text='等待中',
+            waiting_text='等待中', rateDownload=0, peers=0)
+        await self.service.reconcile_transfer(manual.task_id)
+        checked = await self.execute(manual)
+        self.assertEqual(checked.state, TaskState.NEED_MANUAL)
+        error = self.store.get_task_record(manual.task_id)['error']
+        self.assertIn('1 个在 115 等待下载，进度 0%', error)
+        self.assertNotIn('还在下载', error)
+        self.assertNotIn('无源', error)  # 115 只说等待，不能据此认定资源没有下载源。
+        self.assertIsNone(checked.result)
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 1)
+        self.assertEqual(self.cloud_calls('cloud_del'), [])
+
+    async def test_matching_files_win_over_stale_download_status(self):
+        manual = await self.waiting_task()
+        manifest = manual.ns('storage')['manifest']
+        self.cloud.add(manifest['files'][0], manifest['staging_cid'])
+        self.assertEqual(self.cloud.cloud_tasks[self.HASH]['status'], 1)
+        await self.service.reconcile_transfer(manual.task_id)
+        self.assertEqual((await self.execute(manual)).state, TaskState.DONE)
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 1)
+
+    async def test_completed_download_does_not_hide_a_filename_mismatch(self):
+        manual = await self.waiting_task()
+        self.cloud.cloud_finish(self.HASH)
+        stage = manual.ns('storage')['manifest']['staging_cid']
+        landed = self.cloud.children(stage)[0]
+        self.cloud.items[landed['id']]['name'] = 'Different.S01E18.2160p.mkv'
+        await self.service.reconcile_transfer(manual.task_id)
+        checked = await self.execute(manual)
+        self.assertEqual(checked.state, TaskState.NEED_MANUAL)
+        error = self.store.get_task_record(manual.task_id)['error']
+        self.assertIn('落地文件名称或大小与清单不一致', error)
+        self.assertNotIn('还在下载', error)
+        self.assertIsNone(checked.result)
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 1)
+        self.assertEqual(self.cloud_calls('cloud_del'), [])
+
+    async def test_completed_download_keeps_size_count_and_directory_checks(self):
+        for index, mismatch in enumerate(('size', 'extra', 'directory'), 1):
+            with self.subTest(mismatch=mismatch):
+                digest = f'{index:032x}'
+                manual = await self.waiting_task([ed2k('Example.S01E18.mkv', digest=digest)],
+                                                 title=f'示例剧集{index}')
+                self.cloud.cloud_finish(digest)
+                stage = manual.ns('storage')['manifest']['staging_cid']
+                landed = self.cloud.children(stage)[0]
+                if mismatch == 'size':
+                    self.cloud.items[landed['id']]['size'] += 1
+                elif mismatch == 'extra':
+                    self.cloud.add({**landed, 'name': 'Unexpected.mkv'}, stage)
+                else:
+                    folder = self.cloud.add(Cloud.directory(0, stage, 'Nested'), stage)
+                    self.cloud.items[landed['id']]['parent_id'] = folder['id']
+                await self.service.reconcile_transfer(manual.task_id)
+                checked = await self.execute(manual)
+                self.assertEqual(checked.state, TaskState.NEED_MANUAL)
+                error = self.store.get_task_record(manual.task_id)['error']
+                self.assertIn('不一致', error)
+                self.assertNotIn('还在下载', error)
+                self.assertIsNone(checked.result)
+                self.assertEqual(len(self.cloud_calls('cloud_add')), index)
+                self.assertEqual(self.cloud_calls('cloud_del'), [])
+
+    async def test_unexpected_file_prevents_failure_or_retry_when_download_record_is_gone(self):
+        for index, status in enumerate(('absent', 'failed'), 1):
+            with self.subTest(status=status):
+                digest = f'{index:032x}'
+                manual = await self.waiting_task([ed2k('Example.S01E18.mkv', digest=digest)],
+                                                 title=f'示例剧集{index}')
+                manifest = manual.ns('storage')['manifest']
+                self.cloud.add({**manifest['files'][0], 'name': 'Unexpected.mkv'}, manifest['staging_cid'])
+                if status == 'absent':
+                    self.cloud.cloud_tasks.pop(digest)
+                else:
+                    self.cloud.cloud_tasks[digest]['status'] = -1
+                await self.service.reconcile_transfer(manual.task_id)
+                checked = await self.execute(manual)
+                self.assertEqual(checked.state, TaskState.NEED_MANUAL)
+                self.assertEqual(checked.ns('storage')['phase'], 'receiving')
+                self.assertIn('落地文件名称或大小与清单不一致',
+                              self.store.get_task_record(manual.task_id)['error'])
+                self.assertEqual(self.cloud_calls('cloud_del'), [])
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 2)
+
+    async def test_mixed_download_states_report_only_verified_files_as_arrived(self):
+        links = [ed2k(f'Example.S01E{i:02d}.mkv', 100 + i, f'{i:032x}') for i in range(1, 6)]
+        manual = await self.waiting_task(links)
+        self.cloud.cloud_finish(links[0]['hash'])
+        self.cloud.cloud_tasks[links[1]['hash']].update(status=2, percentDone=100)
+        self.cloud.cloud_tasks[links[3]['hash']]['status'] = -1
+        self.cloud.cloud_tasks.pop(links[4]['hash'])
+        await self.service.reconcile_transfer(manual.task_id)
+        checked = await self.execute(manual)
+        self.assertEqual(checked.state, TaskState.NEED_MANUAL)
+        error = self.store.get_task_record(manual.task_id)['error']
+        self.assertIn('已到 1/5 个文件', error)
+        self.assertIn('1 个已完成，等待暂存目录文件核验', error)
+        self.assertIn('1 个还在下载，进度 40%', error)
+        self.assertIn('1 个下载失败', error)
+        self.assertIn('1 个在云下载里找不到', error)
+        self.assertEqual(checked.ns('storage')['partial']['landed'], 1)
+        self.assertEqual(len(self.cloud_calls('cloud_add')), 5)
+        self.assertEqual(self.cloud_calls('cloud_del'), [])
+
     async def test_failed_download_fails_the_task_without_retry(self):
         self.cloud.cloud_mode[self.HASH] = "fail"
         with patch("reelay.providers.storage.CLOUD_WAIT", 0):
