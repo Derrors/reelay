@@ -33,12 +33,12 @@ npm run preview --prefix docs
 
 | 要修改的内容 | 文件 |
 | --- | --- |
-| 网站首页和功能入口 | `docs/index.md` |
-| 导航、侧栏、搜索和中文界面 | `docs/.vitepress/config.mts` |
+| 网站首页和功能入口 | `docs/index.md` 与 `docs/en/index.md` |
+| 语言、导航、侧栏、搜索和界面文案 | `docs/.vitepress/config.mts` |
 | 主色、字体和排版 | `docs/.vitepress/theme/custom.css` |
-| 快速开始、使用指南、FAQ 等正文 | 对应的 `docs/*.md` |
+| 快速开始、使用指南、FAQ 等正文 | `docs/*.md` 与同名 `docs/en/*.md` |
 | 仓库入口与快速启动摘要 | 根 `README.md` 与 `README.en.md`，使用在线文档链接 |
-| 完整项目介绍、能力边界与目录示例 | `docs/introduction.md`，独立维护正文 |
+| 完整项目介绍、能力边界与目录示例 | `docs/introduction.md` 与 `docs/en/introduction.md`，独立维护正文 |
 | 路径前缀、仓库链接转换和标题锚点 | `docs/.vitepress/site.mjs` |
 | 构建与发布 | `.github/workflows/docs.yml` |
 
@@ -52,6 +52,16 @@ npm run preview --prefix docs
 - 新增页面后补充侧栏与[文档导航](README.md)，再运行测试和构建；不要用 `ignoreDeadLinks` 跳过死链检查。
 
 全文搜索在浏览器本地执行，使用构建好的文档索引，不依赖第三方搜索服务或 AI。未发布能力仍应在正文里明确标记。
+
+### 中英文同步
+
+- 中文保留在 `docs/`，对应网站 `/reelay/`；英文放在 `docs/en/` 的同名文件，对应 `/reelay/en/`。所有文档页都要有英文版，不只翻译首页。
+- 两种语言使用相同的 Markdown 标题数量、层级与顺序。`translations.mjs` 在构建时配对标题并注入另一语言的锚点别名，语言菜单因此能保留当前页面和章节；别名冲突或章节缺失会使构建失败。开发预览中修改标题后，重启 `npm run dev --prefix docs` 以重新生成别名；正式构建总会重新生成。
+- 标题文字可以自然翻译，正文内部链接使用当前语言的标题锚点；不要改配置键、命令、协议字段或模板占位符。新增段落、表格和警告也要同步，不能仅靠标题检查代替翻译复核。
+- 英文文档里的仓库根文件使用 `../../`，如 `../../config.example.yaml`；英文页之间继续使用 `user-guide.md` 这样的相对链接。
+- 搜索索引按语言隔离，中文搜索中文内容，英文搜索英文内容。切换语言后，导航、搜索提示、页内目录、首页标语和流程图提示也会同步切换。
+- 文档双语不等于管理台或 Telegram Bot 已支持英文；英文操作说明应保留必要的中文界面标签。仓库贡献指南、更新日志等站外链接仍可能为中文，应在入口标明。
+- 检查桌面与手机上的语言切换、带章节地址的刷新、中英文搜索、流程图和明暗主题；构建检查会验证完整页面配对、语言属性和全部站内链接。
 
 ## 首次启用 GitHub Pages
 

@@ -59,7 +59,7 @@ tests/               # 后端测试（unittest，不访问网络），见下
 
 - 提交信息使用 [Conventional Commits](https://www.conventionalcommits.org/) 风格：`feat:`、`fix:`、`docs:`、`refactor:`、`test:`、`chore:`、`ci:`，可加范围如 `fix(115):`。
 - 一个 PR 只做一件事；行为变化请附测试，用户可见的变化请更新 `docs/` 与 `CHANGELOG.md`。
-- 代码注释与文档使用中文，风格与周边代码保持一致。
+- 代码注释与中文文档使用中文，英文文档维护在 `docs/en/`；文档改动同步两种语言，风格与周边内容保持一致。
 
 ## 必须遵守的约束
 

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createMarkdownRenderer } from 'vitepress';
 import { base, markdown, repository, siteLink } from './site.mjs';
+import { pairHeadings, withHeadingAliases } from './translations.mjs';
 
 const docs = fileURLToPath(new URL('..', import.meta.url));
 
@@ -66,10 +67,58 @@ test('完整项目介绍独立维护，不随 README 精简而丢失', async () 
   }
 });
 
+test('英文相对链接留在英文目录，仓库文件与 README 正确转换', () => {
+  assert.equal(siteLink('quickstart.md#prerequisites', 'en/README.md'), 'quickstart.md#prerequisites');
+  assert.equal(siteLink('../../README.en.md#overview', 'en/README.md'), '/en/introduction.md#overview');
+  assert.equal(siteLink('../../README.md', 'en/README.md'), '/en/introduction.md');
+  assert.equal(siteLink('../../config.example.yaml', 'en/configuration.md'), `${repository}/blob/main/config.example.yaml`);
+});
+
+test('每个中文文档都有完整英文对应文件', async () => {
+  const files = (await readdir(docs)).filter(file => file.endsWith('.md')).sort();
+  const english = (await readdir(path.join(docs, 'en'))).filter(file => file.endsWith('.md')).sort();
+  assert.ok(files.length >= 12);
+  assert.deepEqual(english, files);
+  for (const file of english) {
+    const source = await readFile(path.join(docs, 'en', file), 'utf8');
+    assert.ok(source.trim().length > 500, `${file}: 英文正文不完整`);
+    assert.ok(!/coming soon|translation pending/i.test(source), `${file}: 英文不能只提供占位页`);
+  }
+});
+
+test('标题配对忽略代码、拒绝章节缺失与层级不一致', async () => {
+  const md = await createMarkdownRenderer(docs, markdown, base);
+  const zh = md.render('# 示例\n\n## 章节\n\n```sh\n# 不是标题\n```');
+  const en = md.render('# Example\n\n## Section');
+  assert.deepEqual(pairHeadings(zh, en, 'test.md'), [{ zh: '示例', en: 'example' }, { zh: '章节', en: 'section' }]);
+  assert.throws(() => pairHeadings(zh, md.render('# Example'), 'test.md'), /标题数量/);
+  assert.throws(() => pairHeadings(zh, md.render('# Example\n\n### Section'), 'test.md'), /标题数量/);
+});
+
+test('每一对正文标题在两种语言下均可作为语言切换的锚点', async () => {
+  const options = await withHeadingAliases(markdown);
+  const md = await createMarkdownRenderer(docs, options, base);
+  const files = (await readdir(docs)).filter(file => file.endsWith('.md'));
+  for (const file of files) {
+    const rendered = await Promise.all([file, `en/${file}`].map(async relativePath => md.render(
+      await readFile(path.join(docs, relativePath), 'utf8'), { relativePath, path: path.join(docs, relativePath) },
+    )));
+    const pairs = pairHeadings(...rendered, file);
+    for (const html of rendered) {
+      const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+      assert.equal(new Set(ids).size, ids.length, `${file}: 重复锚点`);
+      for (const { zh, en } of pairs) {
+        assert.ok(ids.includes(zh) && ids.includes(en), `${file}: 缺少对应的中英文标题锚点`);
+      }
+    }
+  }
+});
+
 test('中英文 README 的使用文档入口指向在线站点', async () => {
   for (const file of ['README.md', 'README.en.md']) {
     const readme = await readFile(path.join(docs, '..', file), 'utf8');
-    assert.ok(readme.includes('https://derrors.github.io/reelay/quickstart.html'), `${file} 必须提供在线快速开始`);
+    const locale = file === 'README.en.md' ? 'en/' : '';
+    assert.ok(readme.includes(`https://derrors.github.io/reelay/${locale}quickstart.html`), `${file} 必须提供对应语言的在线快速开始`);
     assert.ok(!/\]\((?:\.\/)?docs\/[^)]+\.md(?:#[^)]*)?\)/.test(readme), `${file} 不应再将使用文档链接到仓库 Markdown`);
   }
 });

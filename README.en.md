@@ -16,7 +16,7 @@ Self-hosted · AI / rules · Approval & subscriptions · Verified transfers · A
 
 [简体中文](README.md) · **English**
 
-[Documentation](https://derrors.github.io/reelay/) · [Quick start](https://derrors.github.io/reelay/quickstart.html) · [User guide](https://derrors.github.io/reelay/user-guide.html) · [Releases](https://github.com/Derrors/reelay/releases) · [Issues](https://github.com/Derrors/reelay/issues)
+[Documentation](https://derrors.github.io/reelay/en/) · [Quick start](https://derrors.github.io/reelay/en/quickstart.html) · [User guide](https://derrors.github.io/reelay/en/user-guide.html) · [Releases](https://github.com/Derrors/reelay/releases) · [Issues](https://github.com/Derrors/reelay/issues)
 
 <br>
 
@@ -33,9 +33,9 @@ Reelay is a **self-hosted Telegram → 115 resource organizer** for a NAS or hom
 
 Configure it in the web console; approve, correct and follow shows from the web or Telegram. **Reel + Relay**: relaying resources from your message feed into your library.
 
-> Reelay does not search the web for resources or missing episodes, provide playback, mount your drive, or generate STRM files. Your media server needs its own way to read files on 115. [Full capabilities and boundaries →](https://derrors.github.io/reelay/introduction.html)
+> Reelay does not search the web for resources or missing episodes, provide playback, mount your drive, or generate STRM files. Your media server needs its own way to read files on 115. [Full capabilities and boundaries →](https://derrors.github.io/reelay/en/introduction.html)
 
-The web console, Telegram messages and detailed guides are in **Simplified Chinese**.
+Documentation is available in **English and Simplified Chinese**. The web console and Telegram messages are still in **Simplified Chinese**; the English guides explain the relevant Chinese controls.
 
 ## Highlights
 
@@ -48,7 +48,7 @@ The web console, Telegram messages and detailed guides are in **Simplified Chine
 
 ## Quick start
 
-Prepare an always-on machine, Docker Compose **v2.24+**, a personal Telegram account with API ID / API Hash, and a 115 account. See the [prerequisites](https://derrors.github.io/reelay/quickstart.html#开始前的准备) for AI, TMDB and control-bot setup.
+Prepare an always-on machine, Docker Compose **v2.24+**, a personal Telegram account with API ID / API Hash, and a 115 account. See the [prerequisites](https://derrors.github.io/reelay/en/quickstart.html#before-you-start) for AI, TMDB and control-bot setup.
 
 **1. Start the web console:**
 
@@ -61,7 +61,7 @@ docker compose up -d web
 
 **2. Open [http://127.0.0.1:28080](http://127.0.0.1:28080)**, set a console password, then configure networking, Telegram, AI / TMDB and 115 under Settings.
 
-The port listens only on the deployment machine by default. For a NAS or LAN, follow the [access instructions](https://derrors.github.io/reelay/quickstart.html#2-打开管理台); do not expose it directly to the internet.
+The port listens only on the deployment machine by default. For a NAS or LAN, follow the [access instructions](https://derrors.github.io/reelay/en/quickstart.html#2-open-the-console); do not expose it directly to the internet.
 
 **3. In the same directory, log in with your personal Telegram account and start the worker:**
 
@@ -72,19 +72,19 @@ docker compose up -d
 
 **4. Set save directories and sources.** Begin with manual approval and rule-based decisions. Test a message you are authorized to save, then wait for a new message, approve it and verify that the files arrive.
 
-Step-by-step checks, local installation and offline simulation are in the **[quick start](https://derrors.github.io/reelay/quickstart.html)**.
+Step-by-step checks, local installation and offline simulation are in the **[quick start](https://derrors.github.io/reelay/en/quickstart.html)**.
 
 ## Documentation
 
-Detailed guides are in Chinese.
+Read the guides in [English](https://derrors.github.io/reelay/en/) or [简体中文](https://derrors.github.io/reelay/). Use the language menu to switch the current page.
 
 | Goal | Guide |
 | --- | --- |
-| Configure sources, approvals, subscriptions and organizing | [User guide](https://derrors.github.io/reelay/user-guide.html) |
-| Troubleshoot access, messages or transfers | [FAQ](https://derrors.github.io/reelay/faq.html) |
-| Look up settings, upgrade or back up | [Configuration](https://derrors.github.io/reelay/configuration.html) · [Deployment](https://derrors.github.io/reelay/deployment.html) |
-| Use the bot, natural-language controls or MCP | [Telegram and agents](https://derrors.github.io/reelay/agents.html) |
-| Understand internals or build extensions | [Architecture](https://derrors.github.io/reelay/architecture.html) · [Plugins](https://derrors.github.io/reelay/plugins.html) |
+| Configure sources, approvals, subscriptions and organizing | [User guide](https://derrors.github.io/reelay/en/user-guide.html) |
+| Troubleshoot access, messages or transfers | [FAQ](https://derrors.github.io/reelay/en/faq.html) |
+| Look up settings, upgrade or back up | [Configuration](https://derrors.github.io/reelay/en/configuration.html) · [Deployment](https://derrors.github.io/reelay/en/deployment.html) |
+| Use the bot, natural-language controls or MCP | [Telegram and agents](https://derrors.github.io/reelay/en/agents.html) |
+| Understand internals or build extensions | [Architecture](https://derrors.github.io/reelay/en/architecture.html) · [Plugins](https://derrors.github.io/reelay/en/plugins.html) |
 
 ## Before you use it
 

@@ -39,7 +39,10 @@
 .VPHero .name { letter-spacing: -.035em; }
 .reelay-hero-mark { display: grid; justify-items: center; gap: 24px; padding: 28px; }
 .reelay-hero-mark img { border-radius: 25%; }
-.reelay-hero-mark p { color: var(--vp-c-text-2); font-size: 15px; letter-spacing: .16em; }
+.reelay-hero-mark p { color: var(--vp-c-text-2); font-size: 15px; letter-spacing: .16em; text-align: center; }
+:lang(en) .reelay-hero-mark p { letter-spacing: .02em; }
+/* 同页直接修改 hash 时浏览器原生滚动也要避开固定导航栏。 */
+.vp-doc :is(h1, h2, h3, h4, h5, h6), .reelay-heading-alias { scroll-margin-top: 96px; }
 .VPFeature { border-color: var(--vp-c-divider); }
 .VPFeature .title { font-size: 17px; }
 .VPFeature .details { font-size: 14px; line-height: 1.9; }
@@ -63,6 +66,8 @@
 .reelay-diagram { margin: 24px 0; padding: 16px; border: 1px solid var(--vp-c-divider); border-radius: 8px; }
 .reelay-diagram-scroll { overflow-x: auto; max-width: 100%; }
 .reelay-diagram-scroll svg { min-width: 600px; }
+/* 保持 Mermaid 标签的测量样式，不继承正文行高与强制断词，避免英文被裁切。 */
+.reelay-diagram-scroll foreignObject p { line-height: inherit; overflow-wrap: normal; }
 .reelay-diagram pre { overflow-x: auto; padding: 16px; font-size: 12px; background: var(--vp-code-block-bg); }
 .reelay-diagram summary { font-size: 13px; }
 @media (max-width: 640px) {

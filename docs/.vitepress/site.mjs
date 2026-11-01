@@ -8,7 +8,10 @@ export function siteLink(href, relativePath = 'index.md') {
   if (/^(?:[a-z][a-z\d+.-]*:|\/|#|\?)/i.test(href)) return href;
   const url = new URL(href, `https://docs.invalid/docs/${relativePath}`);
   const path = decodeURIComponent(url.pathname.slice(1));
-  if (path === 'README.md') return `/introduction.md${url.search}${url.hash}`;
+  if (path === 'README.md' || path === 'README.en.md') {
+    const locale = path === 'README.en.md' || relativePath.startsWith('en/') ? '/en' : '';
+    return `${locale}/introduction.md${url.search}${url.hash}`;
+  }
   if (path.startsWith('docs/')) return href;
   return `${repository}/blob/main/${url.pathname.slice(1)}${url.search}${url.hash}`;
 }

@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import { useData } from 'vitepress';
 
 const props = defineProps<{ code: string }>();
-const { isDark } = useData();
+const { isDark, lang } = useData();
+const labels = computed(() => lang.value === 'en' ? {
+  error: 'The diagram could not be displayed. Expand the source below to read it.',
+  diagram: 'Architecture flowchart', loading: 'Loading diagram…', source: 'View Mermaid source',
+} : {
+  error: '图表暂时无法显示，可以展开下方源码阅读。',
+  diagram: '架构流程图', loading: '正在加载流程图…', source: '查看 Mermaid 源码',
+});
 const diagram = ref('');
 const error = ref(false);
 const id = `reelay-diagram-${useId().replace(/[^a-z\d-]/gi, '')}`;
@@ -33,11 +40,11 @@ onBeforeUnmount(() => { mounted = false; revision++; });
 
 <template>
   <figure class="reelay-diagram">
-    <p v-if="error" role="status">图表暂时无法显示，可以展开下方源码阅读。</p>
-    <div v-else-if="diagram" class="reelay-diagram-scroll" role="img" aria-label="架构流程图" tabindex="0" v-html="diagram" />
-    <p v-else role="status">正在加载流程图…</p>
+    <p v-if="error" role="status">{{ labels.error }}</p>
+    <div v-else-if="diagram" class="reelay-diagram-scroll" role="img" :aria-label="labels.diagram" tabindex="0" v-html="diagram" />
+    <p v-else role="status">{{ labels.loading }}</p>
     <details>
-      <summary>查看 Mermaid 源码</summary>
+      <summary>{{ labels.source }}</summary>
       <pre><code>{{ code }}</code></pre>
     </details>
   </figure>
