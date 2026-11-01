@@ -10,9 +10,10 @@ export const APPROVAL_HINTS: Record<string, string> = {
   manual: '默认：每条符合要求的资源都等你确认后再转存。',
   auto: '适合信任的来源：AI 识别、规则都通过就直接转存；拿不准的仍交给你确认。',
 };
-/** 来源单独设置「Bot 通知」：开 / 关（未设置时跟随默认）。 */
-export const NOTIFY_OPTIONS = [{ value: 'on', label: '开' }, { value: 'off', label: '关' }];
-export const notifyValue = (v: unknown) => (v === undefined || v === null ? '' : v ? 'on' : 'off');
+/** 来源单独设置布尔选项：开 / 关（未设置时跟随默认）。 */
+export const BOOLEAN_OPTIONS = [{ value: 'on', label: '开' }, { value: 'off', label: '关' }];
+export const booleanValue = (v: unknown) => (v === undefined || v === null ? '' : v ? 'on' : 'off');
+export const SUBSCRIPTIONS_ONLY_HINT = '开启后只处理有效订阅的作品与季，需 TMDB 匹配。未订阅、订阅已取消或结束、无法确认属于订阅的资源直接忽略，不进入待审批。仅提醒的订阅也算有效；匹配后仍遵守过滤、置信度和审批规则。';
 
 export const SLOT_ORDER = ['source', 'parser', 'decision', 'storage'];
 
@@ -81,7 +82,7 @@ export function storagesInUse(cfg: Obj): string[] {
 /** 设置页各分区：用于未保存提示、页签上的小圆点，以及把后端的校验错误归到分区。 */
 export const CONFIG_SECTIONS = [
   { label: '保存目录', tab: 'common', paths: ['save_dirs'] },
-  { label: '默认处理方式', tab: 'common', paths: ['defaults.approval_mode', 'defaults.bot_notify', 'defaults.save_to', 'defaults.preferences'] },
+  { label: '默认处理方式', tab: 'common', paths: ['defaults.approval_mode', 'defaults.bot_notify', 'defaults.subscriptions_only', 'defaults.save_to', 'defaults.preferences'] },
   { label: '识别后转发', tab: 'common', paths: ['forward'] },
   { label: '监听来源', tab: 'sources', paths: ['sources'] },
   { label: '识别准确度', tab: 'advanced', paths: ['defaults.confidence_threshold', 'defaults.llm_response_format'] },

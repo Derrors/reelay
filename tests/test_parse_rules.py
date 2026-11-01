@@ -158,6 +158,47 @@ class TestDraftAndPreview(ServiceCase):
         with self.assertRaises(ConflictError):
             await self.service.draft_parse_rules("@bot", [POST])
 
+    async def test_rule_draft_accepts_flat_fields_and_text_notes(self):
+        empty = {key: "" for key in parse_rules.FIELDS}
+        cases = [
+            # 当前兼容接口实际返回的形态：没有 rules 包装，notes 是空字符串。
+            ({**empty, "notes": ""}, {}, []),
+            ({**empty, **RULES, "notes": "  请核对集数  "}, RULES, ["请核对集数"]),
+            ({**RULES, "notes": []}, RULES, []),
+            ({"rules": RULES, "notes": "来源格式不统一"}, RULES, ["来源格式不统一"]),
+        ]
+        for reply, expected_rules, expected_notes in cases:
+            with self.subTest(reply=reply):
+                self.parser._client = FakeAI(reply)
+                result = await self.service.draft_parse_rules("@bot", [POST])
+                self.assertEqual((result["rules"], result["notes"]), (expected_rules, expected_notes))
+                self.assertEqual(len(self.parser._client.calls), 1)
+                prompt = self.parser._client.calls[0]["messages"][0]["content"]
+                self.assertIn('"rules":', prompt)
+                self.assertIn('"notes": []', prompt)
+        self.assertNotIn("sources", json.loads(self.config_path.read_text(encoding="utf-8")))
+
+    async def test_rule_draft_rejects_unknown_shapes_with_a_clear_error(self):
+        for reply in ([], {"notes": []}, {"rules": [], "notes": []},
+                      {"rules": RULES, "notes": [], "unexpected": True},
+                      {"title": RULES["title"], "unexpected": True}):
+            with self.subTest(reply=reply):
+                self.parser._client = FakeAI(reply)
+                with self.assertRaisesRegex(ConflictError, "rules 对象和 notes 数组"):
+                    await self.service.draft_parse_rules("@bot", [POST])
+                self.assertEqual(len(self.parser._client.calls), 1)
+
+    async def test_rule_draft_still_validates_flat_regexes_and_notes(self):
+        self.parser._client = FakeAI({"title": "(", "episodes": RULES["episodes"], "notes": ""})
+        result = await self.service.draft_parse_rules("@bot", [POST])
+        self.assertEqual(result["rules"], {"episodes": RULES["episodes"]})
+        self.assertIn("AI 写的片名规则无效，已丢弃", result["notes"][0])
+        for notes in (123, ["提醒"] * 11, "长" * 301):
+            with self.subTest(notes=notes):
+                self.parser._client = FakeAI({"rules": RULES, "notes": notes})
+                with self.assertRaisesRegex(ConflictError, "notes"):
+                    await self.service.draft_parse_rules("@bot", [POST])
+
     def test_preview_runs_hand_edited_rules_without_ai(self):
         self.parser._client = None
         result = self.service.preview_parse_rules({"title": RULES["title"], "episodes": " "}, [POST])
@@ -180,6 +221,27 @@ class TestDraftPreviews(ServiceCase):
         for bad in ({"bot": "@bot", "parse_rules": {"title": "("}}, {"bot": " "}, None):
             with self.assertRaises(ValueError):
                 self.service.draft_source_rule(bad)
+
+    async def test_ed2k_preview_returns_links_and_follows_approval_mode(self):
+        self.configure({**self.CFG, "plugins": {"tmdb_enrich": {"enabled": False}}})
+        name, size, file_hash = "示例.2026.S01E31.2160p.mkv", 366323694, "0123456789abcdef0123456789abcdef"
+        link = f"ed2k://|file|{name}|{size}|{file_hash}|/"
+        text = f"📺 示例 (2026) S01E31 2160p\n🔗 ED2K：\n{link}"
+        storage = self.registry.get_provider("storage", "p115")
+        # 电驴探测只读链接中的文件名与大小，不访问 115。
+        with patch.object(storage, "ready", return_value=True):
+            for mode, expected in (("manual", "ask"), ("auto", "save")):
+                with self.subTest(approval_mode=mode):
+                    draft = {"bot": "@bot", "parser": "regex", "decision": "default", "approval_mode": mode}
+                    result = await self.service.test_parse(text, [], "@bot", rule=self.service.draft_source_rule(draft))
+                    self.assertEqual(result["parsed"]["ed2k"], [
+                        {"name": name, "size": size, "hash": file_hash, "url": link},
+                    ])
+                    self.assertIsNone(result["parsed"]["share_code"])
+                    self.assertEqual(result["confidence"]["score"], 1.0)
+                    self.assertEqual(result["decision"], expected)
+                    self.assertTrue(any("读取电驴链接：1 个视频" in entry for entry in result["trail"]))
+        self.assertEqual(self.store.list_tasks(), [])  # 预览不产生转存任务
 
     def test_naming_preview_uses_the_unsaved_template(self):
         from reelay.core import runtime

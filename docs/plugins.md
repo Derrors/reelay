@@ -146,7 +146,7 @@ class MyListener:
 
 Provider 由配置选择：`providers.source`、`providers.notify`，以及 `defaults`/`sources[]` 中的 `parser`、`decision`、`storage`。
 
-内置的三个 `decision` 逐层叠加：`default` 只按规则；`subscription`（默认）在其上让订阅剧集的新集自动放行；`llm` 再按自然语言偏好筛选。自定义决策器想保留订阅放行，可以继承 `SubscriptionDecision`。无论决策器返回什么，LLM 降级的识别结果都只能转人工。
+内置的三个 `decision` 逐层叠加：`default` 只按规则；`subscription`（默认）在其上让订阅剧集的新集自动放行；`llm` 再按自然语言偏好筛选。自定义决策器想保留订阅放行，可以继承 `SubscriptionDecision`。开启 `subscriptions_only` 时，内核会先核对有效订阅，未匹配就直接忽略，不调用决策器；正式识别与测试预览一致。决策器对 LLM 降级结果返回 `save` 时，内核仍会改为转人工。
 
 ## 调用 AI
 

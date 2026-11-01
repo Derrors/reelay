@@ -89,6 +89,8 @@ export interface IParsedResource {
   size?: string | null;
   share_code?: string | null;
   receive_code?: string | null;
+  /** 从消息中提取的电驴文件；同时有 115 分享时优先使用分享。 */
+  ed2k?: Array<{ name: string; size: number; hash: string; url: string }>;
   reason?: string | null;
   raw_fields?: Record<string, unknown>;
 }
