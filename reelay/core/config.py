@@ -38,7 +38,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "forward": {"enabled": False, "target": "", "template": "{title} ({year}) {resolution}\n{link}"},
     "providers": {"source": "telegram", "notify": ["console"]},
     # approval_mode：manual 人工确认 / auto AI 处理；bot_notify：是否推送审批卡片与入库通知（与确认方式无关）
-    "defaults": {"approval_mode": "manual", "bot_notify": True, "parser": "llm", "decision": "subscription",
+    "defaults": {"approval_mode": "manual", "bot_notify": True, "subscriptions_only": False,
+                 "parser": "llm", "decision": "subscription",
                  "storage": "p115", "save_to": "默认", "confidence_threshold": 0.5,
                  "llm_response_format": "json_schema", "episodes_from": "share"},
     "sources": [],
@@ -334,8 +335,9 @@ def _validate_services(cfg: dict) -> None:
 def _validate_rule(rule: dict, dirs: dict, label: str) -> None:
     if type(rule.get("approval_mode")) is not str or rule["approval_mode"] not in {"manual", "auto"}:
         raise ValueError(f"{label}.approval_mode 只能是 manual（人工确认）或 auto（AI 处理）")
-    if type(rule.get("bot_notify")) is not bool:
-        raise ValueError(f"{label}.bot_notify 必须是 true 或 false")
+    for key in ("bot_notify", "subscriptions_only"):
+        if type(rule.get(key)) is not bool:
+            raise ValueError(f"{label}.{key} 必须是 true 或 false")
     if type(rule.get("save_to")) is not str or rule["save_to"] not in dirs:
         raise ValueError(f"{label}.save_to 引用了不存在的目录")
     for key in ("parser", "decision", "storage"):

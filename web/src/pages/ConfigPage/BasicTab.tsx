@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 import { obj, rows, text, type Obj } from '@/lib/values';
 import { RadioCards, SwitchRow } from './fields';
 import { RuleComposer } from './RuleComposer';
-import { APPROVAL_HINTS, APPROVAL_OPTIONS, providerLabel, type Catalog } from './shared';
+import { APPROVAL_HINTS, APPROVAL_OPTIONS, providerLabel, SUBSCRIPTIONS_ONLY_HINT, type Catalog } from './shared';
 
 const FORWARD_TOKENS: Array<[string, string]> = [
   ['{title}', '片名'], ['{year}', '年份'], ['{resolution}', '清晰度'], ['{size}', '大小'], ['{link}', '链接'],
@@ -178,6 +178,12 @@ export function BasicTab({ config, catalog, update, setField, dirNames, remember
               />
               <p className="text-xs leading-5 text-muted-foreground">即使选了 AI 处理，AI 没把握时仍会转给你确认。</p>
             </div>
+            <SwitchRow
+              title="仅处理订阅"
+              description={SUBSCRIPTIONS_ONLY_HINT}
+              checked={defaults.subscriptions_only === true}
+              onCheckedChange={v => setField('defaults', 'subscriptions_only', v)}
+            />
             <SwitchRow
               title="Bot 通知"
               description={defaults.bot_notify === false

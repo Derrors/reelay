@@ -17,7 +17,7 @@ import { LinesField, ListInput } from './fields';
 import { ParseRulesDialog } from './ParseRulesDialog';
 import { ParseTestDialog } from './ParseTestDialog';
 import { SourceWizard } from './SourceWizard';
-import { APPROVAL_OPTIONS, botValue, NOTIFY_OPTIONS, notifyValue, providerHint, providerLabel, sourceBots, type Catalog } from './shared';
+import { APPROVAL_OPTIONS, BOOLEAN_OPTIONS, booleanValue, botValue, providerHint, providerLabel, sourceBots, SUBSCRIPTIONS_ONLY_HINT, type Catalog } from './shared';
 
 /** 识别方式与放行方式只在来源上设置（defaults 里的值只是没写时的兜底）；网盘有多个可选时才出现在高级设置里。 */
 const MAIN_SLOTS = ['parser', 'decision'];
@@ -44,6 +44,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
   const filters = obj(source.filters);
   const mode = text(source.approval_mode || defaults.approval_mode);
   const notify = (source.bot_notify ?? defaults.bot_notify) !== false;
+  const subscriptionsOnly = (source.subscriptions_only ?? defaults.subscriptions_only) === true;
   const saveTo = text(source.save_to || defaults.save_to);
   const parser = text(source.parser || defaults.parser);
   const parseRules = obj(source.parse_rules);
@@ -66,7 +67,7 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
     <Panel
       icon={Radio}
       title={name || <span className="text-muted-foreground">未命名来源</span>}
-      description={`${approvalLabels[mode] ?? '确认方式未设置'} · ${notify ? 'Bot 通知' : '不发 Bot 通知'} · 保存到「${saveTo || '未设置'}」`}
+      description={`${approvalLabels[mode] ?? '确认方式未设置'}${subscriptionsOnly ? ' · 仅处理订阅' : ''} · ${notify ? 'Bot 通知' : '不发 Bot 通知'} · 保存到「${saveTo || '未设置'}」`}
       actions={(
         <Button
           variant="ghost" size="icon" className="size-9 text-muted-foreground hover:bg-destructive/10 hover:text-destructive sm:size-8"
@@ -107,12 +108,20 @@ function SourceCard({ index, source, defaults, aliases, catalog, open, insight, 
             />
           </Field>
         ))}
+        <Field label="仅处理订阅" hint={SUBSCRIPTIONS_ONLY_HINT}>
+          <Select
+            value={booleanValue(source.subscriptions_only)}
+            onValueChange={v => onChange({ subscriptions_only: v ? v === 'on' : undefined })}
+            placeholder="未设置" fallback={{ value: defaults.subscriptions_only === true ? 'on' : 'off' }}
+            options={BOOLEAN_OPTIONS}
+          />
+        </Field>
         <Field label="Bot 通知">
           <Select
-            value={notifyValue(source.bot_notify)}
+            value={booleanValue(source.bot_notify)}
             onValueChange={v => onChange({ bot_notify: v ? v === 'on' : undefined })}
             placeholder="未设置" fallback={{ value: defaults.bot_notify === false ? 'off' : 'on' }}
-            options={NOTIFY_OPTIONS}
+            options={BOOLEAN_OPTIONS}
           />
         </Field>
         <Field label="保存到">

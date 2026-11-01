@@ -1,0 +1,75 @@
+/* 延续管理台的青绿主色与冷灰背景，不引入第三方字体或追踪服务。 */
+:root {
+  --vp-c-brand-1: #207f73;
+  --vp-c-brand-2: #268f81;
+  --vp-c-brand-3: #1e766b;
+  --vp-c-brand-soft: rgba(32, 127, 115, .12);
+  --vp-c-bg: #fafcfc;
+  --vp-c-bg-alt: #f0f5f5;
+  --vp-c-bg-soft: #f0f5f5;
+  --vp-c-text-1: #162a2c;
+  --vp-c-text-2: #506264;
+  --vp-c-text-3: #6b7d7f;
+  --vp-home-hero-name-color: var(--vp-c-brand-1);
+  --vp-button-brand-bg: #207f73;
+  --vp-button-brand-hover-bg: #196c62;
+  --vp-button-brand-active-bg: #15594f;
+  --vp-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --vp-font-family-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+}
+
+.dark {
+  --vp-c-brand-1: #65cfbb;
+  --vp-c-brand-2: #48bba6;
+  --vp-c-brand-3: #329b88;
+  --vp-c-brand-soft: rgba(101, 207, 187, .14);
+  --vp-c-bg: #0e1518;
+  --vp-c-bg-alt: #151f23;
+  --vp-c-bg-soft: #172327;
+  --vp-c-text-1: #e5eeee;
+  --vp-c-text-2: #b0c2c3;
+  --vp-c-text-3: #8ca4a6;
+  --vp-button-brand-bg: #207f73;
+  --vp-button-brand-hover-bg: #268f81;
+  --vp-button-brand-active-bg: #1e766b;
+}
+
+.VPHero .text { max-width: 690px; font-size: clamp(32px, 4.2vw, 54px); line-height: 1.25; text-wrap: balance; }
+.VPHero .tagline { max-width: 650px; line-height: 1.8; font-size: 19px; }
+.VPHero .name { letter-spacing: -.035em; }
+.reelay-hero-mark { display: grid; justify-items: center; gap: 24px; padding: 28px; }
+.reelay-hero-mark img { border-radius: 25%; }
+.reelay-hero-mark p { color: var(--vp-c-text-2); font-size: 15px; letter-spacing: .16em; }
+.VPFeature { border-color: var(--vp-c-divider); }
+.VPFeature .title { font-size: 17px; }
+.VPFeature .details { font-size: 14px; line-height: 1.9; }
+.vp-doc { line-height: 1.9; }
+.vp-doc h1, .vp-doc h2, .vp-doc h3 { text-wrap: balance; }
+.vp-doc th { white-space: nowrap; }
+.vp-doc p, .vp-doc li { overflow-wrap: anywhere; }
+.vp-doc details { margin: 18px 0; }
+.vp-doc summary { cursor: pointer; color: var(--vp-c-brand-1); font-weight: 500; }
+.home-guide { max-width: 1152px; margin: 64px auto 0; padding: 0 24px 64px; }
+.home-guide h2 { font-size: 25px; font-weight: 650; margin: 0 0 24px; }
+.home-guide .intro { color: var(--vp-c-text-2); line-height: 1.9; margin-bottom: 24px; }
+.reading-paths { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.vp-doc .reading-paths a { display: block; padding: 24px 0; border-top: 1px solid var(--vp-c-divider); color: var(--vp-c-text-1); text-decoration: none; }
+.reading-paths a:hover strong { color: var(--vp-c-brand-1); }
+.reading-paths strong { display: block; font-size: 17px; margin-bottom: 12px; }
+.reading-paths span { display: block; color: var(--vp-c-text-2); font-size: 14px; line-height: 1.9; }
+.reading-paths em { display: block; color: var(--vp-c-brand-1); font-size: 14px; font-style: normal; margin-top: 16px; }
+.home-note { margin-top: 32px; padding: 20px 24px; background: var(--vp-c-bg-soft); border-radius: 8px; color: var(--vp-c-text-2); line-height: 1.9; font-size: 14px; }
+.home-note a { color: var(--vp-c-brand-1); text-decoration: underline; text-underline-offset: 3px; }
+.reelay-diagram { margin: 24px 0; padding: 16px; border: 1px solid var(--vp-c-divider); border-radius: 8px; }
+.reelay-diagram-scroll { overflow-x: auto; max-width: 100%; }
+.reelay-diagram-scroll svg { min-width: 600px; }
+.reelay-diagram pre { overflow-x: auto; padding: 16px; font-size: 12px; background: var(--vp-code-block-bg); }
+.reelay-diagram summary { font-size: 13px; }
+@media (max-width: 640px) {
+  .home-guide { padding-inline: 24px; margin-top: 40px; }
+  .reading-paths { grid-template-columns: 1fr; gap: 0; }
+  .reelay-hero-mark { padding: 16px; gap: 16px; }
+  .reelay-hero-mark img { width: 144px; height: 144px; }
+  .VPHero .tagline { font-size: 16px; }
+  .reelay-diagram { margin-inline: 0; padding: 12px; }
+}

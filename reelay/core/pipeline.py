@@ -37,8 +37,8 @@ from .contracts import (
 from .registry import Registry
 from .store import Store, _load_ctx
 from .config import config_revision, find_source, load_config, merge_config, normalize_config
-from .media import pairs_label, summarize_pairs
-from . import confidence, ignored, messages, runtime, works
+from .media import pairs_label, planned_pairs, summarize_pairs
+from . import confidence, ignored, messages, runtime, subscriptions, works
 
 log = logging.getLogger("reelay.pipeline")
 LATE_ALERT_SEC = 120  # 告警晚于发生这么久才送达时，注明发生的时间
@@ -373,12 +373,7 @@ class Pipeline:
             ctx.decision = Decision.SKIP
             ctx.log(f"你已设置不再接收《{blocked['title']}》，直接忽略")
         else:
-            decider = self.reg.get_provider("decision",
-                                            ctx.source_rule.get("decision", self.cfg["defaults"]["decision"]))
-            with self.scope(ctx):
-                ctx.decision = await decider.decide(ctx)
-        if ctx.decision == Decision.SAVE and ctx.meta.get("parse", {}).get("fallback"):
-            ctx.decision = Decision.ASK
+            ctx.decision = await self.decide(ctx)
         ctx.log(f"决策 = {ctx.decision.value}")
 
         if ctx.decision == Decision.SKIP:
@@ -405,6 +400,28 @@ class Pipeline:
         if ctx.decision == Decision.ASK and not ctx.raw.extra.get("backfill"):
             await self.notify_all(ctx, "pending_approval", persist=False)
         self.store.save_task(ctx)
+
+    async def decide(self, ctx: PipelineContext) -> Decision:
+        """正式识别与测试预览共用的决策入口：订阅白名单不能被放行方式或自定义决策器绕过。"""
+        if ctx.source_rule.get("subscriptions_only"):
+            p = ctx.parsed
+            # 明确指定季时，转存本就只取该季；没指定则按读取到的资源范围核对每一季。
+            seasons = {p.season} if p and p.season is not None else {season for season, _ in planned_pairs(ctx)}
+            active = [item for item in self.store.subscriptions() if not item.get("finished")]
+            if not seasons or not all(subscriptions.match(active, p, ctx.meta.get("tmdb", {}),
+                                                          seasons={season}, auto_only=False) for season in seasons):
+                ctx.log("仅处理订阅：未匹配到覆盖资源所属季的有效订阅，直接忽略")
+                return Decision.SKIP
+            if p.season is None and len(seasons) == 1:
+                # 即使审批模式为 auto，也不能顺带转存分享中的其他未订阅季。
+                p.season = next(iter(seasons))
+                ctx.log(f"仅处理订阅：转存范围限定为第 {p.season} 季")
+        decider = self.reg.get_provider("decision", ctx.source_rule.get("decision", self.cfg["defaults"]["decision"]))
+        with self.scope(ctx):
+            decision = await decider.decide(ctx)
+        if decision == Decision.SAVE and ctx.meta.get("parse", {}).get("fallback"):
+            return Decision.ASK
+        return decision
 
     # ------------------------------------------------------------------ #
     # 审批回调（控制 bot / 收藏夹点击后调用）

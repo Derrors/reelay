@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { CONFIDENCE_CAP_LABELS, CONFIDENCE_CHECK_LABELS, DECISION_META, TONE_CLASS, type Tone } from '@/lib/status';
+import { CONFIDENCE_CAP_LABELS, CONFIDENCE_CHECK_LABELS, DECISION_META, resourceLinkMeta, TONE_CLASS, type Tone } from '@/lib/status';
 import { cn, errorMessage } from '@/lib/utils';
 import type { Obj } from '@/lib/values';
 
@@ -93,7 +93,7 @@ function Trail({ entries }: { entries: string[] }) {
 function ResultView({ result }: { result: ITestParseResp }) {
   const p = result.parsed;
   const posterPath = typeof p?.raw_fields?.poster_path === 'string' ? p.raw_fields.poster_path : null;
-  const hasLink = Boolean(p?.share_code);
+  const link = resourceLinkMeta(p);
 
   return (
     <div className="space-y-4">
@@ -114,9 +114,7 @@ function ResultView({ result }: { result: ITestParseResp }) {
               className="mt-1 text-[13px]"
             />
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {hasLink
-                ? <ToneBadge tone="success">已提取 115 链接</ToneBadge>
-                : <ToneBadge tone="warning">没有找到 115 链接</ToneBadge>}
+              <ToneBadge tone={link.tone}>{link.label}</ToneBadge>
               {p.is_ad ? <ToneBadge tone="danger">疑似广告</ToneBadge> : null}
               {!p.is_ad && p.genres?.length ? <ToneBadge tone="neutral">{p.genres.slice(0, 3).join(' / ')}</ToneBadge> : null}
             </div>
@@ -211,7 +209,7 @@ export function ParseTestDialog({ open, onOpenChange, source, bot }: ParseTestDi
             <Field label="跳转链接（可选）" hint="消息按钮背后的真实链接；多个用空格或逗号分隔。">
               <Input
                 className="bg-card"
-                placeholder="https://115cdn.com/s/…"
+                placeholder="https://115cdn.com/s/… 或 ed2k://|file|…"
                 value={urls}
                 onChange={(e) => setUrls(e.target.value)}
               />

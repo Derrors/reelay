@@ -1,5 +1,5 @@
 /** 内部取值 → 中文标签与色调：界面只展示这里的文案，不直接展示后端取值。插件专属的取值放在插件自己的目录。 */
-import type { AdviceAction, TaskState } from '@/lib/types';
+import type { AdviceAction, IParsedResource, TaskState } from '@/lib/types';
 
 export type Tone = 'neutral' | 'info' | 'primary' | 'warning' | 'success' | 'danger';
 
@@ -62,6 +62,13 @@ export const DECISION_META: Record<string, { label: string; tone: Tone }> = {
   ask: { label: '需要你确认', tone: 'warning' },
   skip: { label: '建议忽略', tone: 'neutral' },
 };
+
+/** 识别结果中的资源链接；与后端一致，115 分享优先于电驴链接。 */
+export function resourceLinkMeta(parsed: IParsedResource | null | undefined): { label: string; tone: Tone } {
+  if (parsed?.share_code) return { label: '已提取 115 链接', tone: 'success' };
+  if (parsed?.ed2k?.length) return { label: '已提取电驴链接', tone: 'success' };
+  return { label: '没有找到资源链接', tone: 'warning' };
+}
 
 /** 审批建议的色调；文案由后端给出。 */
 export const ADVICE_TONE: Record<AdviceAction, Tone> = { approve: 'success', reject: 'neutral', review: 'warning' };

@@ -16,6 +16,8 @@ Self-hosted · AI recognition · You decide · Every transfer verified
 
 [简体中文](README.md) · **English**
 
+[Documentation website](https://derrors.github.io/reelay/) · [Documentation index](docs/README.md) · [Quick start](docs/quickstart.md) · [User guide](docs/user-guide.md) · [FAQ](docs/faq.md) — detailed guides are in Chinese.
+
 <br>
 
 <picture>
@@ -27,7 +29,7 @@ Self-hosted · AI recognition · You decide · Every transfer verified
 
 <br>
 
-The channels and bots you follow post a flood of releases every day, and you only want a few of them. Reelay watches them with your own Telegram account. An LLM reads each message to work out the title, season, episodes and release details, and TMDB plus the actual files in the share double-check it. When you tap **Save** in Telegram, Reelay saves the share into your own 115 cloud drive and renames and files it the way Jellyfin / Emby expect. The next time you open your media server, the new episode is already there.
+The channels and bots you follow post a flood of releases every day, and you only want a few of them. Reelay watches them with your own Telegram account. An LLM reads each message to work out the title, season, episodes and release details, and TMDB plus the actual files in the share double-check it. When you tap **Save** in Telegram, Reelay saves the share into your own 115 cloud drive and renames and files it the way Jellyfin / Emby expect. Your media-server setup still needs its own way to read the files on 115; Reelay does not provide mounting, STRM generation, playback, or media-server scanning.
 
 Set it up once in the web console; after that, approving, correcting, following shows and reading the daily report all happen in Telegram.
 
@@ -69,7 +71,7 @@ Auto-filed and renamed by template; duplicates go to you, are skipped, kept, or 
 <td valign="top">
 
 ### 📺 Follows shows for you
-New episodes save themselves, missing ones are flagged daily, and finished seasons unsubscribe.
+Eligible subscribed episodes can be saved automatically; with episode tracking enabled, daily checks flag missing episodes and mark completed subscriptions as finished.
 
 </td>
 <td valign="top">
@@ -233,7 +235,7 @@ Other/
 
 **AI proposes → sources of truth verify → you decide → your decisions feed back to the AI.**
 
-AI reads messages and makes suggestions; TMDB and the real files in the share keep it honest, and anything uncertain goes to you. Every fix you make on a card makes the next recognition from the same source more accurate. Transferring, renaming and deduplication are always done by deterministic code and verified by reading back. See [architecture](docs/architecture.md) (Chinese).
+AI reads messages and makes suggestions; TMDB and the real files in the share keep it honest, and anything uncertain goes to you. Recent corrections can be supplied as examples for later recognition from the same source; this is not a guarantee that the next result will be correct. Transferring, renaming and deduplication are always done by deterministic code and verified by reading back. See [architecture](docs/architecture.md) (Chinese).
 
 ## 📚 Documentation
 
@@ -252,7 +254,7 @@ The documentation is in Chinese.
 ## 📌 Status
 
 > [!NOTE]
-> 1.0. The author uses it daily, and the full manual-approval flow runs continuously on a real account. From 1.0 on the project follows semantic versioning: config and data formats stay compatible within 1.x. Feedback is welcome, especially on automatic approval and running many sources. Runs on macOS / Linux; on Windows, use Docker.
+> See [Releases](https://github.com/Derrors/reelay/releases) for the current published version. Documentation follows the source tree; features marked unreleased are not yet in the release image. The author uses the manual-approval flow on a real account. From 1.0 on the project follows semantic versioning: config and data formats stay compatible within 1.x. Feedback is welcome, especially on automatic approval and running many sources. Runs on macOS / Linux; on Windows, use Docker.
 
 > [!WARNING]
 > Reelay does not provide or index any content. It only processes messages your own account can see and saves to your own drive. Automating a personal Telegram account may get it **banned**, and calling 115 APIs too often may trigger **rate limits or risk control**. Read the [disclaimer](DISCLAIMER.md) (Chinese) before use.

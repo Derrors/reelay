@@ -22,6 +22,7 @@ system:
   defaults:
     approval_mode: manual      # manual（人工确认）| auto（AI 处理：规则都通过就直接转存，拿不准的仍交给你）
     bot_notify: true           # Bot 通知：推送审批卡片与入库通知；关闭后在管理台处理，出问题的提醒照常发送
+    subscriptions_only: false  # 仅处理订阅：开启后需匹配有效订阅的作品与季，否则直接忽略，不进入待审批
     parser: llm                # llm | regex；LLM 异常/非法输出降级后必须人工确认
     llm_response_format: json_schema # 不支持 schema 的兼容接口可显式用 json_object，仍严格本地校验
     decision: subscription     # default（只按规则）| subscription（规则 + 订阅放行）| llm（再加自然语言偏好）
