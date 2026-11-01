@@ -16,7 +16,7 @@ Self-hosted · AI recognition · You decide · Every transfer verified
 
 [简体中文](README.md) · **English**
 
-[Documentation index](docs/README.md) · [Quick start](docs/quickstart.md) · [User guide](docs/user-guide.md) · [FAQ](docs/faq.md) — detailed guides are in Chinese.
+[Documentation website](https://derrors.github.io/reelay/) · [Documentation index](docs/README.md) · [Quick start](docs/quickstart.md) · [User guide](docs/user-guide.md) · [FAQ](docs/faq.md) — detailed guides are in Chinese.
 
 <br>
 

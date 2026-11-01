@@ -16,7 +16,7 @@
 
 **简体中文** · [English](README.en.md)
 
-[快速开始](docs/quickstart.md) · [使用指南](docs/user-guide.md) · [常见问题](docs/faq.md) · [全部文档](docs/README.md) · [版本发布](https://github.com/Derrors/reelay/releases) · [问题反馈](https://github.com/Derrors/reelay/issues)
+[在线文档](https://derrors.github.io/reelay/) · [快速开始](docs/quickstart.md) · [使用指南](docs/user-guide.md) · [常见问题](docs/faq.md) · [全部文档](docs/README.md) · [版本发布](https://github.com/Derrors/reelay/releases) · [问题反馈](https://github.com/Derrors/reelay/issues)
 
 <br>
 
@@ -26,6 +26,8 @@
 </picture>
 
 </div>
+
+<!-- #region introduction -->
 
 ## 简介
 
@@ -87,6 +89,8 @@ Reelay 是一个**自托管的 Telegram → 115 资源整理工具**。它用你
 - **数据保存在本地**：配置、数据库、密钥和会话集中在数据目录，便于备份和迁移。
 - **插件扩展**：识别补全、分享读取、整理、追更和日报等能力通过插件组织，可添加自己的扩展。
 - **Docker 部署**：提供 amd64 / arm64 镜像；也可在 macOS / Linux 上从源码运行，Windows 推荐 Docker。
+
+<!-- #endregion introduction -->
 
 > [!NOTE]
 > 文档跟随当前仓库源码更新。标注「未发布」的功能尚未进入正式镜像；使用 `latest` 或固定版本时，请以 [Releases](https://github.com/Derrors/reelay/releases) 和 [更新日志](CHANGELOG.md) 为准。

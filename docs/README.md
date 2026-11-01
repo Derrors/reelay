@@ -1,6 +1,6 @@
 # Reelay 文档
 
-[返回项目首页](../README.md)
+[在线文档站](https://derrors.github.io/reelay/) · [返回项目首页](../README.md)
 
 Reelay 把你配置的 Telegram 来源消息，经过识别、审批或规则放行，转存到自己的 115 账号并整理成媒体库目录。**它是资源处理与整理工具，不是资源搜索引擎，也不是播放器。**
 
@@ -47,6 +47,7 @@ Reelay 把你配置的 Telegram 来源消息，经过识别、审批或规则放
 - [版本、升级与回滚](deployment.md#版本升级与回滚)
 - [备份与迁移](deployment.md#备份与迁移)
 - [健康检查与故障恢复](deployment.md#健康检查与故障恢复)
+- [文档站本地预览与 GitHub Pages 部署](site-maintenance.md)
 
 ## 先弄清这几个词
 
