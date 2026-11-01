@@ -2,7 +2,7 @@
 
 [文档导航](README.md) · [参与贡献](../CONTRIBUTING.md)
 
-Reelay 文档站使用 **VitePress**，目标地址为 **https://derrors.github.io/reelay/**。网站是独立的静态页面，不是 Reelay 管理台；不需要连接 Telegram、115、AI 服务或生产数据。
+Reelay 文档站使用 **VitePress**，目标地址为 **[https://derrors.github.io/reelay/](https://derrors.github.io/reelay/)**。网站是独立的静态页面，不是 Reelay 管理台；不需要连接 Telegram、115、AI 服务或生产数据。
 
 本页描述仓库里的构建与部署方式，不代表当前版本已经发布到该地址。
 
@@ -37,7 +37,8 @@ npm run preview --prefix docs
 | 导航、侧栏、搜索和中文界面 | `docs/.vitepress/config.mts` |
 | 主色、字体和排版 | `docs/.vitepress/theme/custom.css` |
 | 快速开始、使用指南、FAQ 等正文 | 对应的 `docs/*.md` |
-| 项目介绍 | 根 `README.md` 中的 `introduction` 区域，网站通过 include 共用正文 |
+| 仓库入口与快速启动摘要 | 根 `README.md` 与 `README.en.md`，使用在线文档链接 |
+| 完整项目介绍、能力边界与目录示例 | `docs/introduction.md`，独立维护正文 |
 | 路径前缀、仓库链接转换和标题锚点 | `docs/.vitepress/site.mjs` |
 | 构建与发布 | `.github/workflows/docs.yml` |
 
@@ -46,7 +47,7 @@ npm run preview --prefix docs
 - 文档之间继续使用相对 Markdown 链接，例如 `[使用指南](user-guide.md)`。
 - 仓库外层的配置、代码或贡献指南继续使用原来的相对路径。构建时会转换为 GitHub 链接，不把代码或配置文件误当成网站页面。
 - 标题锚点沿用 GitHub 规则，中文标题、下划线和数字开头的章节在两边保持一致。
-- `docs/introduction.md` 复用根 README 的具名区域，不要复制一份完整正文再分别维护。GitHub 不展开 include，直接阅读它提供的 README 链接即可。
+- 根 README 只保留简介、核心能力、快速启动与在线文档入口；详细介绍统一维护在 `docs/introduction.md`，不再从 README 引入正文。文档中的详细介绍与能力边界链接应直接指向该页。
 - 架构文档继续用 `mermaid` 围栏。网站按当前明暗主题渲染流程图，同时保留可展开的源码。
 - 新增页面后补充侧栏与[文档导航](README.md)，再运行测试和构建；不要用 `ignoreDeadLinks` 跳过死链检查。
 

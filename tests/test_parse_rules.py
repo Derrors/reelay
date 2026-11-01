@@ -76,6 +76,25 @@ class TestGenericRules(unittest.TestCase):
                 f = regex_fields(text)
                 self.assertEqual((f["title"], f["year"], f["season"], f["episodes"], f["resolution"]), expected)
 
+    def test_explicit_media_label_takes_priority_over_greeting(self):
+        for label in ("影视：", "影视:", "影视名称：", "影视名字：", "影视名："):
+            with self.subTest(label=label):
+                text = ("✅ 少爷：请您检阅\n体积 4.2GB\n分享者：示例用户\n\n"
+                        f"🎬 {label} 示例剧集\n📺 季集：S01E05\n"
+                        "📦 质量：2160p DV H.265 DDP5.1.ATMOS\n💾 大小：4.2GB")
+                fields = regex_fields(text)
+                self.assertEqual((fields["title"], fields["year"], fields["season"], fields["episodes"],
+                                  fields["resolution"], fields["size"]),
+                                 ("示例剧集", None, 1, [5], "2160p", "4.2 GB"))
+                # 明确写在作品名之后的年份仍能提取，来源自定义规则仍然优先。
+                self.assertEqual(regex_fields(text.replace("示例剧集", "示例剧集 (2026)"))["year"], 2026)
+                custom = regex_fields(text, {"title": r"^(?:✅ )?少爷：(.+)$"})
+                self.assertEqual((custom["title"], custom["from_rules"]), ("请您检阅", ["title"]))
+
+    def test_media_label_is_not_a_prefix_match_for_other_fields(self):
+        text = "🎬 影视推荐：本周精选\n📺 片名：示例剧集 S01E05 1080p"
+        self.assertEqual(regex_fields(text)["title"], "示例剧集")
+
     def test_numbers_on_other_lines_are_not_episodes_or_sizes(self):
         f = regex_fields("片名：繁花\n年份：2023\n集数：第5集\n清晰度：4K")
         self.assertEqual((f["episodes"], f["size"]), ([5], None))
@@ -118,6 +137,20 @@ class TestParsers(ServiceCase):
         self.assertEqual(parsed.reason, "regex 规则解析（来源规则：片名、集）")
         ctx.raw.text, ctx.raw.urls = POST.replace(SHARE, ""), []
         self.assertIsNone(_regex_parse(ctx).title)  # 没有分享链接就不是资源
+
+    async def test_explicit_media_label_works_in_regex_and_ai_fallback(self):
+        ctx = message(f"✅ 少爷：请您检阅\n体积 4.2GB\n分享者：示例用户\n\n"
+                      f"🎬 影视：示例剧集\n📺 季集：S01E05\n"
+                      f"📦 质量：2160p DV H.265 DDP5.1.ATMOS\n{SHARE}")
+        parsed = _regex_parse(ctx)
+        self.parser._client = None  # 不调用 AI，验证降级也沿用修复后的通用规则。
+        fallback = await self.parser.parse(ctx)
+        for resource in (parsed, fallback):
+            self.assertTrue(resource.is_media)
+            self.assertEqual((resource.title, resource.media_type, resource.season, resource.episodes,
+                              resource.resolution, resource.size),
+                             ("示例剧集", "tv", 1, [5], "2160p", "4.2 GB"))
+        self.assertTrue(ctx.meta["parse"]["fallback"])
 
     async def test_llm_gets_the_rule_result_as_a_hint_and_falls_back_to_the_rules(self):
         self.configure_rules()

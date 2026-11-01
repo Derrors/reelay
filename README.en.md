@@ -4,9 +4,9 @@
 
 # Reelay
 
-**Turn the releases that scroll past in Telegram into an organized media library on your 115 drive.**
+**Turn Telegram resource messages into an organized media library on your 115 drive.**
 
-Self-hosted · AI recognition · You decide · Every transfer verified
+Self-hosted · AI / rules · Approval & subscriptions · Verified transfers · Automatic organizing
 
 [![Release](https://img.shields.io/github/v/release/Derrors/reelay?color=1F9E8F&label=release)](https://github.com/Derrors/reelay/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Derrors/reelay/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/Derrors/reelay/actions/workflows/ci.yml)
@@ -16,7 +16,7 @@ Self-hosted · AI recognition · You decide · Every transfer verified
 
 [简体中文](README.md) · **English**
 
-[Documentation website](https://derrors.github.io/reelay/) · [Documentation index](docs/README.md) · [Quick start](docs/quickstart.md) · [User guide](docs/user-guide.md) · [FAQ](docs/faq.md) — detailed guides are in Chinese.
+[Documentation](https://derrors.github.io/reelay/) · [Quick start](https://derrors.github.io/reelay/quickstart.html) · [User guide](https://derrors.github.io/reelay/user-guide.html) · [Releases](https://github.com/Derrors/reelay/releases) · [Issues](https://github.com/Derrors/reelay/issues)
 
 <br>
 
@@ -27,242 +27,73 @@ Self-hosted · AI recognition · You decide · Every transfer verified
 
 </div>
 
-<br>
+## Overview
 
-The channels and bots you follow post a flood of releases every day, and you only want a few of them. Reelay watches them with your own Telegram account. An LLM reads each message to work out the title, season, episodes and release details, and TMDB plus the actual files in the share double-check it. When you tap **Save** in Telegram, Reelay saves the share into your own 115 cloud drive and renames and files it the way Jellyfin / Emby expect. Your media-server setup still needs its own way to read the files on 115; Reelay does not provide mounting, STRM generation, playback, or media-server scanning.
+Reelay is a **self-hosted Telegram → 115 resource organizer** for a NAS or home server. It monitors sources with your own Telegram account, identifies titles, episodes and release details, then transfers, verifies and organizes approved resources into your own 115 drive.
 
-Set it up once in the web console; after that, approving, correcting, following shows and reading the daily report all happen in Telegram.
+Configure it in the web console; approve, correct and follow shows from the web or Telegram. **Reel + Relay**: relaying resources from your message feed into your library.
 
-> **Reel** + **Relay**: relaying releases from your message feed into your library.
+> Reelay does not search the web for resources or missing episodes, provide playback, mount your drive, or generate STRM files. Your media server needs its own way to read files on 115. [Full capabilities and boundaries →](https://derrors.github.io/reelay/introduction.html)
 
-> [!NOTE]
-> The web console, Telegram messages and the documentation are in **Simplified Chinese**. The examples below are translated.
+The web console, Telegram messages and detailed guides are in **Simplified Chinese**.
 
-## ✨ Highlights
+## Highlights
 
-<table>
-<tr>
-<td width="33%" valign="top">
+- **Recognition and filtering**: AI or rules, TMDB matching, 115 shares and eD2k links, with per-source filters.
+- **You decide**: approve individually or in batches, allow eligible resources automatically, and correct or re-run recognition.
+- **Season subscriptions**: allow eligible new episodes; episode tracking adds missing-episode reminders. Subscriptions-only filtering is supported from v1.5.0.
+- **Verified transfers**: checkpoint before transferring and verify uncertain results rather than blindly resubmit. eD2k uses 115 cloud downloads, not the host's disk.
+- **Automatic organizing**: categories, naming templates, previews and duplicate-version handling, with Jellyfin / Emby-friendly naming.
+- **Multiple interfaces**: web console, Telegram control bot and MCP, plus plugins and amd64 / arm64 Docker images.
 
-### 🧠 Understands messages
-AI reads title, episodes and release details; TMDB fixes the title. Rules take over when AI is down.
+## Quick start
 
-</td>
-<td width="33%" valign="top">
+Prepare an always-on machine, Docker Compose **v2.24+**, a personal Telegram account with API ID / API Hash, and a 115 account. See the [prerequisites](https://derrors.github.io/reelay/quickstart.html#开始前的准备) for AI, TMDB and control-bot setup.
 
-### 📱 Done in Telegram
-Save, reroute or follow a show in one tap; fix a wrong match with one line.
-
-</td>
-<td width="33%" valign="top">
-
-### 🛡️ Transfers you can trust
-Checkpoint before every call, verify after. Uncertain results are re-checked, never re-sent.
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### 🗂️ Organized on arrival
-Auto-filed and renamed by template; duplicates go to you, are skipped, kept, or upgraded.
-
-</td>
-<td valign="top">
-
-### 📺 Follows shows for you
-Eligible subscribed episodes can be saved automatically; with episode tracking enabled, daily checks flag missing episodes and mark completed subscriptions as finished.
-
-</td>
-<td valign="top">
-
-### 🧩 Works everywhere
-Web console, Telegram bot and MCP; one folder is one plugin.
-
-</td>
-</tr>
-</table>
-
-## 💬 What it looks like in Telegram
-
-<table>
-<tr>
-<th width="50%">Approval card</th>
-<th width="50%">Saved notification</th>
-</tr>
-<tr>
-<td valign="top">
-
-```text
-🖼 (TMDB backdrop)
-📺 The Long Season (2023) · S01 E01-E10
-
-🌟 Rating: 8.6
-🎭 Genre: Drama · Mystery · Crime
-🌍 Region: Mainland China
-👥 Cast: Fan Wei, Qin Hao, Chen Minghao
-
-🖥 Resolution: 2160p · Dolby Vision
-💿 Release: WEB-DL
-📦 Size: 38.6 GB
-💬 Subtitles: Simplified Chinese
-
-📖 Overview:
-▍ In 1997, taxi driver Wang Xiang… (expandable)
-
-📂 Save to: /TV/Chinese TV
-📡 Source: @example_channel
-
-[ ✅ Save   ]  [ 🚫 Ignore      ]
-[ 📂 Folder ]  [ ✏️ Fix         ]
-[ 🔔 Follow ]  [ ⛔ Stop receiving ]
-[ 🎬 TMDB details                ]
-```
-
-</td>
-<td valign="top">
-
-```text
-🖼 (TMDB backdrop)
-✅ Saved
-
-📺 The Long Season (2023) · S01 E01-E10
-
-🌟 Rating: 8.6
-🎭 Genre: Drama · Mystery · Crime
-
-🖥 Resolution: 2160p · Dolby Vision
-💿 Release: WEB-DL
-📦 Size: 38.6 GB
-
-📂 Location: /TV/Chinese TV/The Long Season
-   (2023) [tmdbid=…]/Season 01
-📄 Files: 10, The Long Season - S01E01 -
-   第 1 集 - 2160p H265.mkv, The Long Season
-   - S01E02 - 第 2 集 - 2160p H265.mkv …
-
-[ 🎬 TMDB details ]
-```
-
-</td>
-</tr>
-</table>
-
-What you can do without opening the web console:
-
-| When | In Telegram |
-| --- | --- |
-| Recognition is wrong | Tap **✏️ Fix** on the card and send one line such as `title Blossoms season 2`; anything you leave out stays the same. Or ask for re-recognition |
-| A transfer or organize step stops | The alert offers the right buttons: verify the transfer, continue with what arrived, reorganize, delete or overwrite, retry |
-| Things piled up | `/pending` opens each card, or approves / ignores everything at once |
-| Following shows | `/subs` shows what's saved and missing, cancels or resumes subscriptions and handles suggestions; missing-episode reminders can be marked "don't wait" |
-| Never want a title again | Tap **⛔ Stop receiving** on the card; `/ignored` brings it back |
-| How is it running | `/status` for an overview; a daily report arrives every day |
-| Just ask | With AI configured: "What's pending?", "Approve these episodes of X and save them to Anime" |
-
-Re-scanning the QR code after the 115 login expires, and all configuration, happen in the web console. See the [Telegram and agents guide](docs/agents.md).
-
-## 🚀 Quick start
-
-All you need is Docker and a `compose.yaml`. Images are published for amd64 and arm64:
+**1. Start the web console:**
 
 ```bash
 mkdir reelay && cd reelay
 curl -fsSLO https://raw.githubusercontent.com/Derrors/reelay/main/compose.yaml
 docker compose pull
-docker compose up -d web          # console at http://127.0.0.1:28080
+docker compose up -d web
 ```
 
-The first time you open the console, set a login password. Then fill in Telegram, AI and 115 under **Settings**, log in with your personal Telegram account and start listening:
+**2. Open [http://127.0.0.1:28080](http://127.0.0.1:28080)**, set a console password, then configure networking, Telegram, AI / TMDB and 115 under Settings.
+
+The port listens only on the deployment machine by default. For a NAS or LAN, follow the [access instructions](https://derrors.github.io/reelay/quickstart.html#2-打开管理台); do not expose it directly to the internet.
+
+**3. In the same directory, log in with your personal Telegram account and start the worker:**
 
 ```bash
 docker compose run --rm --no-deps -it worker python -m reelay.login
 docker compose up -d
 ```
 
-Then add the channels or bots to watch under **Settings → Sources**: paste a few sample messages, let AI draft the source's rules, and tap **Test recognition** on the card to check the result. Where to get each account and how to verify your first release is covered in the [quick start](docs/quickstart.md) (Chinese).
+**4. Set save directories and sources.** Begin with manual approval and rule-based decisions. Test a message you are authorized to save, then wait for a new message, approve it and verify that the files arrive.
 
-<details>
-<summary><b>Without Docker, or try a simulation first</b></summary>
+Step-by-step checks, local installation and offline simulation are in the **[quick start](https://derrors.github.io/reelay/quickstart.html)**.
 
-<br>
+## Documentation
 
-Simulation mode runs the whole pipeline with a built-in config, sample messages and an in-memory drive. It reads none of your local config or secrets and needs no accounts:
+Detailed guides are in Chinese.
 
-```bash
-git clone https://github.com/Derrors/reelay && cd reelay
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e .
-python -m reelay.main --dry-run
-```
-
-Running directly on your machine:
-
-```bash
-pip install -e ".[all]"
-(cd web && npm ci && npm run build)
-python -m reelay.web       # web console
-python -m reelay.login     # log in with your personal Telegram account
-python -m reelay.main      # listener and background worker (separate terminal)
-```
-
-</details>
-
-## 🎞️ What the library looks like
-
-Filed by category by default (or by media type, or flat). Naming templates are editable in the console, and **Preview organizing** shows the result before you save. The default episode template adds the Chinese episode label 第 N 集 ("episode N"); remove it from the template if you don't want it:
-
-```text
-Movies/
-└── Chinese Movies/
-    └── The Wandering Earth II (2023) [tmdbid=…]/
-        └── The Wandering Earth II (2023) - 2160p H265.mkv
-TV/
-└── Chinese TV/
-    └── The Long Season (2023) [tmdbid=…]/
-        └── Season 01/
-            ├── The Long Season - S01E01 - 第 1 集 - 2160p H265.mkv
-            └── The Long Season - S01E02 - 第 2 集 - 2160p H265.mkv
-Anime/
-└── Japanese Anime/
-    └── …
-Other/
-└── Documentaries/
-    └── …
-```
-
-## 🧭 Design
-
-**AI proposes → sources of truth verify → you decide → your decisions feed back to the AI.**
-
-AI reads messages and makes suggestions; TMDB and the real files in the share keep it honest, and anything uncertain goes to you. Recent corrections can be supplied as examples for later recognition from the same source; this is not a guarantee that the next result will be correct. Transferring, renaming and deduplication are always done by deterministic code and verified by reading back. See [architecture](docs/architecture.md) (Chinese).
-
-## 📚 Documentation
-
-The documentation is in Chinese.
-
-| Document | Contents |
+| Goal | Guide |
 | --- | --- |
-| [Quick start](docs/quickstart.md) | Accounts, first launch, initial setup, verifying your first release |
-| [Deployment](docs/deployment.md) | Docker, access and security, upgrades and rollback, backups, health checks and recovery |
-| [Configuration](docs/configuration.md) | System settings, per-source recognition rules, plugin settings, secrets and runtime files |
-| [Telegram and agents](docs/agents.md) | Control bot buttons, commands and chat; MCP for Claude and other agents |
-| [Plugins](docs/plugins.md) | Extension points, PipelineContext, calling AI, metadata conventions |
-| [Architecture](docs/architecture.md) | State machine, how AI and rules divide the work, transfer and recovery boundaries |
-| [Changelog](CHANGELOG.md) | What changed in each release |
+| Configure sources, approvals, subscriptions and organizing | [User guide](https://derrors.github.io/reelay/user-guide.html) |
+| Troubleshoot access, messages or transfers | [FAQ](https://derrors.github.io/reelay/faq.html) |
+| Look up settings, upgrade or back up | [Configuration](https://derrors.github.io/reelay/configuration.html) · [Deployment](https://derrors.github.io/reelay/deployment.html) |
+| Use the bot, natural-language controls or MCP | [Telegram and agents](https://derrors.github.io/reelay/agents.html) |
+| Understand internals or build extensions | [Architecture](https://derrors.github.io/reelay/architecture.html) · [Plugins](https://derrors.github.io/reelay/plugins.html) |
 
-## 📌 Status
+## Before you use it
 
-> [!NOTE]
-> See [Releases](https://github.com/Derrors/reelay/releases) for the current published version. Documentation follows the source tree; features marked unreleased are not yet in the release image. The author uses the manual-approval flow on a real account. From 1.0 on the project follows semantic versioning: config and data formats stay compatible within 1.x. Feedback is welcome, especially on automatic approval and running many sources. Runs on macOS / Linux; on Windows, use Docker.
+- Documentation follows the source tree; **unreleased features are not yet in the release image**. Check [Releases](https://github.com/Derrors/reelay/releases) and the [changelog](CHANGELOG.md).
+- AI features send relevant content to your configured endpoint; third-party services may charge fees. The data directory contains credentials and login sessions: protect it, back it up in full and never upload it publicly.
+- Only process content you are authorized to use. Automation may trigger Telegram account restrictions or 115 risk controls. Read the [disclaimer](DISCLAIMER.md) before use.
 
-> [!WARNING]
-> Reelay does not provide or index any content. It only processes messages your own account can see and saves to your own drive. Automating a personal Telegram account may get it **banned**, and calling 115 APIs too often may trigger **rate limits or risk control**. Read the [disclaimer](DISCLAIMER.md) (Chinese) before use.
+## Contributing
 
-## 🤝 Contributing
-
-Issues and PRs are welcome. See [CONTRIBUTING](CONTRIBUTING.md) for the development setup and commit conventions, and report security issues privately as described in [SECURITY](SECURITY.md).
-
-## License
+Issues and PRs are welcome. See [CONTRIBUTING](CONTRIBUTING.md), report security issues privately as described in [SECURITY](SECURITY.md), and keep credentials, cookies and sessions out of reports.
 
 [MIT](LICENSE) © Derrors

@@ -186,8 +186,8 @@ _EPISODES_RE = re.compile(
 _SERIES_RE = re.compile(rf"(?i)(?<![a-z0-9])S\d{{1,2}}(?![0-9])|全{_SP}\d*{_SP}集|第{_SP}{CN_NUMBER}{_SP}季")
 # 「62GB」「15.12 GB」「800 MB」「1.5G」；单独的 K、M 不算（「4K」是清晰度）
 _SIZE_RE = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)" + _SP + r"(?:([KMGT])i?B|([GT]))(?![a-zA-Z])", re.I)
-# 片名前的字段名：「名称：」「片名：」「资源名称：」「电影：」……
-_LABEL_RE = re.compile(rf"^(?:(?:资源|影片|电影|剧集|电视剧|动漫|番剧|综艺|纪录片)(?:名称|名字|名)?|名称|片名|剧名|标题){_SP}[:：]{_SP}")
+# 片名前的字段名：「名称：」「片名：」「资源名称：」「影视：」「电影：」……
+_LABEL_RE = re.compile(rf"^(?:(?:资源|影视|影片|电影|剧集|电视剧|动漫|番剧|综艺|纪录片)(?:名称|名字|名)?|名称|片名|剧名|标题){_SP}[:：]{_SP}")
 # 第一行里片名在这些标记前结束：年份、季集、更新进度、清晰度、分隔符
 _TITLE_END_RE = re.compile(
     rf"(?i)[(（](?:19|20)\d{{2}}[)）]|(?<![\d.])(?:19|20)\d{{2}}(?![\d.]|[pik])|第{_SP}{CN_NUMBER}{_SP}[季集话話]"
@@ -197,7 +197,7 @@ AD_KEYWORDS = ("招商", "广告", "投稿", "点击进群", "更多资源关注
 
 
 def _title_line(text: str) -> str:
-    """片名所在的行：写明「名称：」「片名：」的行优先，否则第一个不全是话题标签与符号的行；去掉开头的 emoji 与符号。"""
+    """片名所在的行：写明「名称：」「片名：」「影视：」的行优先，否则第一个不全是话题标签与符号的行；去掉开头的 emoji 与符号。"""
     lines = [re.sub(r"^[^\w【《(（\[]+", "", line).strip() for line in (text or "").splitlines()
              if re.sub(r"#\S+|[^\w]", "", line)]
     return next((line for line in lines if _LABEL_RE.match(line)), lines[0] if lines else "")
