@@ -110,7 +110,8 @@ class ShareProbe:
         if result["status"] == "ok":
             episodes = (pairs_label(result["pairs"]) if result["season"] is None
                         else f"S{result['season']:02d} {format_episodes(result['episodes'])}")
-            return f"读取{what}：{result['videos']} 个视频 {result.get('size_text', '')}，{episodes}"
+            summary = f"读取{what}：{result['videos']} 个视频 {result.get('size_text', '')}".rstrip()
+            return f"{summary}，{episodes}" if episodes else summary
         if result["status"] == "error":
             return f"读取分享失败（{result['note']}），稍后重试"
         if result["status"] == "available":

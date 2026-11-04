@@ -79,6 +79,7 @@ def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: st
     本次转存的 ``[季, 集]``。消息指定了季时只取该季；没指定而分享跨多季时按文件名中的季号逐季
     转存，此时 ``season`` 为 None、``episodes`` 为各季集号的并集。无法确定时抛 NeedsManual（转存前
     停止），内容全部已入库时抛 AlreadyStored。``stored`` 为已入库的 ``[季, 集]``。
+    电影不带季集，``season`` 为 None，``episodes`` 与 ``pairs`` 均为空列表。
 
     ``hints`` 是 AI 在转人工前给出的方案（见 ``core/assist.py``），按同一套规则校验：只能补上文件名
     识别不出的季集、在跨多季又不能逐季转存时按消息选一季、丢掉同一季同一集清晰度不更高的多余版本、
@@ -112,7 +113,7 @@ def _select_video_items(video_items: list[dict], parsed, *, stored=(), scope: st
             videos = [x for x in videos if x.get('name') == chosen]
             if not videos:
                 raise NeedsManual(f'方案选择的「{chosen}」不是正片候选')
-        return {'files': videos, 'episodes': [], 'season': None}
+        return {'files': videos, 'episodes': [], 'season': None, 'pairs': []}
 
     detected = []
     for x in videos:

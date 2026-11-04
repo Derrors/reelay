@@ -106,6 +106,49 @@ class TestShareProbe(PipelineCase):
         self.assertNotIn("share", other.meta)
         self.assertEqual(calls, ["剧"])
 
+    async def test_ed2k_hook_records_movie_and_series_metadata_without_115(self):
+        from reelay.core.parse_rules import parse_ed2k
+        from reelay.plugins.share_probe import PROBE_VERSION, ShareProbe
+        from reelay.providers.storage import P115Storage
+
+        # 只提供凭证就绪标志，不提供客户端：电驴探测不应访问 115。
+        with patch("reelay.providers.storage.get_store", return_value=types.SimpleNamespace(has_cookie=True)):
+            storage = P115Storage()
+        registry = Registry()
+        registry.add_provider("storage", storage)
+        cases = [
+            ("movie", ["Film.2026.WEB-DL.1080p.mkv"], None, [], [], "读取电驴链接：1 个视频 1.0 GB"),
+            ("tv", ["Show.S01E01.mkv"], 1, [1], [[1, 1]], "读取电驴链接：1 个视频 1.0 GB，S01 E01"),
+            ("tv", ["Show.S01E01.mkv", "Show.S02E01.mkv"], None, [1], [[1, 1], [2, 1]],
+             "读取电驴链接：2 个视频 2.0 GB，S01–S02 共 2 集"),
+        ]
+        with runtime.scope({}, runtime.Services(self.store, lambda: [], registry)):
+            for media_type, names, season, episodes, pairs, summary in cases:
+                with self.subTest(media_type=media_type, names=names):
+                    links = " ".join(f"ed2k://|file|{name}|1073741824|{i:032x}|/" for i, name in enumerate(names, 1))
+                    ctx = message(links, urls=())
+                    ctx.parsed = ParsedResource(is_media=True, media_type=media_type, ed2k=parse_ed2k(links, []))
+                    ctx.state = TaskState.PENDING_APPROVAL
+                    hook = ShareProbe()
+                    self.assertTrue(hook.needs_refresh(ctx))
+                    self.assertTrue(await hook.run(ctx))
+                    share = ctx.meta["share"]
+                    self.assertEqual((share["status"], share["kind"], share["videos"], share["size"]),
+                                     ("ok", "ed2k", len(names), len(names) * 1024 ** 3))
+                    self.assertEqual((share["season"], share["episodes"], share["pairs"]), (season, episodes, pairs))
+                    self.assertEqual(share["version"], PROBE_VERSION)
+                    self.assertGreater(share["probed_at"], 0)
+                    self.assertFalse(hook.needs_refresh(ctx))
+                    self.assertEqual(ctx.trail[-1].partition(" ")[2], summary)
+                    self.assertEqual((ctx.parsed.season, ctx.parsed.episodes), (None, []))
+
+    def test_movie_summary_omits_empty_episode_suffix(self):
+        from reelay.plugins.share_probe import ShareProbe
+        result = {"status": "ok", "videos": 1, "season": None, "episodes": [], "pairs": []}
+        self.assertEqual(ShareProbe._summary(result), "读取分享：1 个视频")
+        self.assertEqual(ShareProbe._summary({**result, "kind": "ed2k", "size_text": "2.0 GB"}),
+                         "读取电驴链接：1 个视频 2.0 GB")
+
     async def test_read_errors_are_retried_on_next_startup(self):
         def describe(parsed):
             raise ConnectionError("timeout")

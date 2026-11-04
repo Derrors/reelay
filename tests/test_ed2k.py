@@ -69,6 +69,16 @@ class TestDescribeAndCards(unittest.TestCase):
         self.assertEqual(describe_ed2k(subtitles), {"status": "issue", "videos": 0, "note": "电驴链接里没有视频文件",
                                                      "kind": "ed2k"})
 
+    def test_movie_links_describe_size_and_version_without_episodes(self):
+        link = "ed2k://|file|Film.2026.WEB-DL.1080p.mkv|2147483648|" + "a" * 32 + "|/"
+        parsed = self.resource(title="Film", media_type="movie", season=None, ed2k=parse_ed2k(link, []))
+        result = describe_ed2k(parsed)
+        self.assertEqual((result["status"], result["kind"], result["videos"], result["size"]),
+                         ("ok", "ed2k", 1, 2 * 1024 ** 3))
+        self.assertEqual((result["season"], result["episodes"], result["pairs"]), (None, [], []))
+        self.assertEqual((result["resolution"], result["release"]["source"]), ("1080p", "web-dl"))
+        self.assertEqual((parsed.season, parsed.episodes), (None, []))
+
     def test_cards_say_it_goes_through_cloud_download(self):
         ctx = context("消息")
         ctx.parsed = self.resource(episodes=[177])

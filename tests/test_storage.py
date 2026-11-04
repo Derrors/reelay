@@ -1518,7 +1518,9 @@ class TestStorageEpisodeSelection(unittest.TestCase):
         items = [{"id": "m", "name": "Film.2160p.mkv", "size": 20_000},
                  {"id": "f", "name": "Featurette.mkv", "size": 900},
                  {"id": "x", "name": "Bonus.mkv", "size": 1_000}]
-        self.assertEqual([x["id"] for x in _select_video_items(items, movie)["files"]], ["m"])
+        selected = _select_video_items(items, movie)
+        self.assertEqual([x["id"] for x in selected["files"]], ["m"])
+        self.assertEqual((selected["season"], selected["episodes"], selected["pairs"]), (None, [], []))
         with self.assertRaises(NeedsManual):
             _select_video_items([{"id": "a", "name": "Film.CD1.mkv", "size": 9_000},
                                  {"id": "b", "name": "Film.CD2.mkv", "size": 8_000}], movie)
