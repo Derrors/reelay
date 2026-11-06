@@ -1,4 +1,4 @@
-import { Ban, BellPlus, BellRing, CircleAlert, Flag, Lightbulb, Loader2, Search, Trash2, Undo2 } from 'lucide-react';
+import { Ban, BellPlus, BellRing, ChevronLeft, ChevronRight, CircleAlert, Flag, Lightbulb, Loader2, Search, Trash2, Undo2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -104,6 +104,8 @@ function SubscriptionRow({ item, busy, onRemove, onReopen }: {
   );
 }
 
+const IGNORED_PAGE = 8;
+
 export default function SubscriptionsPage() {
   const subs = useAsync(() => subscriptionApi.list(), [], '读取订阅失败');
   const ignoredWorks = useAsync(() => subscriptionApi.ignoredWorks(), [], '读取不再接收的作品失败');
@@ -114,6 +116,9 @@ export default function SubscriptionsPage() {
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState('');  // 空 = 全部类型
+  const [page, setPage] = useState(0);  // 不再接收的页码
+  const ignoredPages = Math.max(1, Math.ceil((ignored?.length ?? 0) / IGNORED_PAGE));
+  const ignoredPage = Math.min(page, ignoredPages - 1);  // 恢复接收后条目变少，页码不越界
 
   /** 操作后两份列表都重新读取。 */
   const load = () => { subs.reload(); ignoredWorks.reload(); };
@@ -196,9 +201,9 @@ export default function SubscriptionsPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-5 lg:grid-cols-5 lg:items-start">
-        <div className="min-w-0 space-y-5 lg:col-span-3">
-          <Panel icon={Search} title="添加订阅" description="用一句话说在追哪部剧，AI 帮你对应到 TMDB 条目和季。">
+      {/* 两列两行：第一行「添加订阅」与「订阅建议」等高，第二行两张面板顶边对齐 */}
+      <div className="grid gap-5 lg:grid-cols-5">
+          <Panel icon={Search} title="添加订阅" className="min-w-0 lg:col-span-3 lg:row-start-1" description="用一句话说在追哪部剧，AI 帮你对应到 TMDB 条目和季。">
             <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); void search(); }}>
               <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="如：我在追《一瓯春》第二季"
                 className="bg-card" aria-label="在追的剧" />
@@ -229,7 +234,7 @@ export default function SubscriptionsPage() {
             ) : null}
           </Panel>
 
-          <Panel icon={BellRing} title="已订阅"
+          <Panel icon={BellRing} title="已订阅" className="min-w-0 lg:col-span-3 lg:row-start-2 lg:self-start"
             description={data ? `共 ${data.items.length} 部${data.items.some((i) => i.finished)
               ? `，其中 ${data.items.filter((i) => i.finished).length} 部已完结` : ''}` : undefined}>
             {!data ? (subs.error ? <p className="text-sm text-muted-foreground">读取失败，见页面上方。</p>
@@ -255,10 +260,8 @@ export default function SubscriptionsPage() {
                 </div>
               ) : <p className="text-sm text-muted-foreground">还没有订阅。在待审批里点「追这部剧」，或在上面用一句话添加。</p>}
           </Panel>
-        </div>
 
-        <div className="min-w-0 space-y-5 lg:col-span-2">
-          <Panel icon={Lightbulb} title="订阅建议"
+          <Panel icon={Lightbulb} title="订阅建议" className="min-w-0 lg:col-span-2 lg:col-start-4 lg:row-start-1"
             description="同一部剧同一季批准过至少 3 条、还没订阅的剧；满 3 条时也会在 Telegram 上问你一次。">
             {!data ? (subs.error ? null : <Skeleton className="h-20" />) : data.suggestions.length ? (
               <div className="space-y-3">
@@ -281,13 +284,14 @@ export default function SubscriptionsPage() {
             ) : <p className="text-sm text-muted-foreground">暂时没有。批准过几集同一部剧后，这里会提示你订阅。</p>}
           </Panel>
 
-          <Panel icon={Ban} title="不再接收"
+          <Panel icon={Ban} title="不再接收" className="min-w-0 lg:col-span-2 lg:col-start-4 lg:row-start-2 lg:self-start"
             description="在 Telegram 审批卡片点「不再接收」的作品：之后的消息识别完直接忽略。">
             {!ignored ? (ignoredWorks.error
               ? <ErrorState title="读取失败" error={ignoredWorks.error} onRetry={ignoredWorks.reload} retrying={ignoredWorks.loading} className="border-none py-6" />
               : <Skeleton className="h-12" />) : ignored.length ? (
+              <div>
               <div className="divide-y divide-border/70">
-                {ignored.map((item) => (
+                {ignored.slice(ignoredPage * IGNORED_PAGE, (ignoredPage + 1) * IGNORED_PAGE).map((item) => (
                   <div key={`${item.kind ?? ''}-${item.tmdbid ?? item.title}`} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{item.title}</p>
@@ -302,9 +306,25 @@ export default function SubscriptionsPage() {
                   </div>
                 ))}
               </div>
+              {ignoredPages > 1 ? (
+                <div className="mt-3 flex items-center justify-between border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                  <span className="tabular-nums">共 {ignored.length} 部</span>
+                  <div className="flex items-center gap-1">
+                    <Button size="icon" variant="ghost" className="size-8" aria-label="上一页"
+                      disabled={ignoredPage === 0} onClick={() => setPage(ignoredPage - 1)}>
+                      <ChevronLeft />
+                    </Button>
+                    <span className="min-w-12 text-center tabular-nums">{ignoredPage + 1} / {ignoredPages}</span>
+                    <Button size="icon" variant="ghost" className="size-8" aria-label="下一页"
+                      disabled={ignoredPage >= ignoredPages - 1} onClick={() => setPage(ignoredPage + 1)}>
+                      <ChevronRight />
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+              </div>
             ) : <p className="text-sm text-muted-foreground">没有。</p>}
           </Panel>
-        </div>
       </div>
     </Page>
   );

@@ -130,6 +130,16 @@ class TestSubscriptionDecision(ServiceCase):
         self.assertEqual(subscriptions.parse_request("在追 繁花 S01"), {"title": "繁花", "season": 1, "year": None})
 
 
+class TestAiredGaps(unittest.TestCase):
+    def test_missing_episodes_are_aired_and_not_stored(self):
+        """订阅页的缺集按当前入库现算：刚入库的集不再算缺，还没播出的集不算缺。"""
+        from reelay.core.service.follow import aired_gaps
+        self.assertEqual(aired_gaps(list(range(1, 30)), 29), [])  # 已播 29 集都入库，第 30–40 集没播
+        self.assertEqual(aired_gaps([1, 2, 3, 4], 9), [5, 6, 7, 8, 9])
+        self.assertEqual(aired_gaps([1, 3, 5], None), [2, 4])  # 不知道播出进度：只算已入库集之间的断档
+        self.assertEqual(aired_gaps([], None), [])
+
+
 class TestSubscriptionService(ServiceCase):
     async def pending_tv(self, msg_id, tmdbid=100, title="剧", season=1):
         ctx = tv_ctx(msg_id=msg_id, tmdbid=tmdbid, title=title, season=season, episodes=(int(msg_id),))

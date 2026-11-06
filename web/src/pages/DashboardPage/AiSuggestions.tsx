@@ -28,7 +28,7 @@ const fetchSuggestions = (): Promise<State> => Promise.all([
 }));
 
 /** 总览的 AI 建议：可以改为 AI 处理的来源、值得订阅的剧，以及近 30 天的 AI 调用概况。建议都要你点了才生效。 */
-export function AiSuggestions() {
+export function AiSuggestions({ className }: { className?: string }) {
   const { data: state, reload } = useAsync(fetchSuggestions, []);
   const [busy, setBusy] = useState(false);
 
@@ -61,7 +61,7 @@ export function AiSuggestions() {
   const usage = state?.usage?.total;
   const empty = state && !state.auto.length && !state.subscriptions.length;
   return (
-    <Panel title="AI 建议" icon={Sparkles}>
+    <Panel title="AI 建议" icon={Sparkles} className={className}>
       {!state ? <Skeleton className="h-20" /> : (
         <div className="space-y-3">
           {state.auto.map((s) => (

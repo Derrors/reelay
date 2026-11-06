@@ -305,6 +305,8 @@ html[data-glass="off"] .app-backdrop {
 
   html {
     -webkit-text-size-adjust: 100%;
+    /* 滑到顶或底时不回弹：回弹会把固定的侧栏一起拉开，露出后面的背景 */
+    overscroll-behavior-y: none;
   }
 
   body {

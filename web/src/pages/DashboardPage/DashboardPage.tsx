@@ -178,9 +178,11 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* 按行排：第一行「等你确认」与「AI 建议」等高，第二行「最近入库」与「运行状态」顶边对齐。
+          手机上按 等你确认 → 最近入库 → AI 建议 → 运行状态 → 通知发送 排列 */}
       <div className="mt-5 grid gap-5 lg:grid-cols-3">
-        <div className="min-w-0 space-y-5 lg:col-span-2">
           <Panel
+            className="min-w-0 lg:col-span-2 lg:row-start-1"
             title="等你确认"
             icon={Inbox}
             actions={pendingCount > 0 ? (
@@ -207,6 +209,7 @@ export default function DashboardPage() {
           </Panel>
 
           <Panel
+            className="min-w-0 lg:col-span-2 lg:row-start-2 lg:self-start"
             title="最近入库"
             icon={LibraryBig}
             actions={<Link to="/library" className="-my-2 flex items-center gap-1 py-2 text-xs font-medium text-primary hover:underline">媒体库<ArrowRight className="size-3.5" /></Link>}
@@ -227,10 +230,10 @@ export default function DashboardPage() {
               <p className="py-2 text-sm text-muted-foreground">还没有入库的资源。</p>
             )}
           </Panel>
-        </div>
 
-        <div className="min-w-0 space-y-5">
-          <AiSuggestions />
+        <AiSuggestions className="min-w-0 lg:col-start-3 lg:row-start-1" />
+
+        <div className="min-w-0 space-y-5 lg:col-start-3 lg:row-start-2 lg:self-start">
 
           <Panel title="运行状态" icon={Activity}>
             {!d ? <Skeleton className="h-48" /> : (

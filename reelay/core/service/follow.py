@@ -23,6 +23,16 @@ log = logging.getLogger("reelay.service")
 GENRES = ("subscriptions", "genres")
 
 
+def aired_gaps(have: list[int], aired: int | None) -> list[int]:
+    """订阅页显示的缺集：第 1 集到已播出的最后一集（不知道播出进度时到已入库的最后一集）中还没入库的。
+
+    按当前入库情况现算，不用每日巡检的缓存（巡检之后新入库的集不会再显示为缺）；还没播出的集不算缺。
+    """
+    upper = max([aired or 0, *have], default=0)
+    stored = set(have)
+    return [ep for ep in range(1, upper + 1) if ep not in stored]
+
+
 class FollowMixin(ServiceBase):
     """追剧订阅与不再接收。"""
 
@@ -44,7 +54,8 @@ class FollowMixin(ServiceBase):
                           if f"{title}|S{item['season']:02d}" in report), {})
             artwork = self.store.artwork_for_tmdbid(item["tmdbid"]) if item["tmdbid"] else \
                 {"poster_path": None, "backdrop_path": None}
-            items.append({**item, "have": have, "missing": entry.get("missing", []), "aired": entry.get("aired"),
+            aired = entry.get("aired")
+            items.append({**item, "have": have, "missing": aired_gaps(have, aired), "aired": aired,
                           "category": self._tv_category(item, sorted(titles)), **artwork})
         # 放行方式按来源设置，defaults 只是兜底，只报告实际在监听的来源
         deciders = self.pipeline.reg.providers.get("decision", {})
