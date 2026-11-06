@@ -178,6 +178,8 @@ class TaskRepository:
             "json_extract(snapshot,'$.parsed.resolution') AS resolution, "
             "json_extract(snapshot,'$.parsed.size') AS size, "
             "json_extract(snapshot,'$.parsed.raw_fields.poster_path') AS poster_path, "
+            "json_extract(snapshot,'$.parsed.raw_fields.backdrop_path') AS backdrop_path, "
+            "json_extract(snapshot,'$.parsed.raw_fields.rating') AS rating, "
             "json_extract(snapshot,'$.save_dir_alias') AS save_dir_alias, "
             "json_extract(snapshot,'$.meta.storage.manifest.pairs') AS episode_pairs "
             f"FROM tasks{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",

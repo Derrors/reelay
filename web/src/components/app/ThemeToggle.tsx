@@ -9,7 +9,7 @@ const OPTIONS = [
 ] as const;
 
 /** 主题切换：跟随系统 / 浅色 / 深色。 */
-export function ThemeToggle({ className }: { className?: string }) {
+export function ThemeToggle({ className, fill }: { className?: string; fill?: boolean }) {
   // 纯客户端渲染：next-themes 首帧即可读到已保存的主题，不需要 mounted 守卫。
   const { theme, setTheme } = useTheme();
   return (
@@ -18,6 +18,7 @@ export function ThemeToggle({ className }: { className?: string }) {
       value={theme ?? 'system'}
       onChange={setTheme}
       className={className}
+      fill={fill}
       options={OPTIONS.map(({ value, label, icon: Icon }) => ({
         value, title: label, label: <><Icon className="size-3.5" /><span className="sr-only">{label}</span></>,
       }))}

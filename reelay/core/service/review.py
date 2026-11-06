@@ -52,6 +52,8 @@ class ReviewMixin(ServiceBase):
                 "fallback": bool(meta.get("parse", {}).get("fallback")),
                 "tmdb_matched": meta.get("tmdb", {}).get("matched"),
                 "poster_path": p.raw_fields.get("poster_path"),
+                "backdrop_path": p.raw_fields.get("backdrop_path"),
+                "rating": p.raw_fields.get("rating"),
                 "save_dir_alias": ctx.save_dir_alias,
                 **self._auto_target(ctx if state == TaskState.PENDING_APPROVAL.value else None),
                 "preview": "\n".join(line for line in lines if line)[:400],

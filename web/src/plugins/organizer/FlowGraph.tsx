@@ -63,7 +63,7 @@ export function GraphCanvas({ children }: { children: ReactNode }) {
 }
 
 export function NodeCard({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn('rounded-lg border border-border bg-card shadow-xs', className)}>{children}</div>;
+  return <div className={cn('glass-panel rounded-lg shadow-card', className)}>{children}</div>;
 }
 
 export function RootNode() {

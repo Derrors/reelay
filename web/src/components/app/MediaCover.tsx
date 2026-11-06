@@ -15,6 +15,7 @@ interface MediaCoverProps {
 /** 2:3 海报；没有 TMDB 海报或加载失败时，用片名生成配色稳定的文字封面。 */
 export function MediaCover({ title, posterPath, mediaType, className, quality = 'w342' }: MediaCoverProps) {
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const url = failed ? null : posterUrl(posterPath, quality);
   const name = (title || '未识别').trim();
   const hue = hueOf(name);
@@ -22,7 +23,11 @@ export function MediaCover({ title, posterPath, mediaType, className, quality = 
   return (
     <div className={cn('relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-muted ring-1 ring-black/5 dark:ring-white/10', className)}>
       {url ? (
-        <img src={url} alt={name} loading="lazy" onError={() => setFailed(true)} className="size-full object-cover" />
+        <>
+          {loaded ? null : <div aria-hidden className="shimmer absolute inset-0" />}
+          <img src={url} alt={name} loading="lazy" onLoad={() => setLoaded(true)} onError={() => setFailed(true)}
+            className={cn('size-full object-cover transition-opacity duration-500 ease-(--ease-out-strong)', loaded ? 'opacity-100' : 'opacity-0')} />
+        </>
       ) : (
         <div
           aria-label={name}

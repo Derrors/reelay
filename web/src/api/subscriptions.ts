@@ -17,6 +17,9 @@ export interface ISubscription {
   category: string;
   /** 播完且全部入库后由每日巡检标记：不再自动转存与巡检缺集。 */
   finished: { date: string; episodes: number } | null;
+  /** 识别这部剧时从 TMDB 补全的海报与剧照；还没识别过时为 null。 */
+  poster_path: string | null;
+  backdrop_path: string | null;
 }
 
 export interface ISubscriptionSuggestion {

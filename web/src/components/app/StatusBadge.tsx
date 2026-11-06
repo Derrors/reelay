@@ -7,7 +7,7 @@ export function ToneBadge({ tone, children, className, pulse = false }: {
 }) {
   const style = TONE_CLASS[tone];
   return (
-    <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium', style.badge, className)}>
+    <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-1.5 py-px text-xs font-medium leading-5 ring-1 ring-inset', style.badge, className)}>
       <span className={cn('size-1.5 shrink-0 rounded-full', style.dot, pulse && 'animate-pulse')} />
       {children}
     </span>

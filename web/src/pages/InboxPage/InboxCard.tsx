@@ -1,4 +1,4 @@
-import { AlertTriangle, BellPlus, Check, EyeOff, FolderTree, Lightbulb, ShieldCheck, Trash2, X } from 'lucide-react';
+import { AlertTriangle, BellPlus, Check, EyeOff, FolderTree, Lightbulb, ShieldCheck, Star, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
@@ -11,6 +11,7 @@ import { fullTime, relativeTime } from '@/lib/format';
 import { ADVICE_TONE, CONFIDENCE_CAP_LABELS, TONE_CLASS } from '@/lib/status';
 import { allows, type PostedAction } from '@/lib/taskActions';
 import type { IAdvice, IInboxItem, IShareProbe, TaskActionName } from '@/lib/types';
+import { toneWash, usePosterTone } from '@/hooks/usePosterTone';
 import { cn } from '@/lib/utils';
 import { shareBadge } from './inbox';
 
@@ -71,13 +72,14 @@ export function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOp
   const share = shareBadge(item.share);
   const suggested = item.advice?.action;
   const ghostDanger = 'px-2 text-muted-foreground hover:text-destructive sm:px-3';
+  const tone = usePosterTone(item.poster_path);
   return (
-    <article className={cn(
-      'group relative flex gap-4 rounded-xl border border-card-border bg-card p-4 shadow-xs transition-shadow hover:shadow-md',
-      selected && 'border-primary/50 ring-1 ring-primary/30',
+    <article style={toneWash(tone)} className={cn(
+      'glass-panel group relative flex gap-4 rounded-xl p-4 shadow-card transition-shadow duration-300 hover:shadow-raised',
+      selected && 'shadow-[0_0_0_1.5px_var(--primary),var(--shadow-sm)] hover:shadow-[0_0_0_1.5px_var(--primary),var(--shadow-md)]',
     )}>
       <button type="button" onClick={onOpen} className="w-14 shrink-0 self-start sm:w-[84px]" aria-label={`查看 ${item.title ?? '任务'} 详情`}>
-        <MediaCover title={item.title} posterPath={item.poster_path} mediaType={item.media_type} quality="w185" />
+        <MediaCover title={item.title} posterPath={item.poster_path} mediaType={item.media_type} quality="w185" className="shadow-card" />
       </button>
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-start gap-2">
@@ -85,6 +87,11 @@ export function InboxCard({ item, dirs, dirPaths, selected, busy, onToggle, onOp
             <h3 className="truncate text-[15px] font-semibold leading-6 hover:text-primary">
               {item.title || '尚未识别片名'}
               {item.year ? <span className="ml-1.5 text-sm font-normal text-muted-foreground">{item.year}</span> : null}
+              {item.rating ? (
+                <span className="ml-1.5 inline-flex items-center gap-0.5 align-[1px] text-xs font-medium tabular-nums text-muted-foreground">
+                  <Star className="size-3 fill-amber-400 text-amber-400" />{item.rating.toFixed(1)}
+                </span>
+              ) : null}
             </h3>
           </button>
           {can('approve') || can('reject') ? (

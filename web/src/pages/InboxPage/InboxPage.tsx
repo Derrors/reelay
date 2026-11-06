@@ -160,7 +160,7 @@ export default function InboxPage() {
         <div className="flex flex-1 gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="按片名或来源筛选" className="h-9 bg-card pl-9 shadow-xs" />
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="按片名或来源筛选" className="pl-9" />
           </div>
           <Select value={sort} onValueChange={(v) => setSort(v as InboxSort)} options={SORTS} className="w-36 shrink-0" aria-label="排序" />
         </div>
@@ -170,7 +170,7 @@ export default function InboxPage() {
 
       {tab === 'pending_approval' && items.length > 0 ? (
         <div className={cn(
-          'sticky top-14 z-20 mb-4 flex flex-wrap items-center gap-2 rounded-xl border bg-card/95 px-3 py-2 shadow-xs backdrop-blur lg:top-3',
+          'sticky top-14 z-20 mb-4 flex flex-wrap items-center gap-2 rounded-xl glass-card glass-blur px-3 py-2 shadow-raised lg:top-3',
           chosen.size > 0 && 'border-primary/40',
         )}>
           <label className="flex min-h-9 cursor-pointer items-center gap-2 px-1 text-sm sm:min-h-0">

@@ -1,59 +1,66 @@
 /*
- * 设计令牌：青绿品牌色 + 冷灰中性色。亮色/暗色两套，暗色由 <html class="dark"> 切换
- *（next-themes，默认跟随系统）。组件只引用语义变量，不直接写颜色。
+ * 设计令牌：灰阶中性色 + 蓝色主操作色（参照 beautifului.dev 的取值）。亮色/暗色两套，暗色由 <html class="dark">
+ * 切换（next-themes，默认跟随系统）。组件只引用语义变量，不直接写颜色。
+ *
+ * 层次靠「细线 + 多层极淡阴影」而不是粗边框：卡片 shadow-card，按钮 shadow-btn，浮层 shadow-raised / shadow-overlay。
+ * 圆角四档：标签 6px（rounded-sm）、控件 8px（rounded-md）、卡片 10px（rounded-lg）、面板与弹层 14px（rounded-xl）。
  */
 :root {
-  --button-outline: hsl(185 20% 20% / 0.12);
-  --badge-outline: hsl(185 20% 20% / 0.08);
-  --opaque-button-border-intensity: -8;
-  --elevate-1: hsl(185 30% 12% / 0.04);
-  --elevate-2: hsl(185 30% 12% / 0.08);
+  --page: #fafafb;
+  --canvas: #f1f2f3;
+  --surface: #ffffff;
+  --hover: #f4f5f6;
+  --hover-2: #e7e9eb;
+  --ink: #1f2124;
+  --ink-2: #62656b;
+  --ink-3: #9a9da3;
+  --line: #ecedef;
+  --line-strong: #e0e2e5;
+  --field: #f2f2f3;
+  --blue: #0185ff;
+  --blue-ink: #0070dd;
 
-  --background: hsl(180 20% 98%);
-  --foreground: hsl(186 28% 12%);
-  --card: hsl(0 0% 100%);
-  --card-foreground: hsl(186 28% 12%);
-  --card-border: hsl(180 14% 90%);
-  --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(186 28% 12%);
-  --primary: hsl(173 60% 32%);
-  --primary-foreground: hsl(165 55% 98%);
-  --secondary: hsl(178 18% 94.5%);
-  --secondary-foreground: hsl(186 26% 18%);
-  --muted: hsl(180 16% 95.5%);
-  --muted-foreground: hsl(184 9% 42%);
-  --accent: hsl(173 40% 94%);
-  --accent-foreground: hsl(174 58% 22%);
-  --info: hsl(211 62% 47%);
-  --info-foreground: hsl(210 100% 98%);
-  --destructive: hsl(356 64% 52%);
-  --destructive-foreground: hsl(0 0% 100%);
-  --success: hsl(152 56% 34%);
-  --success-foreground: hsl(152 60% 97%);
-  --warning: hsl(32 88% 44%);
-  --warning-foreground: hsl(36 100% 97%);
-  --border: hsl(180 14% 90%);
-  --input: hsl(180 12% 85%);
-  --ring: hsl(173 60% 38%);
-  --chart-1: hsl(173 66% 36%);
-  --chart-2: hsl(211 62% 50%);
-  --chart-3: hsl(32 88% 48%);
-  --chart-4: hsl(262 48% 58%);
-  --chart-5: hsl(356 64% 54%);
-  --sidebar: hsl(180 18% 96.5%);
-  --sidebar-foreground: hsl(186 18% 30%);
-  --sidebar-primary: hsl(173 60% 32%);
-  --sidebar-primary-foreground: hsl(165 55% 98%);
-  --sidebar-accent: hsl(0 0% 100%);
-  --sidebar-accent-foreground: hsl(186 28% 12%);
-  --sidebar-border: hsl(180 14% 90%);
-  --sidebar-ring: hsl(173 60% 38%);
+  --background: var(--page);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --card-border: var(--line);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --primary: var(--blue);
+  --primary-foreground: #ffffff;
+  --secondary: var(--canvas);
+  --secondary-foreground: var(--ink);
+  --muted: var(--canvas);
+  --muted-foreground: var(--ink-2);
+  --faint: var(--ink-3);
+  --accent: var(--hover);
+  --accent-foreground: var(--ink);
+  --info: #0090bd;
+  --info-foreground: #ffffff;
+  --destructive: #e3474c;
+  --destructive-foreground: #ffffff;
+  --success: #199a4d;
+  --success-foreground: #ffffff;
+  --warning: #ef720d;
+  --warning-foreground: #ffffff;
+  --border: var(--line);
+  --input: var(--line-strong);
+  --ring: var(--blue);
+  --chart-1: var(--blue);
+  --chart-2: #ef720d;
+  --chart-3: #199a4d;
+  --chart-4: #805ddf;
+  --chart-5: #e3474c;
+  --sidebar: var(--page);
+  --sidebar-foreground: var(--ink-2);
+  --sidebar-primary: var(--ink);
+  --sidebar-primary-foreground: var(--surface);
+  --sidebar-accent: #eff0f1;
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--blue);
 
-  --primary-border: hsl(from var(--primary) h s calc(l + var(--opaque-button-border-intensity)));
-  --secondary-border: hsl(from var(--secondary) h s calc(l + var(--opaque-button-border-intensity)));
-  --destructive-border: hsl(from var(--destructive) h s calc(l + var(--opaque-button-border-intensity)));
-  --accent-border: hsl(from var(--accent) h s calc(l + var(--opaque-button-border-intensity)));
-  --muted-border: hsl(from var(--muted) h s calc(l + var(--opaque-button-border-intensity)));
   --font-sans:
     'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif,
@@ -61,73 +68,141 @@
   --font-serif: ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Source Code Pro', ui-monospace, Menlo, Consolas, monospace;
   --radius: 0.625rem;
-  --shadow-2xs: 0px 1px 2px 0px hsl(185 30% 10% / 0.03);
-  --shadow-xs: 0px 1px 2px 0px hsl(185 30% 10% / 0.05);
-  --shadow-sm: 0px 1px 3px 0px hsl(185 30% 12% / 0.06), 0px 1px 2px -1px hsl(185 30% 12% / 0.04);
-  --shadow: 0px 2px 8px -2px hsl(185 30% 12% / 0.07), 0px 1px 3px -1px hsl(185 30% 12% / 0.05);
-  --shadow-md: 0px 6px 16px -4px hsl(185 30% 12% / 0.09), 0px 2px 5px -2px hsl(185 30% 12% / 0.05);
-  --shadow-lg: 0px 12px 28px -8px hsl(185 30% 12% / 0.12), 0px 4px 9px -4px hsl(185 30% 12% / 0.06);
-  --shadow-xl: 0px 20px 44px -12px hsl(185 30% 12% / 0.16), 0px 8px 16px -8px hsl(185 30% 12% / 0.08);
-  --shadow-2xl: 0px 28px 60px -14px hsl(185 30% 12% / 0.24);
+  --shadow-2xs: 0 0 4px 0 #0000000a;
+  --shadow-xs: 0 0 4px 0 #0000000a;
+  --shadow-sm: 0 18px 47px 0 #00000008, 0 7.5px 19px 0 #00000005, 0 4px 10.5px 0 #00000005, 0 2.3px 5.8px 0 #00000003, 0 1.2px 3.1px 0 #00000003, 0 0.5px 1.3px 0 #00000003;
+  --shadow: var(--shadow-sm);
+  --shadow-md: 0 17.54px 23.39px 0 #0000000a, 0 9.4px 12.5px 0 #00000008, 0 5.25px 7px 0 #00000005, 0 2.79px 3.72px -2px #00000003, 0 1.16px 1.5px 0 #00000003;
+  --shadow-lg: 0 25px 50px 0 #0000000d, 0 12px 24px 0 #0000000a, 0 6px 12px 0 #00000008, 0 3px 6px 0 #00000005, 0 1.5px 3px 0 #00000005;
+  --shadow-xl: var(--shadow-lg);
+  --shadow-2xl: 0 32px 64px 0 #00000014, 0 16px 32px 0 #0000000d, 0 6px 12px 0 #00000008;
+  --shadow-hairline: 0 0 0 1px var(--line);
+  --shadow-btn: 0 0 0 1px var(--line-strong), var(--shadow-xs);
+  --shadow-card-base: 0 0 0 1px var(--line), var(--shadow-sm);
+  --shadow-raised-base: 0 0 0 1px var(--line), var(--shadow-md);
+  --shadow-card: var(--shadow-card-base);
+  --shadow-raised: var(--shadow-raised-base);
+  --shadow-overlay: 0 0 0 1px var(--line), var(--shadow-lg);
+  --shadow-inset-field: inset 0 1px 2px #0000000f;
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
   --tracking-normal: 0em;
   --spacing: 0.25rem;
 }
 
 .dark {
   color-scheme: dark;
-  --button-outline: hsl(180 20% 90% / 0.12);
-  --badge-outline: hsl(180 20% 90% / 0.10);
-  --opaque-button-border-intensity: 8;
-  --elevate-1: hsl(180 20% 96% / 0.05);
-  --elevate-2: hsl(180 20% 96% / 0.09);
+  --page: #17181a;
+  --canvas: #1c1d1f;
+  --surface: #232427;
+  --hover: #2a2b2e;
+  --hover-2: #313236;
+  --ink: #f2f3f4;
+  --ink-2: #a5a8ad;
+  --ink-3: #6c6f75;
+  --line: #2e3033;
+  --line-strong: #3a3c40;
+  --field: #2b2c2f;
+  --blue: #3d9aff;
+  --blue-ink: #7ec0ff;
 
-  --background: hsl(192 24% 6.5%);
-  --foreground: hsl(180 14% 92%);
-  --card: hsl(192 20% 9.5%);
-  --card-foreground: hsl(180 14% 92%);
-  --card-border: hsl(190 14% 16%);
-  --popover: hsl(192 20% 10.5%);
-  --popover-foreground: hsl(180 14% 92%);
-  --primary: hsl(170 58% 44%);
-  --primary-foreground: hsl(190 40% 7%);
-  --secondary: hsl(190 16% 14%);
-  --secondary-foreground: hsl(180 14% 88%);
-  --muted: hsl(190 16% 13%);
-  --muted-foreground: hsl(185 8% 60%);
-  --accent: hsl(172 40% 15%);
-  --accent-foreground: hsl(168 50% 78%);
-  --info: hsl(210 80% 64%);
-  --info-foreground: hsl(210 50% 10%);
-  --destructive: hsl(356 72% 62%);
-  --destructive-foreground: hsl(0 0% 100%);
-  --success: hsl(152 52% 50%);
-  --success-foreground: hsl(152 50% 8%);
-  --warning: hsl(36 90% 58%);
-  --warning-foreground: hsl(36 60% 8%);
-  --border: hsl(190 14% 16%);
-  --input: hsl(190 12% 22%);
-  --ring: hsl(170 58% 44%);
-  --chart-1: hsl(170 58% 38%);
-  --chart-2: hsl(210 68% 54%);
-  --chart-3: hsl(36 86% 42%);
-  --chart-4: hsl(262 70% 72%);
-  --chart-5: hsl(356 64% 56%);
-  --sidebar: hsl(192 24% 8%);
-  --sidebar-foreground: hsl(185 10% 66%);
-  --sidebar-primary: hsl(170 58% 48%);
-  --sidebar-primary-foreground: hsl(190 40% 7%);
-  --sidebar-accent: hsl(190 18% 13%);
-  --sidebar-accent-foreground: hsl(180 14% 94%);
-  --sidebar-border: hsl(190 14% 14%);
-  --sidebar-ring: hsl(170 58% 44%);
-  --shadow-2xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.3);
-  --shadow-xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.35);
-  --shadow-sm: 0px 1px 3px 0px hsl(0 0% 0% / 0.4);
-  --shadow: 0px 2px 8px -2px hsl(0 0% 0% / 0.45);
-  --shadow-md: 0px 6px 16px -4px hsl(0 0% 0% / 0.5);
-  --shadow-lg: 0px 12px 28px -8px hsl(0 0% 0% / 0.55);
-  --shadow-xl: 0px 20px 44px -12px hsl(0 0% 0% / 0.6);
-  --shadow-2xl: 0px 28px 60px -14px hsl(0 0% 0% / 0.65);
+  --primary-foreground: #0c121a;
+  --info: #39b4dd;
+  --destructive: #ee5c61;
+  --success: #3cbb72;
+  --warning: #f68f3c;
+  --info-foreground: #0c121a;
+  --success-foreground: #0c121a;
+  --warning-foreground: #0c121a;
+  --chart-2: #f68f3c;
+  --chart-3: #3cbb72;
+  --chart-4: #a18bf3;
+  --chart-5: #ee5c61;
+  --card-border: var(--line);
+  --sidebar: var(--page);
+  --sidebar-accent: var(--hover);
+  --sidebar-primary-foreground: var(--page);
+  --shadow-2xs: 0 1px 2px #0000004c;
+  --shadow-xs: 0 1px 2px #0000004c;
+  --shadow-sm: 0 1px 2px #00000033, 0 2px 6px #00000033;
+  --shadow-md: 0 2px 10px #00000038;
+  --shadow-lg: 0 8px 28px #00000057;
+  --shadow-2xl: 0 16px 48px #00000073;
+  --shadow-btn: 0 0 0 1px #ffffff1a, 0 1px 2px #0000004c;
+  --shadow-card-base: 0 0 0 1px #ffffff14, 0 1px 2px #00000033, 0 2px 6px #00000033;
+  --shadow-raised-base: 0 0 0 1px #ffffff21, 0 2px 10px #00000038;
+  --shadow-overlay: 0 0 0 1px #ffffff26, 0 8px 28px #00000057;
+  --shadow-inset-field: inset 0 1px 2px #00000066;
+}
+
+/*
+ * 毛玻璃：背景铺最近入库作品的剧照（AppBackdrop，模糊后压一层 --backdrop-veil），侧栏、顶栏、底部导航、弹层与提醒
+ * 用半透明底色加背景模糊；卡片与表格保持实色，保证文字可读。
+ * 关闭开关（html[data-glass="off"]）、系统要求减少透明度或浏览器不支持 backdrop-filter 时全部退回实色、不铺剧照。
+ */
+:root {
+  --glass-page: color-mix(in srgb, var(--background) 68%, transparent);
+  --glass-card: color-mix(in srgb, var(--card) 74%, transparent);
+  --glass-strong: color-mix(in srgb, var(--background) 84%, transparent);
+  --glass-overlay: color-mix(in srgb, var(--card) 88%, transparent);
+  --glass-panel: color-mix(in srgb, var(--card) 72%, transparent);
+  --glass-blur: blur(28px) saturate(170%);
+  --backdrop-veil: color-mix(in srgb, var(--background) 74%, transparent);
+}
+.dark {
+  --glass-page: color-mix(in srgb, var(--background) 62%, transparent);
+  --glass-card: color-mix(in srgb, var(--card) 72%, transparent);
+  --glass-strong: color-mix(in srgb, var(--background) 82%, transparent);
+  --glass-overlay: color-mix(in srgb, var(--card) 86%, transparent);
+  --glass-panel: color-mix(in srgb, var(--card) 70%, transparent);
+  --backdrop-veil: color-mix(in srgb, var(--background) 64%, transparent);
+}
+html[data-glass="off"] {
+  --glass-page: var(--background);
+  --glass-card: var(--card);
+  --glass-strong: var(--background);
+  --glass-overlay: var(--card);
+  --glass-panel: var(--card);
+  --glass-blur: none;
+}
+/* 毛玻璃开着时卡片顶边多一道浅高光（并进阴影变量，悬停浮起的阴影照常生效） */
+html[data-glass="on"] {
+  --glass-edge: inset 0 1px 0 color-mix(in srgb, white 55%, transparent);
+}
+html[data-glass="on"].dark {
+  --glass-edge: inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+html[data-glass="on"] .glass-panel {
+  --shadow-card: var(--glass-edge), var(--shadow-card-base);
+  --shadow-raised: var(--glass-edge), var(--shadow-raised-base);
+}
+html[data-glass="off"] .app-backdrop {
+  display: none;
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root, .dark {
+    --glass-page: var(--background);
+    --glass-card: var(--card);
+    --glass-strong: var(--background);
+    --glass-overlay: var(--card);
+    --glass-panel: var(--card);
+    --glass-blur: none;
+  }
+  .app-backdrop {
+    display: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root, .dark {
+    --glass-page: var(--background);
+    --glass-card: var(--card);
+    --glass-strong: var(--background);
+    --glass-overlay: var(--card);
+    --glass-panel: var(--card);
+  }
+  .app-backdrop {
+    display: none;
+  }
 }
 
 @theme inline {
@@ -144,6 +219,10 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-field: var(--field);
+  --color-hover-2: var(--hover-2);
+  --color-line-strong: var(--line-strong);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-info: var(--info);
@@ -188,6 +267,26 @@
   --shadow-lg: var(--shadow-lg);
   --shadow-xl: var(--shadow-xl);
   --shadow-2xl: var(--shadow-2xl);
+  --shadow-hairline: var(--shadow-hairline);
+  --shadow-btn: var(--shadow-btn);
+  --shadow-card: var(--shadow-card);
+  --shadow-raised: var(--shadow-raised);
+  --shadow-overlay: var(--shadow-overlay);
+  --shadow-inset-field: var(--shadow-inset-field);
+  --ease-out-strong: var(--ease-out-strong);
+  --ease-in-out-strong: var(--ease-in-out-strong);
+  --animate-shimmer: shimmer 1.6s var(--ease-in-out-strong) infinite;
+  /* backwards：结束后不再作用，否则页面会一直是 fixed 子元素的定位容器（批量操作条等会跟着页面滚走） */
+  --animate-rise: rise 0.32s var(--ease-out-strong) backwards;
+
+  @keyframes shimmer {
+    from { background-position: 150% 0; }
+    to { background-position: -50% 0; }
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: none; }
+  }
 }
 
 /**
@@ -210,16 +309,12 @@
 
   body {
     background-color: var(--background);
-    background-image: radial-gradient(1100px 460px at 92% -140px, hsl(173 55% 42% / 0.07), transparent 62%);
-    background-attachment: fixed;
     color: var(--foreground);
-    font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+    letter-spacing: -0.003em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
-  }
-  .dark body {
-    background-image: radial-gradient(1100px 460px at 92% -140px, hsl(170 60% 40% / 0.10), transparent 62%);
   }
   ::selection {
     background: color-mix(in oklab, var(--primary) 22%, transparent);
@@ -249,26 +344,6 @@
   }
 }
 
-/**
- * Using the elevate system.
- * Automatic contrast adjustment.
- *
- * <element className="hover-elevate" />
- * <element className="active-elevate-2" />
- *
- * // Using the tailwind utility when a data attribute is "on"
- * <element className="toggle-elevate data-[state=on]:toggle-elevated" />
- * // Or manually controlling the toggle state
- * <element className="toggle-elevate toggle-elevated" />
- *
- * Elevation systems have to handle many states.
- * - not-hovered, vs. hovered vs. active  (three mutually exclusive states)
- * - toggled or not
- * - focused or not (this is not handled with these utilities)
- *
- * Even without handling focused or not, that is six possible combinations that
- * need to be distinguished from eachother visually.
- */
 @layer utilities {
   /* Hide ugly search cancel button in Chrome until we can style it properly */
   input[type="search"]::-webkit-search-cancel-button {
@@ -282,80 +357,52 @@
     pointer-events: none;
   }
 
-  /* .no-default-hover-elevate/no-default-active-elevate is an escape hatch so consumers of
-   * buttons/badges can remove the automatic brightness adjustment on interactions
-   * and program their own. */
-  .no-default-hover-elevate {}
-  .no-default-active-elevate {}
-
-
-  /**
-   * Toggleable backgrounds go behind the content. Hoverable/active goes on top.
-   * This way they can stack/compound. Both will overlap the parent's borders!
-   * So borders will be automatically adjusted both on toggle, and hover/active,
-   * and they will be compounded.
-   */
-  .toggle-elevate::before,
-  .toggle-elevate-2::before {
-    content: "";
-    pointer-events: none;
-    position: absolute;
-    inset: 0px;
-    /*border-radius: inherit;   match rounded corners */
-    border-radius: inherit;
-    z-index: -1;
-    /* sits behind content but above backdrop */
+  /* 毛玻璃：底色三档（页面级浮层、卡片级浮层、需要更实一点的抽屉），配合 glass-blur 使用 */
+  .glass-page {
+    background-color: var(--glass-page);
+  }
+  .glass-card {
+    background-color: var(--glass-card);
+  }
+  .glass-strong {
+    background-color: var(--glass-strong);
+  }
+  /* 页面里的卡片与面板：只降低底色不透明度，不加 backdrop-filter——背景剧照本身已大幅模糊，
+   * 一屏几十张卡片各自再模糊会拖慢滚动。顶边一道浅高光，像玻璃的边。 */
+  .glass-panel {
+    background-color: var(--glass-panel);
+  }
+  /* 文字多的弹层（命令搜索、对话框）：更实一些 */
+  .glass-overlay {
+    background-color: var(--glass-overlay);
+  }
+  .glass-blur {
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
   }
 
-  .toggle-elevate.toggle-elevated::before {
-    background-color: var(--elevate-2);
+  /* 按下时轻微收缩：按钮、可点的卡片与标签共用 */
+  .press {
+    transition-property: color, background-color, box-shadow, transform, opacity;
+    transition-duration: 160ms;
+    transition-timing-function: var(--ease-out-strong);
+  }
+  .press:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
-  /* If there's a 1px border, adjust the inset so that it covers that parent's border */
-  .border.toggle-elevate::before {
-    inset: -1px;
+  /* 加载占位的扫光 */
+  .shimmer {
+    background: linear-gradient(90deg, var(--muted) 0%, var(--hover-2) 50%, var(--muted) 100%);
+    background-size: 200% 100%;
+    animation: var(--animate-shimmer);
   }
+}
 
-  /* Does not work on elements with overflow:hidden!
-   * Wrap in :where() to zero out specificity so Tailwind position utilities (absolute/fixed/sticky) can override */
-  :where(.hover-elevate:not(.no-default-hover-elevate)),
-  :where(.active-elevate:not(.no-default-active-elevate)),
-  :where(.hover-elevate-2:not(.no-default-hover-elevate)),
-  :where(.active-elevate-2:not(.no-default-active-elevate)) {
-    position: relative;
-    z-index: 0;
-  }
-
-  .hover-elevate:not(.no-default-hover-elevate)::after,
-  .active-elevate:not(.no-default-active-elevate)::after,
-  .hover-elevate-2:not(.no-default-hover-elevate)::after,
-  .active-elevate-2:not(.no-default-active-elevate)::after {
-    content: "";
-    pointer-events: none;
-    position: absolute;
-    inset: 0px;
-    /*border-radius: inherit;   match rounded corners */
-    border-radius: inherit;
-    z-index: 999;
-    /* sits in front of content */
-  }
-
-  .hover-elevate:hover:not(.no-default-hover-elevate)::after,
-  .active-elevate:active:not(.no-default-active-elevate)::after {
-    background-color: var(--elevate-1);
-  }
-
-  .hover-elevate-2:hover:not(.no-default-hover-elevate)::after,
-  .active-elevate-2:active:not(.no-default-active-elevate)::after {
-    background-color: var(--elevate-2);
-  }
-
-  /* If there's a 1px border, adjust the inset so that it covers that parent's border */
-  .border.hover-elevate:not(.no-hover-interaction-elevate)::after,
-  .border.active-elevate:not(.no-active-interaction-elevate)::after,
-  .border.hover-elevate-2:not(.no-hover-interaction-elevate)::after,
-  .border.active-elevate-2:not(.no-active-interaction-elevate)::after,
-  .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
-    inset: -1px;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

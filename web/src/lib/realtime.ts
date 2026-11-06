@@ -11,6 +11,7 @@
  */
 
 import { apiUrl } from '@/api/request';
+import { onRefreshRequest } from '@/lib/refresh';
 
 export type ChangeScope = 'counts' | 'deliveries' | 'runtime' | 'tasks';
 export type RealtimeMode = 'live' | 'polling' | 'offline';
@@ -134,6 +135,7 @@ export class Realtime {
   private polling = false;
   private mode: RealtimeMode = 'offline';
   private stopped = false;
+  private stopRefresh: (() => void) | null = null;
 
   constructor(opts: RealtimeOptions) {
     this.opts = { scopes: [], ...opts };
@@ -144,6 +146,7 @@ export class Realtime {
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('online', this.onOnline);
     window.addEventListener('offline', this.setOffline);
+    this.stopRefresh = onRefreshRequest(this.flush); // 手机下拉刷新
     this.openSse();
   }
 
@@ -152,6 +155,8 @@ export class Realtime {
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('online', this.onOnline);
     window.removeEventListener('offline', this.setOffline);
+    this.stopRefresh?.();
+    this.stopRefresh = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.stopPolling();

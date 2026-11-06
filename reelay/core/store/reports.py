@@ -110,6 +110,27 @@ class ReportRepository:
             "AND json_extract(snapshot,'$.parsed.raw_fields.tmdbid')=?", (int(tmdbid),))]
 
     @_locked
+    def latest_backdrop(self) -> str | None:
+        """最近入库、带 TMDB 剧照的作品的剧照路径（管理台的毛玻璃背景）；没有时为 None。"""
+        row = self._conn.execute(
+            "SELECT json_extract(snapshot,'$.parsed.raw_fields.backdrop_path') AS b FROM tasks "
+            "WHERE state=? AND json_extract(snapshot,'$.parsed.raw_fields.backdrop_path') IS NOT NULL "
+            "ORDER BY updated_at DESC LIMIT 1", (TaskState.DONE.value,)).fetchone()
+        return row["b"] if row else None
+
+    @_locked
+    def artwork_for_tmdbid(self, tmdbid: int) -> dict[str, str | None]:
+        """同一 TMDB 条目最近识别时补全的海报与剧照（订阅卡片用）；没有时两项都是 None。"""
+        row = self._conn.execute(
+            "SELECT json_extract(snapshot,'$.parsed.raw_fields.poster_path') AS poster_path, "
+            "json_extract(snapshot,'$.parsed.raw_fields.backdrop_path') AS backdrop_path FROM tasks "
+            "WHERE json_extract(snapshot,'$.parsed.raw_fields.tmdbid')=? "
+            "AND json_extract(snapshot,'$.parsed.raw_fields.poster_path') IS NOT NULL "
+            "ORDER BY updated_at DESC LIMIT 1", (int(tmdbid),)).fetchone()
+        return {"poster_path": row["poster_path"], "backdrop_path": row["backdrop_path"]} if row else \
+            {"poster_path": None, "backdrop_path": None}
+
+    @_locked
     def summary_since(self, since: float) -> dict[str, Any]:
         """日报数据：时间窗口内新收与完成的任务，以及当前待处理积压。"""
         received = {r["state"]: r["c"] for r in self._conn.execute(

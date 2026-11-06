@@ -49,6 +49,8 @@ export interface IDashboard {
   mode: 'live' | 'not_configured' | 'not_running';
   /** 后端版本号，反馈问题时需要。 */
   version: string;
+  /** 最近入库作品的 TMDB 剧照（毛玻璃背景）；没有时为 null。 */
+  backdrop?: string | null;
   connections: Record<string, IConnection>;
   runtime: Record<string, IRuntimeHealth>;
   deliveries: Record<string, number>;
@@ -158,6 +160,8 @@ export interface ITaskSummary {
   resolution?: string | null;
   size?: string | null;
   poster_path?: string | null;
+  backdrop_path?: string | null;
+  rating?: number | null;
   save_dir_alias?: string | null;
 }
 
@@ -193,6 +197,8 @@ export interface IInboxItem {
   fallback: boolean;
   tmdb_matched: boolean | null;
   poster_path: string | null;
+  backdrop_path?: string | null;
+  rating?: number | null;
   save_dir_alias: string | null;
   /** 待审批任务不手动改目录时将存入的位置，如「剧集/国产剧集」（目录别名/分类）。 */
   auto_dir: string | null;

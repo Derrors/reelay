@@ -81,7 +81,7 @@ export function ConfigFrame({ draft, title, description, dirtyLabels, onSave, ch
 
       {data && dirty ? (
         <div className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-20 mt-6 lg:bottom-5">
-          <div className="flex items-center gap-3 rounded-xl border border-warning/35 bg-card/95 px-3.5 py-2.5 shadow-lg backdrop-blur animate-in fade-in-0 slide-in-from-bottom-2 sm:px-4 sm:py-3">
+          <div className="flex items-center gap-3 rounded-xl border border-warning/35 glass-card glass-blur px-3.5 py-2.5 shadow-lg animate-in fade-in-0 slide-in-from-bottom-2 sm:px-4 sm:py-3">
             <span className="size-2 shrink-0 rounded-full bg-warning" />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium leading-5">有修改尚未保存</p>

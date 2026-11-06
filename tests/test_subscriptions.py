@@ -137,6 +137,16 @@ class TestSubscriptionService(ServiceCase):
         self.store.save_task(ctx)
         return ctx
 
+    async def test_subscriptions_show_the_artwork_of_recognised_episodes(self):
+        self.subscribe({"title": "剧", "season": 1, "tmdbid": 100})
+        self.subscribe({"title": "没识别过", "season": 1, "tmdbid": 200})
+        ctx = await self.pending_tv("3")
+        ctx.parsed.raw_fields.update(poster_path="/p.jpg", backdrop_path="/b.jpg")
+        self.store.save_task(ctx)
+        items = {item["title"]: item for item in self.service.list_subscriptions()["items"]}
+        self.assertEqual((items["剧"]["poster_path"], items["剧"]["backdrop_path"]), ("/p.jpg", "/b.jpg"))
+        self.assertEqual((items["没识别过"]["poster_path"], items["没识别过"]["backdrop_path"]), (None, None))
+
     async def test_add_returns_matching_pending_tasks_and_rejects_duplicates(self):
         a, b = await self.pending_tv("1"), await self.pending_tv("2")
         await self.pending_tv("3", tmdbid=7)

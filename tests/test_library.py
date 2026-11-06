@@ -27,6 +27,20 @@ class TestLibraryAndQuality(ServiceCase):
         self.assertEqual(missing[0]["missing"], [3])
         self.assertIn("没有 TMDB 播出信息", missing[0]["note"])
 
+    async def test_library_and_task_list_carry_tmdb_artwork(self):
+        """海报卡片的评分角标与简介、详情顶部的剧照横幅：取第一条带这些字段的任务。"""
+        first = done_task(self.store, "1", title="剧", episodes=(1,), tmdbid=7)
+        later = done_task(self.store, "2", title="剧", episodes=(2,), tmdbid=7)
+        later.parsed.raw_fields.update(poster_path="/p.jpg", backdrop_path="/b.jpg", rating=8.6, overview="简介")
+        self.store.save_task(later)
+        group = self.service.library()["groups"][0]
+        self.assertEqual((group["poster_path"], group["backdrop_path"], group["rating"], group["overview"]),
+                         ("/p.jpg", "/b.jpg", 8.6, "简介"))
+        rows = {row["task_id"]: row for row in self.store.list_tasks()}
+        self.assertEqual((rows[later.task_id]["backdrop_path"], rows[later.task_id]["rating"]), ("/b.jpg", 8.6))
+        self.assertIsNone(rows[first.task_id]["rating"])
+        self.assertEqual(self.service.dashboard()["backdrop"], "/b.jpg")  # 管理台背景
+
     def test_overdue_episodes_skip_the_first_day(self):
         dates = {7: "2026-10-16", 8: "2026-10-18", 9: "2026-10-19"}
         self.assertEqual(overdue_episodes([7, 8, 9], dates, "2026-10-19"), [{"episode": 7, "days": 3}])

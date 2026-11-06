@@ -226,6 +226,12 @@ class TestConsoleApi(WebCase):
         store = self.app.state.store
         self.assertEqual({store.get_task(i).save_dir_alias for i in ids}, {"剧集"})
 
+    def test_batch_reparse_reports_tasks_that_cannot_be_reparsed(self):
+        ids = [i["task_id"] for i in self.client.get("/api/inbox").json()["items"]]
+        result = self.client.post("/api/tasks/batch", json={"task_ids": [*ids, "missing"], "action": "reparse"}).json()
+        self.assertEqual(result["done"], len(ids))
+        self.assertEqual([f["task_id"] for f in result["failed"]], ["missing"])
+
     def test_library_counts_multi_season_pack_by_season_and_episode(self):
         store = self.app.state.store
         for msg_id, pairs in (("m1", [[1, 1], [1, 2], [2, 1], [2, 2]]), ("m2", [[3, 1]])):

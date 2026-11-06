@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { subscriptionApi, type IIgnoredWork, type IResolveResp, type IShowCandidate, type ISubscription } from '@/api/subscriptions';
+import { SideBackdrop } from '@/components/app/Backdrop';
+import { EpisodeProgress } from '@/components/app/EpisodeProgress';
 import { ErrorState } from '@/components/app/ErrorState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { Page } from '@/components/app/Page';
@@ -14,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAsync } from '@/hooks/useAsync';
+import { toneWash, usePosterTone } from '@/hooks/usePosterTone';
 import { compactEpisodes } from '@/lib/format';
 import { MEDIA_TYPE_LABELS } from '@/lib/status';
 import { announceSubscription } from '@/lib/subscriptions';
@@ -58,28 +61,34 @@ function SubscriptionRow({ item, busy, onRemove, onReopen }: {
   item: ISubscription; busy: boolean; onRemove: () => void; onReopen: () => void;
 }) {
   const finished = item.finished;
+  const tone = usePosterTone(item.poster_path);
+  const total = item.total ?? item.aired;
   return (
-    <div className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-      <span className={cn('grid size-9 shrink-0 place-items-center rounded-lg',
-        finished ? 'bg-muted text-muted-foreground' : 'bg-primary/10 text-primary')}>
-        {finished ? <Flag className="size-4" /> : <BellRing className="size-4" />}
-      </span>
+    <div className="relative isolate flex items-center gap-3 overflow-hidden rounded-lg bg-card p-3 shadow-[inset_0_0_0_1px_var(--line)]"
+      style={toneWash(tone, 0.12)}>
+      <SideBackdrop path={item.backdrop_path} className="-z-10" />
+      <MediaCover title={item.title} posterPath={item.poster_path} mediaType="tv" quality="w185"
+        className={cn('w-11 shrink-0 rounded-md shadow-card', finished && 'opacity-60 grayscale')} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="truncate text-sm font-medium">《{item.title}》第 {item.season} 季</span>
           <ToneBadge tone="neutral">{item.category}</ToneBadge>
-          {finished ? <ToneBadge tone="neutral">已完结</ToneBadge>
+          {finished ? <ToneBadge tone="neutral"><Flag className="-ml-0.5 size-3" />已完结</ToneBadge>
             : item.auto ? <ToneBadge tone="success">新集自动转存</ToneBadge> : <ToneBadge tone="neutral">只提醒缺集</ToneBadge>}
           {!item.tmdbid ? <ToneBadge tone="warning" className="max-sm:hidden">按片名匹配</ToneBadge> : null}
         </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {finished ? `${finished.episodes} 集全部入库，${finished.date} 自动结束订阅` : <>
-            已入库 {item.have.length}{item.total ? ` / ${item.total}` : ''} 集
-            {item.have.length ? `（${compactEpisodes(item.have)}）` : ''}
-            {item.missing.length ? ` · 缺 ${compactEpisodes(item.missing)}` : ''}
-            {item.aired ? ` · TMDB 已播 ${item.aired} 集` : ''}
-          </>}
-        </p>
+        {finished ? (
+          <p className="mt-1 truncate text-xs text-muted-foreground">{finished.episodes} 集全部入库，{finished.date} 自动结束订阅</p>
+        ) : (
+          <>
+            <EpisodeProgress have={item.have} missing={item.missing} total={item.total} aired={item.aired} className="mt-2 max-w-md" />
+            <p className="mt-1.5 truncate text-xs text-muted-foreground">
+              <span className="font-medium tabular-nums text-foreground">{item.have.length}</span>{total ? ` / ${total}` : ''} 集
+              {item.missing.length ? <span className="text-warning"> · 缺 {compactEpisodes(item.missing)}</span> : ''}
+              {item.aired ? ` · TMDB 已播 ${item.aired} 集` : ''}
+            </p>
+          </>
+        )}
       </div>
       {finished ? (
         <Button variant="outline" size="sm" disabled={busy} onClick={onReopen} title="恢复自动转存与缺集巡检（如出了特别篇）">
@@ -235,12 +244,12 @@ export default function SubscriptionsPage() {
                           {data.items.filter((i) => !c || i.category === c).length}</span></>,
                       }))} />
                   ) : null}
-                  {active.length ? <div className="divide-y divide-border/70">{active.map(row)}</div>
+                  {active.length ? <div className="space-y-2">{active.map(row)}</div>
                     : <p className="text-sm text-muted-foreground">这个类型没有在追的剧。</p>}
                   {finished.length ? (
                     <div>
                       <p className="mb-1 text-xs font-medium text-muted-foreground">已完结 · 播完且全部入库后自动结束</p>
-                      <div className="divide-y divide-border/70">{finished.map(row)}</div>
+                      <div className="space-y-2">{finished.map(row)}</div>
                     </div>
                   ) : null}
                 </div>

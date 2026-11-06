@@ -18,6 +18,11 @@ export interface ITitleGroup {
   origin_country: string[];
   genre_ids: number[];
   poster_path: string | null;
+  /** TMDB 剧照（详情顶部的横幅）。 */
+  backdrop_path: string | null;
+  /** TMDB 评分。 */
+  rating: number | null;
+  overview: string | null;
   save_dir_alias: string | null;
   files: string[];
   updated_at: number;

@@ -41,7 +41,7 @@ export function Select({ value, options, onValueChange, placeholder, fallback, c
         {...props}
         value={current}
         onChange={(event) => onValueChange(inherited && event.target.value === inherited.value ? '' : event.target.value)}
-        className="h-9 w-full bg-card shadow-xs"
+        className="w-full"
       >
         {withPlaceholder ? <NativeSelectOption value="">{placeholder}</NativeSelectOption> : null}
         {unlisted ? (

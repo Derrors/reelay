@@ -20,6 +20,7 @@ function Toaster({ className, style, icons, ...props }: ToasterProps) {
     <Sonner
       theme={theme as ToasterProps['theme']}
       className={cn('toaster group', className)}
+      toastOptions={{ classNames: { toast: 'glass-blur !shadow-raised !border-0 !text-[13px]', description: '!text-muted-foreground', actionButton: '!rounded-md !bg-primary !text-primary-foreground' } }}
       position="top-center"
       icons={{
         success: (
@@ -52,10 +53,10 @@ function Toaster({ className, style, icons, ...props }: ToasterProps) {
       }}
       style={
         {
-          '--normal-bg': 'var(--popover)',
+          '--normal-bg': 'var(--glass-card)',
           '--normal-text': 'var(--popover-foreground)',
           '--normal-border': 'var(--border)',
-          '--border-radius': 'var(--radius)',
+          '--border-radius': 'calc(var(--radius) + 2px)',
           ...style,
         } as React.CSSProperties
       }

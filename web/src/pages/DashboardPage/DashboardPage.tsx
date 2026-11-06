@@ -12,6 +12,7 @@ import { MediaCover } from '@/components/app/MediaCover';
 import { MediaMeta } from '@/components/app/MediaMeta';
 import { Page } from '@/components/app/Page';
 import { Panel } from '@/components/app/Panel';
+import { PosterCard } from '@/components/app/PosterCard';
 import { StatCard } from '@/components/app/StatCard';
 import { ToneBadge } from '@/components/app/StatusBadge';
 import { TaskDetailSheet } from '@/components/TaskDetailSheet';
@@ -215,15 +216,11 @@ export default function DashboardPage() {
             ) : snapshot.recent.length ? (
               <div className="grid grid-cols-4 gap-3 sm:grid-cols-6 xl:grid-cols-8">
                 {snapshot.recent.map((item, index) => (
-                  <button key={item.task_id} type="button" onClick={() => setOpenId(item.task_id)}
-                    className={cn('group min-w-0 text-left', index >= 6 && 'hidden xl:block', index >= 4 && 'max-sm:hidden')}>
-                    <MediaCover title={item.title} posterPath={item.poster_path} mediaType={item.media_type} quality="w185"
-                      className="transition-transform group-hover:-translate-y-0.5 group-hover:shadow-md" />
-                    <div className="mt-1.5 truncate text-xs font-medium">{item.title}</div>
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {episodeLabel(item.season, item.episodes) || item.year || ''}
-                    </div>
-                  </button>
+                  <PosterCard key={item.task_id} title={item.title ?? ''} posterPath={item.poster_path} mediaType={item.media_type}
+                    rating={item.rating} quality="w185" done onOpen={() => setOpenId(item.task_id)}
+                    subtitle={episodeLabel(item.season, item.episodes) || item.year || ''}
+                    details={[item.resolution, item.size, relativeTime(item.updated_at)].filter(Boolean).join(' · ')}
+                    className={cn(index >= 6 && 'hidden xl:block', index >= 4 && 'max-sm:hidden')} />
                 ))}
               </div>
             ) : (

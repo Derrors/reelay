@@ -40,7 +40,7 @@ type TabKey = (typeof TABS)[number]['value'];
 const isTab = (value: string | null): value is TabKey => TABS.some((t) => t.value === value);
 const TRIGGER_CLASS = [
   'h-9 rounded-md px-3 text-[13px] text-muted-foreground sm:h-8 sm:px-4',
-  'data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs',
+  'data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-btn',
 ].join(' ');
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 

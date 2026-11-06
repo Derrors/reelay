@@ -1,5 +1,6 @@
 import { useSearchParams } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AppearanceTab } from './AppearanceTab';
 import { BasicTab } from './BasicTab';
 import { ConfigFrame } from './ConfigFrame';
 import { ConnectionsTab } from './ConnectionsTab';
@@ -19,10 +20,11 @@ const TABS = [
   { value: 'connections', label: '115 网盘' },
   { value: 'proxy', label: '网络代理' },
   { value: 'system', label: '运行与安全' },
+  { value: 'appearance', label: '外观' },
 ];
 const TRIGGER_CLASS = [
   'h-9 gap-1.5 rounded-md px-2 text-[13px] text-muted-foreground sm:h-8 sm:px-3.5',
-  'data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs',
+  'data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-btn',
   'dark:text-muted-foreground dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-card dark:data-[state=active]:text-foreground',
 ].join(' ');
 
@@ -54,7 +56,7 @@ export default function SettingsPage() {
     >
       {data && secretProps ? (
         <Tabs value={tab} onValueChange={setTab} className="gap-5">
-          <TabsList className="grid h-auto w-full grid-cols-4 rounded-lg bg-muted p-1 md:inline-flex md:w-fit">
+          <TabsList className="grid h-auto w-full grid-cols-3 rounded-lg sm:grid-cols-5 bg-muted p-1 md:inline-flex md:w-fit">
             {TABS.map(t => (
               <TabsTrigger key={t.value} value={t.value} className={TRIGGER_CLASS}>
                 {t.label}
@@ -91,6 +93,9 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="system">
             <SystemTab config={config} setField={setField} {...secretProps} />
+          </TabsContent>
+          <TabsContent value="appearance">
+            <AppearanceTab />
           </TabsContent>
         </Tabs>
       ) : null}

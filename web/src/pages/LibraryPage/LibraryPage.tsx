@@ -5,6 +5,7 @@ import { EmptyState } from '@/components/app/EmptyState';
 import { ErrorState } from '@/components/app/ErrorState';
 import { MediaCover } from '@/components/app/MediaCover';
 import { Page } from '@/components/app/Page';
+import { PosterCard } from '@/components/app/PosterCard';
 import { Segmented } from '@/components/app/Segmented';
 import { Select } from '@/components/app/Select';
 import { Sheet } from '@/components/app/Sheet';
@@ -14,6 +15,7 @@ import { useAsync } from '@/hooks/useAsync';
 import { useDebounced } from '@/hooks/useDebounced';
 import { compactEpisodes, fullTime, mediaTypeLabel, relativeTime, seasonsLabel } from '@/lib/format';
 import { MEDIA_TYPE_LABELS } from '@/lib/status';
+import { cn } from '@/lib/utils';
 
 type Sort = 'recent' | 'title' | 'size';
 type View = 'grid' | 'list';
@@ -67,12 +69,14 @@ function GroupSheet({ group, onClose }: { group: ITitleGroup | null; onClose: ()
       onOpenChange={(open) => { if (!open) onClose(); }}
       title={group?.title ?? ''}
       description={group ? `${mediaTypeLabel(group.media_type)}${group.year ? ` · ${group.year}` : ''}` : undefined}
+      backdrop={group?.backdrop_path}
     >
       {group ? (
         <div className="space-y-6">
-          <div className="flex gap-4">
-            <MediaCover title={group.title} posterPath={group.poster_path} mediaType={group.media_type} className="w-28 shrink-0" />
-            <dl className="grid content-start gap-x-4 gap-y-2 text-sm [grid-template-columns:auto_1fr]">
+          <div className={cn('flex gap-4', group.backdrop_path && 'pt-24')}>
+            <MediaCover title={group.title} posterPath={group.poster_path} mediaType={group.media_type} className="relative w-28 shrink-0 shadow-raised" />
+            <dl className="relative grid content-end gap-x-4 gap-y-2 text-sm [grid-template-columns:auto_1fr]">
+              {group.rating ? <><dt className="text-muted-foreground">TMDB 评分</dt><dd className="tabular-nums">{group.rating.toFixed(1)}</dd></> : null}
               <dt className="text-muted-foreground">保存目录</dt><dd>{group.save_dir_alias ?? '—'}</dd>
               {group.resolution ? <><dt className="text-muted-foreground">清晰度</dt><dd>{group.resolution}</dd></> : null}
               <dt className="text-muted-foreground">估算体积</dt><dd className="tabular-nums">{gbText(group.bytes)}</dd>
@@ -81,6 +85,7 @@ function GroupSheet({ group, onClose }: { group: ITitleGroup | null; onClose: ()
               <dd title={fullTime(group.updated_at)}>{relativeTime(group.updated_at)}</dd>
             </dl>
           </div>
+          {group.overview ? <p className="text-[13px] leading-6 text-muted-foreground">{group.overview}</p> : null}
           {group.release.length ? (
             <div className="flex flex-wrap gap-1">
               {group.release.map((tag) => (
@@ -166,7 +171,7 @@ export default function LibraryPage() {
         <div className="flex flex-1 gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索片名" className="h-9 bg-card pl-9 shadow-xs" />
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索片名" className="pl-9" />
           </div>
           <Select value={sort} onValueChange={(v) => setSort(v as Sort)} options={SORTS} aria-label="排序" className="w-28 shrink-0" />
           <Segmented label="显示方式" size="md" value={view} onChange={switchView} options={VIEWS} className="hidden shrink-0 sm:inline-flex" />
@@ -190,16 +195,15 @@ export default function LibraryPage() {
       ) : view === 'grid' ? (
         <div className="grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-4 sm:gap-x-4 md:grid-cols-5 lg:grid-cols-6">
           {groups.map((g) => (
-            <button key={groupKey(g)} type="button" onClick={() => setOpen(g)} className="group min-w-0 text-left">
-              <MediaCover title={g.title} posterPath={g.poster_path} mediaType={g.media_type}
-                className="transition-all duration-200 group-hover:-translate-y-1 group-hover:shadow-lg" />
-              <div className="mt-2 truncate text-[13px] font-medium group-hover:text-primary">{g.title}</div>
-              <div className="truncate text-xs text-muted-foreground">{summary(g)}</div>
-            </button>
+            <PosterCard key={groupKey(g)} title={g.title} subtitle={summary(g)} posterPath={g.poster_path} mediaType={g.media_type}
+              rating={g.rating} overview={g.overview} onOpen={() => setOpen(g)}
+              details={[g.resolution, g.media_type !== 'movie' && g.episodes.length
+                ? (g.episode_pairs ? seasonsLabel(g.episode_pairs) : `${episodeCount(g)} 集`) : null, gbText(g.bytes)]
+                .filter(Boolean).join(' · ')} />
           ))}
         </div>
       ) : (
-        <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-card-border bg-card shadow-xs">
+        <div className="divide-y overflow-hidden rounded-xl glass-panel shadow-card">
           {groups.map((g) => (
             <button key={groupKey(g)} type="button" onClick={() => setOpen(g)}
               className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50">

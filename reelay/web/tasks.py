@@ -18,7 +18,7 @@ class ParsePatchPayload(BaseModel):
 
 class BatchPayload(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
-    action: Literal["approve", "reject", "retry"]
+    action: Literal["approve", "reject", "retry", "reparse"]
     save_dir_alias: str | None = None  # 仅 approve：统一改投到该目录
 
 

@@ -15,7 +15,7 @@ export function Notice({ tone = 'info', icon: Icon, title, children, className, 
   const style = TONE_CLASS[tone];
   return (
     <div role={tone === 'danger' || tone === 'warning' ? 'alert' : undefined}
-      className={cn('flex items-start gap-3 rounded-xl border px-4 py-3 text-sm', style.soft, BORDER[tone], className)}>
+      className={cn('flex items-start gap-3 rounded-lg border px-3.5 py-2.5 text-sm', style.soft, BORDER[tone], className)}>
       {Icon ? <Icon className={cn('mt-0.5 size-4 shrink-0', style.text)} /> : null}
       <div className="min-w-0 flex-1">
         {title ? <p className={cn('font-medium leading-6', style.text)}>{title}</p> : null}

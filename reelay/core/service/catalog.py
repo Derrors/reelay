@@ -9,7 +9,7 @@ from .base import ServiceBase
 
 # 管理台媒体库页每部作品需要的字段
 _WEB_FIELDS = ("title", "media_type", "year", "tmdbid", "episodes", "episode_pairs", "tasks", "bytes", "poster_path",
-               "save_dir_alias", "files", "updated_at", "resolution", "release", "origin_country", "genre_ids")
+               "backdrop_path", "rating", "overview", "save_dir_alias", "files", "updated_at", "resolution", "release", "origin_country", "genre_ids")
 
 
 class CatalogMixin(ServiceBase):

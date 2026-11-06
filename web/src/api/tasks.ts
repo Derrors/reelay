@@ -28,7 +28,7 @@ export const taskApi = {
   /** 修正识别结果，返回更新后的详情。 */
   correct: (taskId: string, values: Partial<IParsedResource>) =>
     patch<ITaskDetail>(`tasks/${taskId}/parsed`, { values }),
-  /** saveDirAlias 只对 approve 生效：统一改存到该目录。 */
-  batch: (taskIds: string[], action: 'approve' | 'reject' | 'retry', saveDirAlias?: string) =>
+  /** saveDirAlias 只对 approve 生效：统一改存到该目录。reject 对失败或待人工的任务是「忽略」。 */
+  batch: (taskIds: string[], action: 'approve' | 'reject' | 'retry' | 'reparse', saveDirAlias?: string) =>
     post<IBatchResult>('tasks/batch', { task_ids: taskIds, action, save_dir_alias: saveDirAlias || null }),
 };

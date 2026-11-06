@@ -92,7 +92,7 @@ function ExtensionCard({ x, config, saved, setConfig, busy, open, catalog, onOpe
   const expanded = configurable && open;
   return (
     <article id={`ext-${x.name}`} tabIndex={-1} className={cn(
-      'flex min-w-0 flex-col rounded-xl border border-card-border bg-card shadow-xs transition-colors',
+      'flex min-w-0 flex-col rounded-xl glass-panel shadow-card transition-shadow',
       'outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20',
       expanded && 'lg:col-span-2',
       dirty && 'border-warning/40',

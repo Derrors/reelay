@@ -79,6 +79,7 @@ class OverviewMixin(ServiceBase):
             "config_revision": self.pipeline.revision,
             "mode": "live" if live_running else ("not_running" if live_ready else "not_configured"),
             "version": __version__,
+            "backdrop": self.store.latest_backdrop(),  # 管理台背景：最近入库作品的剧照
         }
 
     def _recent(self) -> dict[str, int]:

@@ -15,19 +15,19 @@ interface PanelProps {
 /** 带标题栏的内容面板；没有标题时只是一张卡片。 */
 export function Panel({ title, description, icon: Icon, actions, children, className, bodyClassName }: PanelProps) {
   return (
-    <section className={cn('rounded-xl border border-card-border bg-card text-card-foreground shadow-xs', className)}>
+    <section className={cn('glass-panel rounded-xl text-card-foreground shadow-card', className)}>
       {title || actions ? (
-        <div className={cn('flex justify-between gap-3 border-b border-border/70 px-4 py-3.5 sm:px-5 sm:py-4',
+        <div className={cn('flex justify-between gap-3 border-b px-4 py-3 sm:px-5 sm:py-3.5',
           description ? 'items-start' : 'items-center')}>
           {/* 只有标题时与图标居中对齐；有描述时图标对齐标题行 */}
           <div className={cn('flex min-w-0 gap-3', description ? 'items-start' : 'items-center')}>
             {Icon ? (
-              <span className={cn('grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary', description && 'mt-0.5')}>
+              <span className={cn('grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground', description && 'mt-0.5')}>
                 <Icon className="size-4" />
               </span>
             ) : null}
             <div className="min-w-0">
-              {title ? <h2 className="text-[15px] font-semibold leading-6">{title}</h2> : null}
+              {title ? <h2 className="text-sm font-semibold leading-6">{title}</h2> : null}
               {description ? <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</p> : null}
             </div>
           </div>

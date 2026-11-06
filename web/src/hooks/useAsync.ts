@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
+import { onRefreshRequest } from '@/lib/refresh';
 import { errorMessage } from '@/lib/utils';
 
 export interface AsyncResult<T> {
@@ -56,6 +57,7 @@ export function useAsync<T>(load: () => Promise<T>, deps: readonly unknown[], fa
   }, [key, reloads]);
 
   const reload = useCallback(() => setReloads((n) => n + 1), []);
+  useEffect(() => onRefreshRequest(reload), [reload]); // 手机下拉刷新
   const mutate = useCallback((update: (data: T | undefined) => T | undefined) => {
     setSettled((prev) => ({ ...prev, data: update(prev.data) }));
   }, []);

@@ -44,13 +44,15 @@ def group_library(snapshots: list[dict], replaced: set[str] = frozenset()) -> li
         group = groups.setdefault(key, {
             "title": p["title"], "year": p.get("year"), "media_type": p.get("media_type"), "tmdbid": raw.get("tmdbid"),
             "genre_ids": set(), "origin_country": set(), "best_rank": 0, "release": set(), "seasons": {},
-            "save_dir_alias": snap.get("save_dir_alias"), "poster_path": None, "tasks": 0, "file_count": 0,
+            "save_dir_alias": snap.get("save_dir_alias"), "poster_path": None, "backdrop_path": None, "rating": None,
+            "overview": None, "tasks": 0, "file_count": 0,
             "bytes": 0, "files": [], "updated_at": snap.get("updated_at") or 0})
         group["genre_ids"].update(p.get("genre_ids") or [])
         group["origin_country"].update(p.get("origin_country") or [])
         group["best_rank"] = max(group["best_rank"], resolution_rank(p.get("resolution")))
         group["release"].update(release.describe(p.get("release")))
-        group["poster_path"] = group["poster_path"] or raw.get("poster_path")
+        for key in ("poster_path", "backdrop_path", "rating", "overview"):
+            group[key] = group[key] or raw.get(key)
         group["tasks"] += 1
         group["file_count"] += len(kept) or 1
         sizes = [f.get("size") for f in kept]

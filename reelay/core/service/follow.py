@@ -42,8 +42,10 @@ class FollowMixin(ServiceBase):
             have = sorted(works.episodes(stored, works.identity(item["title"], tmdbid=item["tmdbid"]), item["season"]))
             entry = next((report[f"{title}|S{item['season']:02d}"] for title in titles
                           if f"{title}|S{item['season']:02d}" in report), {})
+            artwork = self.store.artwork_for_tmdbid(item["tmdbid"]) if item["tmdbid"] else \
+                {"poster_path": None, "backdrop_path": None}
             items.append({**item, "have": have, "missing": entry.get("missing", []), "aired": entry.get("aired"),
-                          "category": self._tv_category(item, sorted(titles))})
+                          "category": self._tv_category(item, sorted(titles)), **artwork})
         # 放行方式按来源设置，defaults 只是兜底，只报告实际在监听的来源
         deciders = self.pipeline.reg.providers.get("decision", {})
         inactive = ["、".join(source_bots(s)) for s in cfg["sources"]

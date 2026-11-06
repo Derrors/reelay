@@ -21,17 +21,12 @@ function loginError(e: unknown): { message: string; retryAfter: number } {
 function GateShell({ subtitle, children }: { subtitle: string; children: ReactNode }) {
   return (
     <div className="relative flex min-h-svh flex-col items-center justify-center px-5 py-10">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[420px]"
-        style={{ background: 'radial-gradient(640px 320px at 50% -60px, color-mix(in oklab, var(--primary) 16%, transparent), transparent 70%)' }}
-      />
       <main className="relative w-full max-w-[360px]">
         <div className="flex flex-col items-center text-center">
-          <div className="grid size-12 place-items-center rounded-[14px] bg-gradient-to-br from-[hsl(171_58%_44%)] to-[hsl(178_64%_26%)] text-white shadow-[0_8px_20px_-6px_hsl(173_60%_30%/0.6)]">
+          <div className="grid size-12 place-items-center rounded-xl bg-foreground text-background shadow-[0_2px_6px_oklch(0%_0_0/0.18),inset_0_1px_0_oklch(100%_0_0/0.15)]">
             <Clapperboard className="size-6" />
           </div>
-          <h1 className="mt-4 text-[22px] font-semibold tracking-tight">Reelay</h1>
+          <h1 className="mt-4 text-xl font-semibold tracking-[-0.02em]">Reelay</h1>
           <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
         </div>
         {children}
@@ -41,7 +36,7 @@ function GateShell({ subtitle, children }: { subtitle: string; children: ReactNo
   );
 }
 
-const CARD = 'mt-7 rounded-xl border border-card-border bg-card p-5 shadow-lg sm:p-6';
+const CARD = 'mt-7 rounded-xl bg-card p-5 shadow-overlay sm:p-6';
 
 function GateNotice({ message }: { message: string }) {
   return (

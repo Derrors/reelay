@@ -5,12 +5,12 @@ export type Tone = 'neutral' | 'info' | 'primary' | 'warning' | 'success' | 'dan
 
 /** 语义色调 → 徽标样式；页面只选色调，不直接写颜色。 */
 export const TONE_CLASS: Record<Tone, { badge: string; dot: string; text: string; soft: string }> = {
-  neutral: { badge: 'bg-muted text-muted-foreground', dot: 'bg-muted-foreground/60', text: 'text-muted-foreground', soft: 'bg-muted' },
-  info: { badge: 'bg-info/10 text-info', dot: 'bg-info', text: 'text-info', soft: 'bg-info/10' },
-  primary: { badge: 'bg-primary/10 text-primary', dot: 'bg-primary', text: 'text-primary', soft: 'bg-primary/10' },
-  warning: { badge: 'bg-warning/12 text-warning', dot: 'bg-warning', text: 'text-warning', soft: 'bg-warning/12' },
-  success: { badge: 'bg-success/10 text-success', dot: 'bg-success', text: 'text-success', soft: 'bg-success/10' },
-  danger: { badge: 'bg-destructive/10 text-destructive', dot: 'bg-destructive', text: 'text-destructive', soft: 'bg-destructive/10' },
+  neutral: { badge: 'bg-muted text-muted-foreground ring-line-strong', dot: 'bg-faint', text: 'text-muted-foreground', soft: 'bg-muted' },
+  info: { badge: 'bg-info/8 text-info ring-info/20', dot: 'bg-info', text: 'text-info', soft: 'bg-info/10' },
+  primary: { badge: 'bg-primary/8 text-primary ring-primary/20', dot: 'bg-primary', text: 'text-primary', soft: 'bg-primary/10' },
+  warning: { badge: 'bg-warning/8 text-warning ring-warning/25', dot: 'bg-warning', text: 'text-warning', soft: 'bg-warning/10' },
+  success: { badge: 'bg-success/8 text-success ring-success/20', dot: 'bg-success', text: 'text-success', soft: 'bg-success/10' },
+  danger: { badge: 'bg-destructive/8 text-destructive ring-destructive/20', dot: 'bg-destructive', text: 'text-destructive', soft: 'bg-destructive/10' },
 };
 
 /* ---------------- 任务 ---------------- */

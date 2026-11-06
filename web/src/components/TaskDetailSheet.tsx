@@ -23,7 +23,7 @@ import { CONFIDENCE_CAP_LABELS, MEDIA_TYPE_LABELS } from '@/lib/status';
 import { announceSubscription } from '@/lib/subscriptions';
 import { ACTION_DONE, ACTION_ENDPOINT, actionBody, allows, type PostedAction } from '@/lib/taskActions';
 import type { IOrganizeConflict, IParsedResource, ITaskDetail, ITransferPartial, TaskActionName } from '@/lib/types';
-import { errorMessage } from '@/lib/utils';
+import { cn, errorMessage } from '@/lib/utils';
 
 const MEDIA_TYPES = Object.entries(MEDIA_TYPE_LABELS).map(([value, label]) => ({ value, label }));
 
@@ -139,6 +139,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged, saveDirs }: TaskDe
   };
 
   const parsed = detail?.context.parsed;
+  const backdrop = parsed?.raw_fields?.backdrop_path as string | undefined;
   const meta = (detail?.context.meta ?? {}) as TaskMeta;
   const plan = meta.organize?.plan ?? [];
   const organizeError = meta.organize?.error;
@@ -186,6 +187,7 @@ export function TaskDetailSheet({ taskId, onClose, onChanged, saveDirs }: TaskDe
       title={detail ? (parsed?.title || '尚未识别片名') : '任务详情'}
       description={detail ? `${detail.context.raw.source} · ${relativeTime(detail.created_at)}` : undefined}
       footer={footer}
+      backdrop={detail ? backdrop : null}
     >
       {!detail ? (
         loaded.error ? (
@@ -195,10 +197,10 @@ export function TaskDetailSheet({ taskId, onClose, onChanged, saveDirs }: TaskDe
         )
       ) : (
         <div className="space-y-6">
-          <div className="flex gap-4">
+          <div className={cn('flex gap-4', backdrop && 'pt-24')}>
             <MediaCover title={parsed?.title} posterPath={parsed?.raw_fields?.poster_path as string | undefined}
-              mediaType={parsed?.media_type} className="w-20 shrink-0" quality="w185" />
-            <div className="min-w-0 space-y-2">
+              mediaType={parsed?.media_type} className="relative w-20 shrink-0 shadow-raised" quality="w185" />
+            <div className="relative min-w-0 space-y-2 self-end">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge state={detail.state} />
                 {parsed?.year ? <span className="text-sm text-muted-foreground">{parsed.year}</span> : null}

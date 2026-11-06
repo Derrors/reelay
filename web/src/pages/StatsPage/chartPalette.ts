@@ -10,7 +10,7 @@ export type Token = typeof TOKENS[number];
 export interface ChartPalette { colors: Record<Token, string>; font: string }
 
 /**
- * 读取当前主题下的颜色变量。变量是 `hsl(173 58% 38%)` 这种空格写法，zrender 解析不了（悬停高亮会变黑），
+ * 读取当前主题下的颜色变量。变量可能是 `hsl(…)` 空格写法或 color-mix 等 zrender 解析不了的写法（悬停高亮会变黑），
  * 所以借一个探针元素让浏览器换算成 rgb。
  */
 function readPalette(): ChartPalette {
