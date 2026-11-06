@@ -125,6 +125,40 @@ class TestTmdbMatching(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ctx.ns("tmdb")["matched"])
 
 
+class TestAdVerdict(unittest.IsolatedAsyncioTestCase):
+    """AI 把带推广链接的资源帖判成广告时，由 TMDB 匹配结果纠正。"""
+    HIT = {"id": 7, "name": "谷雨", "first_air_date": "2026-09-01", "_kind": "tv", "_score": 1.1}
+
+    def setUp(self):
+        patcher = patch.object(tmdb, "details", return_value={})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def run_hook(self, hit, share_code="abc123", ed2k=(), key="k", is_media=True):
+        ctx = message()
+        ctx.parsed = ParsedResource(is_media=is_media, is_ad=True, title="谷雨", year=2026, media_type="tv",
+                                    share_code=share_code, ed2k=list(ed2k))
+        with secret_store.override(tmdb_api_key=key), \
+                patch.object(tmdb, "best_match", return_value=(hit, [hit] if hit else [])):
+            await TmdbEnrich().run(ctx)
+        return ctx
+
+    async def test_matched_resource_with_link_is_not_an_ad(self):
+        ctx = await self.run_hook(self.HIT)
+        self.assertFalse(ctx.parsed.is_ad)
+        self.assertIn("按影视资源继续", ctx.trail[-1])
+        ed2k = "ed2k://|file|a.mkv|1|0123456789abcdef0123456789abcdef|/"
+        self.assertFalse((await self.run_hook(self.HIT, share_code=None, ed2k=[ed2k])).parsed.is_ad)
+
+    async def test_ad_verdict_stands_without_all_the_signals(self):
+        for name, kwargs in (("TMDB 没匹配上", {"hit": None}),
+                             ("没有资源链接", {"hit": self.HIT, "share_code": None}),
+                             ("没配 TMDB", {"hit": self.HIT, "key": None}),
+                             ("不是影视资源", {"hit": self.HIT, "is_media": False})):
+            with self.subTest(name):
+                self.assertTrue((await self.run_hook(**kwargs)).parsed.is_ad)
+
+
 class TestTmdbDegrade(unittest.TestCase):
     def test_no_key_pass_through(self):
         from reelay.plugins.tmdb_enrich import TmdbEnrich

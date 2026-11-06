@@ -618,6 +618,10 @@ class TestConfidence(PipelineCase):
 
 
 class TestParserCostControls(PipelineCase):
+    def test_prompt_says_promo_links_do_not_make_a_resource_an_ad(self):
+        system = LLMParser.messages(message(), [])[0]["content"]
+        self.assertIn("影视资源帖附带频道、投稿机器人、注册邀请码等推广链接或文字时，is_media 为 true、is_ad 为 false", system)
+
     def parser(self, *responses):
         parser = LLMParser()
         parser._client = FakeAI(*responses)
@@ -890,6 +894,32 @@ class TestRefreshMetadataAfterTmdbConfigured(PipelineCase):
         with patch.object(tmdb, "best_match") as match:  # 只改集数：原来的匹配仍然有效
             await service.correct_parsed(task_id, {"episodes": [24]})
         match.assert_not_called()
+
+    async def promo_post(self, hit, msg_id="1"):
+        """AI 把带推广链接的资源帖判成广告；走完整的接收、解析、TMDB、决策。"""
+        self.pl.reg.get_provider("parser", "llm")._client = FakeAI(media(title="美人余", is_ad=True))
+        ctx = message(msg_id=msg_id)
+        with patch.object(tmdb, "best_match", return_value=(hit, [hit] if hit else [])):
+            await self.pl.process_new(ctx)
+        return self.store.get_task(ctx.task_id)
+
+    async def test_matched_resource_judged_as_ad_still_reaches_approval(self):
+        ctx = await self.promo_post(self.HIT)
+        self.assertEqual((ctx.state, ctx.parsed.is_ad), (TaskState.PENDING_APPROVAL, False))
+        self.assertEqual(ctx.parsed.confidence, 1.0)  # 置信度按撤销后的结果计算
+        self.assertTrue(ctx.parsed.raw_fields["llm_raw"]["is_ad"])  # AI 的原始判断仍可回查
+
+    async def test_unmatched_resource_judged_as_ad_stays_filtered(self):
+        ctx = await self.promo_post(None)
+        self.assertEqual((ctx.state, ctx.parsed.is_ad), (TaskState.REJECTED, True))
+
+    async def test_correction_marking_an_ad_survives_tmdb_rematch(self):
+        service = ManagementService(self.store, self.pl, config_path=str(self.root / "c.yaml"))
+        task_id = (await self.promo_post(self.HIT)).task_id
+        with patch.object(tmdb, "best_match", return_value=(self.HIT, [self.HIT])) as match:
+            await service.correct_parsed(task_id, {"title": "美人余2", "is_ad": True})
+        match.assert_called()  # 片名改了，确实重新匹配过
+        self.assertTrue(self.store.get_task(task_id).parsed.is_ad)
 
     async def test_snapshot_refresh_gives_up_when_task_changed_meanwhile(self):
         task_id = self.task("美人余")

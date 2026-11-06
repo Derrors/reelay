@@ -86,7 +86,7 @@ After passing ignored-title and filter checks, resources with low confidence, no
 | Field | Default | Description |
 | --- | --- | --- |
 | `ai.examples` | `3` | Number of recent manual corrections from the same source to include as identification prompt examples, from 0–10; 0 disables this |
-| `ai.history` | `20` | For `decision: llm`, number of recent manual approvals and ignores from the same source to include, from 0–100; 0 disables this. Ignores due to expired shares or all stated episodes already being in the library are excluded. The AI's decision and reason appear in the task trace |
+| `ai.history` | `20` | For `decision: llm`, number of recent manual approvals and ignores from the same source to include, from 0–100; 0 disables this. Ignores apply only to the same title. Ignores due to expired shares or all stated episodes already being in the library are excluded. The AI's decision and reason appear in the task trace |
 | `ai.assist` | `true` | When rules cannot determine which share files to save—unrecognized episode or season numbers, multiple files for the same episode, multiple main-feature candidates, or a message with only episode numbers and a multi-season share—ask AI for a proposal first. Validate it with the same rules, and request manual intervention only if it fails |
 | `ai.advice` | `true` | Attach a suggested action—approve, ignore, or review—and reason to pending approvals. Rules choose the action; AI supplies only the wording |
 | `ai.suggest_auto.min_decisions` | `20` | Minimum manual decisions for a source before assessing whether to suggest “改为 AI 处理” (Switch to AI processing) |

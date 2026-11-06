@@ -5,6 +5,9 @@
 目录（默认命名模板写入 ``[tmdbid=xxx]``）。最佳候选不可信时标记 ``matched=False`` 并保留 AI
 标题，不硬改；置信度计算会据此转人工。
 
+AI 判为影视资源又判为广告时，带分享或电驴链接且 TMDB 匹配到条目就按资源继续：资源帖常附带推广链接，
+是否算广告因模型而异，不能让它直接过滤掉真实资源。人工标记的广告不受影响。
+
 - 配了 TMDB API Key（管理台「设置」）：走真实搜索（标准库 urllib，无需额外依赖）。
 - 未配：降级放行（沿用 AI 标题），不阻断主流程。
 - anime：有季/集信息先按剧集搜，未命中再按电影搜（动画电影）。
@@ -138,4 +141,7 @@ class TmdbEnrich:
         if countries:
             p.origin_country = countries
         ctx.log(f"TMDB 匹配：{canonical} ({year}) tmdbid={hit.get('id')} 相似度 {hit['_score']}")
+        if p.is_ad and p.has_link() and not ctx.meta.get("parse", {}).get("ad_by_user"):
+            p.is_ad = False
+            ctx.log("AI 判为广告，但消息带资源链接且 TMDB 已匹配，按影视资源继续")
         return True

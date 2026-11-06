@@ -265,6 +265,8 @@ class TaskOpsMixin(ServiceBase):
         values = dict(before)
         values.update(patch)
         ctx.parsed = ParsedResource(**validate_resource(values))
+        if patch.get("is_ad"):
+            ctx.ns("parse")["ad_by_user"] = True  # 随后重新匹配 TMDB 时不撤销人工判断；重新解析时随 parse 一起清掉
         if any(before.get(key) != getattr(ctx.parsed, key) for key in ("title", "year", "media_type")):
             # 片名或类型改了，原来的 TMDB 匹配（含 tmdbid、海报）不再可信；待审批任务随后按新片名重新匹配
             ctx.meta.pop("tmdb", None)

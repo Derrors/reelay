@@ -97,6 +97,46 @@ class TestFeedbackSamples(ServiceCase):
         self.assertNotIn("allowed_dirs", payload)
 
 
+    async def preference_payload(self, **parsed) -> dict:
+        provider = LLMDecision()
+        provider._client = FakeAI({"decision": "ask", "reason": "看记录"})
+        ctx = message(msg_id="9")
+        ctx.parsed = ParsedResource(**media(**parsed), share_code="abc123")
+        ctx.source_rule = {"preferences": "只收国产剧", "approval_mode": "auto"}
+        with self.pl.scope(self.pl.cfg):
+            await provider.decide(ctx)
+        return json.loads(provider._client.calls[0]["messages"][1]["content"])
+
+    async def test_rejecting_a_work_is_not_generalised_to_other_works(self):
+        """忽略只代表不要那部作品：不交给 AI，否则它会据此跳过同类型的其他剧。批准仍作参考。"""
+        approved, rejected = await self.pending("1"), await self.pending("2")
+        await self.service.approve(approved.task_id, save_dir_alias="剧集")
+        await self.service.reject(rejected.task_id)
+        payload = await self.preference_payload(title="另一部剧")
+        self.assertEqual([(i["decision"], i["title"]) for i in payload["history"]], [("approve", "剧")])
+
+    async def test_rejected_work_is_recognised_by_tmdb_id_across_titles(self):
+        ctx = await self.pending("1")
+        ctx.parsed.raw_fields["tmdbid"] = 42
+        self.store.save_task(ctx)
+        await self.service.reject(ctx.task_id)
+        for title, tmdbid, kept in (("译名不同", 42, 1), ("剧", 43, 0)):
+            provider = LLMDecision()
+            current = message(msg_id="9")
+            current.parsed = ParsedResource(**media(title=title), share_code="abc123")
+            current.parsed.raw_fields["tmdbid"] = tmdbid
+            current.source_rule = {"preferences": "只收国产剧", "approval_mode": "auto"}
+            provider._client = FakeAI({"decision": "ask", "reason": "看记录"})
+            with self.pl.scope(self.pl.cfg):
+                await provider.decide(current)
+            payload = json.loads(provider._client.calls[0]["messages"][1]["content"])
+            self.assertEqual(len(payload.get("history", [])), kept, title)
+
+    async def test_preference_does_not_see_the_parser_reason(self):
+        """解析说明可能提到推广链接，不是判断要不要的依据。"""
+        payload = await self.preference_payload(reason="带 nekocloud 邀请码，判为广告")
+        self.assertNotIn("reason", payload["resource"])
+
     async def test_rejecting_episodes_already_in_the_library_is_not_a_sample(self):
         """消息里的集都已入库时忽略（重复），不当作不想要这部剧，否则偏好判断会据此交给你确认。"""
         done_task(self.store, "s", title="剧", episodes=(3,))
