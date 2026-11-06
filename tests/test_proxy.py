@@ -66,7 +66,7 @@ def basic(user: str, password: str) -> str:
 class TestProxyConfig(unittest.TestCase):
     def test_defaults_to_no_proxy(self):
         cfg = normalize_config({})
-        self.assertEqual(cfg["proxy"], {"url": "", "telegram": True, "tmdb": True, "ai": True})
+        self.assertEqual(cfg["proxy"], {"url": "", "telegram": True, "tmdb": True, "ai": True, "github": True})
         self.assertIsNone(proxy.url_for("tmdb", cfg))
         self.assertIsNone(proxy.telethon(cfg))
 
@@ -234,7 +234,7 @@ class TestProxySettingsApi(WebCase):
         with patch.object(proxy, "probe", probe):
             res = self.client.post("/api/proxy/test", json={"url": "http://me@10.0.0.2:7890/"})
             self.assertEqual(res.status_code, 200, res.text)
-            self.assertEqual(calls[-1], ("http://me:old-pw@10.0.0.2:7890", ["telegram", "tmdb", "ai"]))
+            self.assertEqual(calls[-1], ("http://me:old-pw@10.0.0.2:7890", ["telegram", "tmdb", "ai", "github"]))
             self.client.post("/api/proxy/test", json={"url": "http://me@10.0.0.9:7890", "services": ["tmdb"]})
             self.assertEqual(calls[-1], ("http://me@10.0.0.9:7890", ["tmdb"]))  # 换了地址：不带已保存的密码
             self.client.post("/api/proxy/test", json={"url": "http://me@10.0.0.9:7890", "password": "new"})

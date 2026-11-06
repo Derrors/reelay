@@ -16,9 +16,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
+import sys
 import time
 
-from .core import messages, paths
+from .core import messages, paths, upgrade
 from .core.config import ensure_config, load_config, normalize_config, source_bots
 from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
@@ -209,7 +211,18 @@ async def _source_loop(pipeline: Pipeline, emit, *, poll_interval: float = 1) ->
                 pipeline.store.heartbeat("source", provider=name, status=status, error=error)
 
 
+RESTART = 75  # _run_live 的返回值：源码部署一键升级后，原地重启加载新代码
+RESTART_POLL_SEC = 3
+
+
+async def _restart_watch(store: Store, since: float) -> None:
+    """管理台一键升级后请求重启时返回（见 core/upgrade.py）。"""
+    while not upgrade.restart_requested(store, since):
+        await asyncio.sleep(RESTART_POLL_SEC)
+
+
 async def _run_live() -> int:
+    started = time.time()
     cfg = load_config()
     reg = discover()
     reg.validate_config(cfg)
@@ -245,12 +258,16 @@ async def _run_live() -> int:
                     await asyncio.sleep(1)
                     store.heartbeat("control_bot", **bot.health())
 
-        tasks = [asyncio.create_task(coro) for coro in (
+        watch = asyncio.create_task(_restart_watch(store, started))
+        tasks = [watch, *(asyncio.create_task(coro) for coro in (
             _source_loop(pipeline, emit), worker.run(), sweep_loop(),
-        )]
+        ))]
         if bot.enabled:
             tasks.append(asyncio.create_task(bot.run_forever()))
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        if watch in done:
+            log.info("已升级到新版本，主进程重启")
+            return RESTART  # 与收到 SIGTERM 一样取消其余任务、关闭连接后再重启
         for task in done:
             await task
         raise RuntimeError("常驻服务意外停止")
@@ -287,6 +304,9 @@ def main() -> None:
         code = asyncio.run(run_with_signals())
     except KeyboardInterrupt:
         code = 0
+    if code == RESTART:
+        logging.shutdown()
+        os.execv(sys.executable, sys.orig_argv)  # 同样的解释器与参数（python -m reelay.main / reelay）
     raise SystemExit(code)
 
 

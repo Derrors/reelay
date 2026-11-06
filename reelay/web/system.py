@@ -1,4 +1,4 @@
-"""运行概况：健康检查、总览、实时推送、运行日志与通知投递。"""
+"""运行概况：健康检查、检查更新、总览、实时推送、运行日志与通知投递。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,6 +20,20 @@ def router(service, store, bus, *, log_file: Path) -> APIRouter:
             return {"ok": True, "service": "reelay"}
         return {"ok": True, "service": "reelay", "runtime": store.health_status(),
                 "deliveries": store.delivery_counts()}
+
+    @api.get("/api/update")
+    async def update_status():
+        """当前版本与 GitHub 上的最新正式版；结果缓存 6 小时。"""
+        return await service.update_status()
+
+    @api.post("/api/update/check")
+    async def check_update():
+        return await service.update_status(force=True)
+
+    @api.post("/api/update/apply")
+    async def apply_update():
+        """源码部署：升级到最新正式版并重启（后台执行，进度见 /api/update）；Docker 部署返回 409。"""
+        return await service.start_upgrade()
 
     @api.get("/api/dashboard")
     async def dashboard():

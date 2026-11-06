@@ -154,7 +154,7 @@ Obtain a 115 login by scanning the QR code under “设置 → 115 网盘” (Se
 
 ### Network Proxy (`proxy`)
 
-If your network cannot reach Telegram, TMDB, or the AI service, connect them through an HTTP or SOCKS5 proxy. HTTP or mixed ports from clients such as Clash, mihomo, or v2rayN work. 115 servers are in China and always use a direct connection.
+If your network cannot reach Telegram, TMDB, the AI service, or GitHub, connect them through an HTTP or SOCKS5 proxy. HTTP or mixed ports from clients such as Clash, mihomo, or v2rayN work. 115 servers are in China and always use a direct connection.
 
 | Field | Default | Description |
 | --- | --- | --- |
@@ -162,10 +162,11 @@ If your network cannot reach Telegram, TMDB, or the AI service, connect them thr
 | `proxy.telegram` | `true` | Proxy the listener, control Bot, and terminal login (`python -m reelay.login`) |
 | `proxy.tmdb` | `true` | Proxy TMDB |
 | `proxy.ai` | `true` | Proxy the AI service; can be disabled for a locally reachable provider or local model |
+| `proxy.github` | `true` | Proxy GitHub requests made when checking for new versions (plugin `update_check`) |
 
-TMDB and AI changes take effect immediately after saving. Telegram requires a main-process restart; if it is not connected yet, the next retry, every 30 seconds, uses the new settings. Services not using this proxy retain their previous connection behavior: TMDB and AI still honor `HTTP_PROXY` / `HTTPS_PROXY` environment variables, while Telegram connects directly.
+TMDB, AI, and GitHub changes take effect immediately after saving. Telegram requires a main-process restart; if it is not connected yet, the next retry, every 30 seconds, uses the new settings. Services not using this proxy retain their previous connection behavior: TMDB, AI, and GitHub still honor `HTTP_PROXY` / `HTTPS_PROXY` environment variables, while Telegram connects directly.
 
-“测试代理” (Test proxy) under “设置 → 网络代理” (Settings → Network proxy) uses the form's current address to connect once through the proxy to each enabled service, without saving first. For Telegram it only connects to a data center and does not log in; any response from TMDB or the AI service counts as reachable. As with AI keys, a saved proxy password is sent only to the saved address, and saving a different `proxy.url` clears the password.
+“测试代理” (Test proxy) under “设置 → 网络代理” (Settings → Network proxy) uses the form's current address to connect once through the proxy to each enabled service, without saving first. For Telegram it only connects to a data center and does not log in; any response from TMDB, the AI service, or GitHub counts as reachable. As with AI keys, a saved proxy password is sent only to the saved address, and saving a different `proxy.url` clears the password.
 
 ### Runtime Settings (`runtime`)
 
@@ -202,6 +203,8 @@ If the classification result—the first level of a two-level category, or the m
 | `plugins.episode_tracker.track_all` | `true` | Automatically track series with recently added episodes; report only gaps and episodes aired according to TMDB but not yet in the library |
 | `plugins.episode_tracker.lookback_days` | `30` | Lookback window for automatic tracking |
 | `plugins.daily_report.narrative` | `true` | When AI is configured, prepend a short AI-written reminder based on the report's factual statistics; keep the numerical report too |
+| `plugins.update_check.enabled` | `true` | Check for new versions: query the latest GitHub release (at most every 6 hours) and, when one is available, show a one-time notice in the top-right corner and an entry in the sidebar; the “版本更新” (Updates) page has the release notes and upgrade instructions. Source deployments can upgrade with one click after confirming (see [Deployment](deployment.md#versions-upgrades-and-rollbacks)); Docker deployments pull the new image themselves. Nothing is upgraded automatically. When disabled, GitHub is not contacted |
+| `plugins.update_check.notify` | `true` | Check once a day at the daily report time and have the control Bot announce each new version once |
 
 ## Subscriptions and Ignored Titles
 

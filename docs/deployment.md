@@ -66,6 +66,10 @@ docker compose pull
 docker compose up -d
 ```
 
+有新版本时，管理台右上角提示一次（每个版本只提示一次，几秒后自动消失），侧栏底部也会一直显示，点开「版本更新」页可以看更新说明与升级方法；控制 Bot 也会提醒一次（插件「版本更新检查」，可在「插件」页关闭）。Docker 部署只提示，升级要在服务器上执行上面的命令。
+
+不用 Docker、直接用 git 克隆的源码运行时，可以在「版本更新」页点「立即升级」并确认：后台拉取新版本的标签并快进代码，`pyproject.toml` 或 `constraints.txt` 有变化时执行 `pip install -c constraints.txt -e ".[all]"`，管理台有变化时重新构建，然后主进程与管理服务原地重启，页面自动刷新。命令输出在 `data/upgrade.log`。需要满足：管理服务用 `python -m reelay.web`（或 `reelay-web`）启动，已跟踪的文件没有本地改动，当前提交在新版本之前（没有自己的提交）；管理台有变化时还需要 npm。依赖或构建失败时代码退回原来的版本，进程不重启。
+
 升级前先看 [GitHub Release](https://github.com/Derrors/reelay/releases) 或 [CHANGELOG](../CHANGELOG.md)。数据库结构会随版本升级，结构升级后旧版本程序会拒绝打开它，所以：
 
 - 升级前先 [备份](#备份与迁移) 数据卷；

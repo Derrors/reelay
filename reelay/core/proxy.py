@@ -1,6 +1,6 @@
-"""网络代理：Telegram、TMDB 与 AI 服务可以经 HTTP 或 SOCKS5 代理连接（系统配置 ``proxy``）。
+"""网络代理：Telegram、TMDB、AI 服务与 GitHub（检查更新）可以经 HTTP 或 SOCKS5 代理连接（系统配置 ``proxy``）。
 
-115 的服务器在国内，始终直连。没给某项服务开代理时它按原来的方式连接：TMDB 与 AI 仍会使用环境变量
+115 的服务器在国内，始终直连。没给某项服务开代理时它按原来的方式连接：TMDB、AI 与 GitHub 仍会使用环境变量
 HTTP(S)_PROXY，Telegram 直连。
 
 代理密码是密钥（``proxy_password``），不写进地址；和 AI 密钥一样绑定在代理地址上，改了地址就清除
@@ -21,7 +21,8 @@ from typing import Any
 
 from . import runtime, secret_store
 
-SERVICES = {"telegram": "Telegram", "tmdb": "TMDB", "ai": "AI 服务"}
+SERVICES = {"telegram": "Telegram", "tmdb": "TMDB", "ai": "AI 服务", "github": "GitHub（检查更新）"}
+GITHUB_PROBE = "https://api.github.com"
 SCHEMES = ("http", "socks5", "socks5h")
 PROBE_TIMEOUT = 15
 _CLIENTS: dict[str, Any] = {}
@@ -105,7 +106,7 @@ def http_client(url: str) -> Any:
 async def probe(url: str, services: list[str], *, tmdb_url: str, llm_url: str,
                 api_id: str | None, api_hash: str | None) -> list[dict[str, Any]]:
     """先确认代理本身连得上，再经代理逐项连一次（并发）：Telegram 用 Telethon 连数据中心（不登录），
-    TMDB 与 AI 发一个 HTTP 请求，服务器有回应（哪怕是未授权）就算连得上。url 已带密码；错误说明里去掉密码再返回。"""
+    TMDB、AI 与 GitHub 发一个 HTTP 请求，服务器有回应（哪怕是未授权）就算连得上。url 已带密码；错误说明里去掉密码再返回。"""
     services = [s for s in services if s in SERVICES]
     result = lambda service, error, started: {  # noqa: E731
         "service": service, "label": SERVICES[service], "ok": error is None, "error": error,
@@ -125,7 +126,7 @@ async def probe(url: str, services: list[str], *, tmdb_url: str, llm_url: str,
             if service == "telegram":
                 await _probe_telegram(url, api_id, api_hash)
             else:
-                target = f"{tmdb_url}/configuration" if service == "tmdb" else f"{llm_url}/models"
+                target = {"tmdb": f"{tmdb_url}/configuration", "ai": f"{llm_url}/models"}.get(service, GITHUB_PROBE)
                 await _probe_http(url, target)
             error = None
         except Exception as exc:  # noqa: BLE001 - 原因交给用户判断（代理认证、规则或节点）

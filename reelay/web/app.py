@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
-from ..core import paths
+from ..core import paths, upgrade
 from ..core.config import ensure_config, load_config, load_env
 from ..core.contracts import StorageBusy
 from ..core.pipeline import Pipeline
@@ -86,6 +87,7 @@ def create_app(*, data_dir: str | Path | None = None, frontend_dir: str | Path |
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.store, app.state.pipeline, app.state.service, app.state.bus = store, pipeline, service, bus
+        upgrade.settle(store)  # 一键升级后重启：核对版本，记下升级结果
         bus.start()
         try:
             async with mcp.run() if mcp else nullcontext():
@@ -119,6 +121,21 @@ def main() -> None:
         raise RuntimeError('Web 管理服务未安装，请执行 pip install -e ".[web]"') from exc
 
     class Server(uvicorn.Server):
+        restarting = False
+        loop: asyncio.AbstractEventLoop | None = None
+
+        async def startup(self, sockets=None) -> None:
+            self.loop = asyncio.get_running_loop()
+            await super().startup(sockets)
+
+        def restart(self) -> None:
+            """一键升级后（在升级线程里调用）：结束推送流、退出服务，main 随后原地重启。
+            不用发信号：uvicorn 正常退出后会把收到的信号再发给自己，进程来不及重启就结束了。"""
+            self.restarting = True
+            self.should_exit = True
+            if self.loop is not None:
+                self.loop.call_soon_threadsafe(close_all_streams)
+
         def handle_exit(self, sig, frame) -> None:
             """开始停止时先结束 SSE 推送流，否则要等 systemd / Docker 超时强制结束。"""
             super().handle_exit(sig, frame)
@@ -139,7 +156,15 @@ def main() -> None:
         # 兜底：其他长连接（如 MCP 客户端的推送流）最多再等 5 秒，之后由 uvicorn 取消
         timeout_graceful_shutdown=5,
     ))
-    with suppress(KeyboardInterrupt):  # 与 uvicorn.run 一致：Ctrl+C 不打印回溯
-        server.run()
+    upgrade.restart_hook = server.restart
+    try:
+        with suppress(KeyboardInterrupt):  # 与 uvicorn.run 一致：Ctrl+C 不打印回溯
+            server.run()
+    finally:
+        upgrade.restart_hook = None
+    if server.restarting:
+        log.info("管理服务原地重启以加载新版本")
+        logging.shutdown()
+        os.execv(sys.executable, sys.orig_argv)  # 同样的解释器与参数（python -m reelay.web / reelay-web）
     if not server.started:
         raise SystemExit(3)  # 与 uvicorn.run 一致：启动失败时非零退出，systemd 据此重启

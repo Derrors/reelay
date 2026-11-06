@@ -19,6 +19,7 @@ const PluginsPage = lazy(() => import('@/pages/ConfigPage/PluginsPage'));
 const StoragePage = lazy(() => import('@/pages/StoragePage/StoragePage'));
 const LogsPage = lazy(() => import('@/pages/LogsPage/LogsPage'));
 const SubscriptionsPage = lazy(() => import('@/pages/SubscriptionsPage/SubscriptionsPage'));
+const UpdatePage = lazy(() => import('@/pages/UpdatePage/UpdatePage'));
 
 /** 根路由：还没有设置登录密码时先显示设置密码页（首次部署）；开启了密码且未登录时，任何地址都显示登录页；
  *  登录后回到原来的页面。服务端拒绝访问时整页说明原因。页面渲染出错时显示 ErrorFallback（换了地址自动重试）。 */
@@ -75,6 +76,7 @@ const router = createBrowserRouter([{
         { path: 'stats', element: <StatsPage /> },
         { path: 'library', element: <LibraryPage /> },
         { path: 'subscriptions', element: <SubscriptionsPage /> },
+        { path: 'update', element: <UpdatePage /> },
       ],
     },
     { path: '*', element: <NotFoundPage /> },

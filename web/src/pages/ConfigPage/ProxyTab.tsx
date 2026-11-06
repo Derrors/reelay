@@ -1,4 +1,4 @@
-/** 网络代理：Telegram、TMDB 与 AI 服务经 HTTP 或 SOCKS5 代理连接；115 在国内，始终直连。 */
+/** 网络代理：Telegram、TMDB、AI 服务与 GitHub（检查更新）经 HTTP 或 SOCKS5 代理连接；115 在国内，始终直连。 */
 import { useState } from 'react';
 import { CircleAlert, CircleCheck, Globe, Info, Loader2, PlugZap, Route } from 'lucide-react';
 import { toast } from 'sonner';
@@ -19,6 +19,7 @@ const SERVICES = [
   { key: 'telegram', title: 'Telegram', description: '监听来源、控制 Bot 与终端里的登录（python -m reelay.login）。' },
   { key: 'tmdb', title: 'TMDB', description: '补全片名与海报，追剧订阅找剧与缺集追更。' },
   { key: 'ai', title: 'AI 服务', description: '用国内的 AI 服务或本地模型时可以关掉。' },
+  { key: 'github', title: 'GitHub', description: '检查新版本（插件「版本更新检查」）。' },
 ];
 
 /** 地址和已保存的不同时，已保存的代理密码属于原来的地址（保存设置时清除），新地址的密码先放在
@@ -55,7 +56,7 @@ export function ProxyTab({ config, saved, setField, secrets, onSecrets, pendingS
   return (
     <div className="space-y-5">
       <Notice tone="info" icon={Info}>
-        TMDB 与 AI 服务保存后立即生效；Telegram 要重启主进程（Docker：docker compose restart worker），还没连上 Telegram 时下次重试就会用上。115 的服务器在国内，始终直连。
+        TMDB、AI 服务与 GitHub 保存后立即生效；Telegram 要重启主进程（Docker：docker compose restart worker），还没连上 Telegram 时下次重试就会用上。115 的服务器在国内，始终直连。
       </Notice>
       <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
         <Panel icon={Globe} title="代理服务器" description="支持 HTTP 与 SOCKS5；Clash、mihomo、v2rayN 等客户端的 HTTP 端口或混合端口都可以用。"

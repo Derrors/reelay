@@ -1,21 +1,52 @@
 """总览：运行概况、连接状态、任务列表与任务详情。"""
 from __future__ import annotations
 
+import asyncio
 import time
 import logging
 from typing import Any
 
 
 from ... import __version__
-from .. import secret_store
+from .. import secret_store, updates, upgrade
 from ..contracts import PipelineContext, TaskState
-from .base import NotFoundError, ServiceBase
+from .base import ConflictError, NotFoundError, ServiceBase
 
 log = logging.getLogger("reelay.service")
 
 
 class OverviewMixin(ServiceBase):
     """运行概况与任务查询。"""
+
+    async def update_status(self, *, force: bool = False) -> dict[str, Any]:
+        """检查更新的结果（见 core/updates.py），附源码部署能否一键升级与升级进度（见 core/upgrade.py）；
+        插件 update_check 关掉时不联网。"""
+        self.pipeline.reload_config()
+        cfg = self.pipeline.cfg
+        steps = await asyncio.to_thread(upgrade.status, self.store, self.config_path.parent)
+        if not self._update_check_enabled():
+            return {**updates.cached(self.store), "enabled": False, "available": False, "upgrade": steps}
+        with self.pipeline.scope(cfg):  # 代理设置随配置读取；作用域会带进工作线程
+            result = await asyncio.to_thread(updates.check, self.store, force=force)
+        return {**result, "enabled": True, "upgrade": steps}
+
+    def _update_check_enabled(self) -> bool:
+        return any(item.name == updates.NAME for item in self.pipeline.reg.listeners_for("on_daily", self.pipeline.cfg))
+
+    async def start_upgrade(self) -> dict[str, Any]:
+        """源码部署升级到已查到的最新正式版，在后台执行；Docker 部署与不满足条件时说明原因。"""
+        self.pipeline.reload_config()
+        if not self._update_check_enabled():
+            raise ConflictError("版本更新检查已关闭")
+        latest = updates.cached(self.store)
+        if not latest["available"]:
+            raise ConflictError("没有可升级的新版本")
+        try:
+            with self.pipeline.scope(self.pipeline.cfg):  # 读取 GitHub 的代理设置
+                await asyncio.to_thread(upgrade.start, self.store, latest["latest"], data_dir=self.config_path.parent)
+        except upgrade.UpgradeError as exc:
+            raise ConflictError(str(exc)) from None
+        return await self.update_status()
 
     def dashboard(self) -> dict[str, Any]:
         counts = self.store.counts_by_state()

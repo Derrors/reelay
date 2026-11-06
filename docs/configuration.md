@@ -154,7 +154,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 
 ### 网络代理（`proxy`）
 
-国内网络连不上 Telegram、TMDB 或 AI 服务时，让它们经 HTTP 或 SOCKS5 代理连接（Clash、mihomo、v2rayN 等客户端的 HTTP 端口或混合端口都可以用）。115 的服务器在国内，始终直连。
+国内网络连不上 Telegram、TMDB、AI 服务或 GitHub 时，让它们经 HTTP 或 SOCKS5 代理连接（Clash、mihomo、v2rayN 等客户端的 HTTP 端口或混合端口都可以用）。115 的服务器在国内，始终直连。
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
@@ -162,10 +162,11 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | `proxy.telegram` | `true` | 监听、控制 Bot 与终端登录（`python -m reelay.login`）走代理 |
 | `proxy.tmdb` | `true` | TMDB 走代理 |
 | `proxy.ai` | `true` | AI 服务走代理；用国内的 AI 服务或本地模型时可以关掉 |
+| `proxy.github` | `true` | 检查新版本（插件 `update_check`）时访问 GitHub 走代理 |
 
-TMDB 与 AI 服务保存后立即生效；Telegram 要重启主进程，还没连上 Telegram 时下次重试（30 秒一次）就会用上。没开代理的服务按原来的方式连接：TMDB 与 AI 仍会使用环境变量 `HTTP_PROXY` / `HTTPS_PROXY`，Telegram 直连。
+TMDB、AI 服务与 GitHub 保存后立即生效；Telegram 要重启主进程，还没连上 Telegram 时下次重试（30 秒一次）就会用上。没开代理的服务按原来的方式连接：TMDB、AI 与 GitHub 仍会使用环境变量 `HTTP_PROXY` / `HTTPS_PROXY`，Telegram 直连。
 
-「设置 → 网络代理」的「测试代理」用表单里当前的地址经代理连一次开启的服务，不必先保存：Telegram 只与数据中心建立连接，不登录；TMDB 与 AI 服务有回应就算连得上。和 AI 密钥一样，已保存的代理密码只发给已保存的地址，保存时改了 `proxy.url` 会清除密码。
+「设置 → 网络代理」的「测试代理」用表单里当前的地址经代理连一次开启的服务，不必先保存：Telegram 只与数据中心建立连接，不登录；TMDB、AI 服务与 GitHub 有回应就算连得上。和 AI 密钥一样，已保存的代理密码只发给已保存的地址，保存时改了 `proxy.url` 会清除密码。
 
 ### 运行参数（`runtime`）
 
@@ -202,6 +203,8 @@ TMDB 与 AI 服务保存后立即生效；Telegram 要重启主进程，还没�
 | `plugins.episode_tracker.track_all` | `true` | 自动跟踪最近有新集入库的剧，只报告断档和 TMDB 已播未入库的新集 |
 | `plugins.episode_tracker.lookback_days` | `30` | 自动跟踪的时间窗口 |
 | `plugins.daily_report.narrative` | `true` | 配置了 AI 时，日报开头附一段 AI 按统计事实写的提醒，数字版保留 |
+| `plugins.update_check.enabled` | `true` | 检查新版本：查询 GitHub 上的最新正式版（最多每 6 小时一次），有新版本时管理台右上角提示一次、侧栏底部常驻入口，在「版本更新」页查看更新说明与升级方法；源码部署可以确认后一键升级（见[部署与运维](deployment.md#版本升级与回滚)），Docker 部署需自己拉取新镜像；不会自动升级。关掉后不再访问 GitHub |
+| `plugins.update_check.notify` | `true` | 每天随日报的时间检查一次，发现新版本时控制 Bot 提醒，每个版本只提醒一次 |
 
 ## 订阅与不再接收的作品
 

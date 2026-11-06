@@ -60,8 +60,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "runtime": {"concurrency": 3, "log_level": "INFO"},
     # 115 请求治理：各类接口的每秒请求数，触发风控后全部接口冷却的秒数
     "p115": {"open_qps": 3, "cookie_qps": 2, "share_qps": 1, "risk_cooldown_sec": 3600},
-    # 网络代理：Telegram、TMDB、AI 服务各自是否走代理（115 始终直连）；代理密码在 secrets.json
-    "proxy": {"url": "", "telegram": True, "tmdb": True, "ai": True},
+    # 网络代理：Telegram、TMDB、AI 服务、GitHub（检查更新）各自是否走代理（115 始终直连）；代理密码在 secrets.json
+    "proxy": {"url": "", "telegram": True, "tmdb": True, "ai": True, "github": True},
     "plugins": {},
 }
 # 系统配置的键（写文件时放进 system）

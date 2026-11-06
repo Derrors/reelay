@@ -59,6 +59,50 @@ export interface IDashboard {
   config_revision: string;
 }
 
+export type UpgradeStep = 'fetch' | 'checkout' | 'pip' | 'npm' | 'restart';
+
+/** 源码部署一键升级的进度（见后端 core/upgrade.py）。 */
+export interface IUpgradeState {
+  /** restarting：代码与依赖已更新，主进程与管理服务正在重启；done：重启后版本核对无误。 */
+  status: 'running' | 'restarting' | 'failed' | 'done';
+  target: string;
+  from: string;
+  step: UpgradeStep;
+  started_at: number;
+  finished_at: number | null;
+  error: string | null;
+  /** 失败时升级日志的末尾。 */
+  log?: string;
+}
+
+export interface IUpgradeInfo {
+  /** 源码部署且满足条件，可以一键升级；Docker 部署恒为 false。 */
+  supported: boolean;
+  /** 不能一键升级的原因。 */
+  reason: string | null;
+  state: IUpgradeState | null;
+}
+
+/** 检查更新：当前版本与 GitHub 上的最新正式版（见后端 core/updates.py）。 */
+export interface IUpdateStatus {
+  /** 插件「版本更新检查」开着；关掉时不联网，available 恒为 false。 */
+  enabled: boolean;
+  current: string;
+  latest: string | null;
+  available: boolean;
+  /** 这个版本的 GitHub Release 页面。 */
+  url: string;
+  /** 更新说明（Markdown 原文）。 */
+  notes: string;
+  published_at: string | null;
+  checked_at: number | null;
+  error: string | null;
+  /** .env 里固定的 REELAY_VERSION；拉取 latest 不会升级。 */
+  pinned: string | null;
+  docker: boolean;
+  upgrade: IUpgradeInfo;
+}
+
 /** 服务端给出的、任务此刻允许的操作（任务详情与收件箱条目都带）。
  *  correct 是修正识别结果，resolve_conflict 是整理冲突时选择删除转存文件或覆盖保存，
  *  dismiss 是忽略失败或待人工的任务，subscribe 是订阅这部剧这一季。 */

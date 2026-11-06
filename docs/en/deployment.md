@@ -66,6 +66,10 @@ docker compose pull
 docker compose up -d
 ```
 
+When a new version is available, the console shows a notice once in the top-right corner (once per version; it disappears after a few seconds) and keeps an entry at the bottom of the sidebar. Open the “版本更新” (Updates) page to see the release notes and how to upgrade. The control Bot also announces it once (plugin “版本更新检查” (Update check), which can be disabled on the “插件” (Plugins) page). Docker deployments are only notified; run the commands above on the server to upgrade.
+
+When running from a git clone without Docker, click “立即升级” (Upgrade now) on the “版本更新” (Updates) page and confirm. In the background Reelay fetches the new release tag and fast-forwards the code, runs `pip install -c constraints.txt -e ".[all]"` if `pyproject.toml` or `constraints.txt` changed, rebuilds the console if it changed, and then restarts the main process and the web service in place; the page reloads automatically. Command output goes to `data/upgrade.log`. Requirements: the web service was started with `python -m reelay.web` (or `reelay-web`), tracked files have no local changes, and the current commit precedes the new release (no commits of your own); npm is also needed when the console changed. If installing dependencies or building fails, the code is restored to the previous version and nothing restarts.
+
 Before upgrading, read the [GitHub Release](https://github.com/Derrors/reelay/releases) or [CHANGELOG](../../CHANGELOG.md). Releases may upgrade the database schema, and older versions refuse to open a newer schema. Therefore:
 
 - [Back up](#backups-and-migration) the data volume before upgrading.

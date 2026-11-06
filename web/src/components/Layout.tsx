@@ -1,18 +1,21 @@
 import {
-  BellRing, ChartColumn, ChevronRight, Clapperboard, FolderTree, Inbox, LayoutDashboard, LibraryBig,
-  ListChecks, LogOut, Menu, Puzzle, ScrollText, Settings2, Wrench,
+  ArrowUpCircle, BellRing, ChartColumn, Loader2, ChevronRight, Clapperboard, FolderTree, Inbox, LayoutDashboard, LibraryBig,
+  ListChecks, LogOut, Menu, Puzzle, RefreshCw, ScrollText, Settings2, Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Suspense, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import { authApi } from '@/api/auth';
+import { isUpgrading } from '@/api/update';
 import { ConfirmHost } from '@/components/app/ConfirmHost';
 import { Toaster } from '@/components/ui/sonner';
 import { Sheet } from '@/components/app/Sheet';
 import { ThemeToggle } from '@/components/app/ThemeToggle';
 import { useAsync } from '@/hooks/useAsync';
 import { useDashboard } from '@/hooks/useDashboard';
+import { UPDATE_PATH, useUpdateStatus } from '@/hooks/useUpdateStatus';
+import type { IUpdateStatus } from '@/lib/types';
 import { cn, errorMessage } from '@/lib/utils';
 
 type BadgeKey = 'pending' | 'failed';
@@ -142,7 +145,26 @@ function Brand() {
   );
 }
 
-function ShellFooter({ workerOnline, loaded, version }: { workerOnline: boolean; loaded: boolean; version: string }) {
+function VersionLine({ version, update, onNavigate }: { version: string; update?: IUpdateStatus; onNavigate?: () => void }) {
+  return (
+    <span className="mt-0.5 flex items-center gap-1.5 pl-4">
+      {/* 反馈问题时需要附上版本号：可选中复制 */}
+      <span className="select-all font-mono text-[11px] text-sidebar-foreground/55" title="当前版本，反馈问题时请附上">
+        v{version.replace(/^v/, '')}
+      </span>
+      {update?.available ? null : (
+        <NavLink to={UPDATE_PATH} onClick={onNavigate} title="检查更新" aria-label="检查更新"
+          className="grid size-4 place-items-center rounded text-sidebar-foreground/40 transition-colors hover:text-sidebar-foreground">
+          <RefreshCw className="size-3" />
+        </NavLink>
+      )}
+    </span>
+  );
+}
+
+function ShellFooter({ workerOnline, loaded, version, update, onNavigate }: {
+  workerOnline: boolean; loaded: boolean; version: string; update?: IUpdateStatus; onNavigate?: () => void;
+}) {
   const auth = useAsync(() => authApi.status(), []);
   const logout = async () => {
     try {
@@ -154,18 +176,24 @@ function ShellFooter({ workerOnline, loaded, version }: { workerOnline: boolean;
   };
   return (
     <div className="space-y-3 border-t border-sidebar-border px-3 py-3">
+      {update?.available || isUpgrading(update) ? (
+        <NavLink to={UPDATE_PATH} onClick={onNavigate} title="查看更新说明与升级方法"
+          className="flex min-h-9 w-full items-center gap-2 rounded-lg bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 sm:min-h-0">
+          {isUpgrading(update)
+            ? <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            : <ArrowUpCircle className="size-3.5 shrink-0" />}
+          <span className="flex-1 truncate text-left">
+            {isUpgrading(update) ? `正在升级到 v${update?.upgrade.state?.target}…` : `新版本 v${update?.latest} 可升级`}
+          </span>
+        </NavLink>
+      ) : null}
       <div className="flex items-center justify-between gap-2 px-1">
         <span className="flex min-w-0 flex-col text-xs text-sidebar-foreground">
           <span className="flex items-center gap-2">
             <span className={cn('size-2 rounded-full', !loaded ? 'bg-muted-foreground/40' : workerOnline ? 'bg-success' : 'bg-warning')} />
             {!loaded ? '连接中' : workerOnline ? '后台运行中' : '后台未运行'}
           </span>
-          {/* 反馈问题时需要附上版本号：可选中复制 */}
-          {version ? (
-            <span className="mt-0.5 select-all pl-4 font-mono text-[11px] text-sidebar-foreground/55" title="当前版本，反馈问题时请附上">
-              v{version.replace(/^v/, '')}
-            </span>
-          ) : null}
+          {version ? <VersionLine version={version} update={update} onNavigate={onNavigate} /> : null}
         </span>
         <ThemeToggle />
       </div>
@@ -209,6 +237,8 @@ function NavContent({ badges, onNavigate, mobile }: {
 export const Layout = () => {
   const status = useShellStatus();
   const [drawer, setDrawer] = useState(false);
+  const update = useUpdateStatus();
+  const footer = { workerOnline: status.workerOnline, loaded: status.loaded, version: status.version, update: update.data };
 
   return (
     <div className="min-h-screen text-foreground lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
@@ -216,7 +246,7 @@ export const Layout = () => {
       <aside className="hidden border-r border-sidebar-border bg-sidebar lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
         <div className="px-5 pb-3 pt-5"><Brand /></div>
         <NavContent badges={status.badges} />
-        <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} version={status.version} />
+        <ShellFooter {...footer} />
       </aside>
 
       {/* 移动端顶栏 */}
@@ -234,12 +264,12 @@ export const Layout = () => {
       <Sheet open={drawer} onOpenChange={setDrawer} title="导航" side="left" className="bg-sidebar p-0">
         <div className="-mx-5 -my-5 flex h-[calc(100%+2.5rem)] flex-col">
           <NavContent badges={status.badges} onNavigate={() => setDrawer(false)} mobile />
-          <ShellFooter workerOnline={status.workerOnline} loaded={status.loaded} version={status.version} />
+          <ShellFooter {...footer} onNavigate={() => setDrawer(false)} />
         </div>
       </Sheet>
 
       <main className="min-w-0">
-        <Suspense fallback={null}><Outlet /></Suspense>
+        <Suspense fallback={null}><Outlet context={update} /></Suspense>
       </main>
 
       {/* 移动端底部标签栏 */}
@@ -272,10 +302,12 @@ export const Layout = () => {
         <button
           type="button"
           onClick={() => setDrawer(true)}
-          className="flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-muted-foreground"
+          className="relative flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-muted-foreground"
+          aria-label={update.data?.available ? '更多（有新版本）' : undefined}
         >
           <Menu className="size-5" />
           更多
+          {update.data?.available ? <span className="absolute left-1/2 top-1.5 ml-2 size-2 rounded-full bg-primary" /> : null}
         </button>
       </nav>
 
