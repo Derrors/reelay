@@ -480,91 +480,115 @@ class Pipeline:
         if ns.get("abandon") and ns.get("phase") == "receiving":
             await self._abandon(ctx, storage)
             return
-        if not ns.get("manifest"):
-            if not await self.run_hooks("before_save", ctx):
-                ctx.state = TaskState.SKIPPED
-                self.store.save_task(ctx)
-                return
-            self._resolve_directory(ctx)
-            ctx.state = TaskState.SAVING
-            ns["phase"] = "preparing"
-            # 资源键：115 分享码；只有电驴链接时按链接的哈希（见 ParsedResource.link_code）
-            key = f"{storage.name}:{ctx.save_dir_cid}:{ctx.parsed.link_code()}"
-            # 先按消息提示的集数占位，尽早串行化同一集的不同分享；清单确定后再按实际集数占位。
-            if not self.store.claim_resource(ctx, key, content_keys=self._content_keys(storage.name, ctx)):
-                ctx.state = TaskState.QUEUED
-                self.store.save_task(ctx)  # 移到轮询末尾，避免等待资源的任务阻塞新任务
-                return
-            # 剧集分享链接常在追更中原地增加新集：剧集按集去重，其他按分享去重。
-            if not self._episodic(ctx) and self.store.saved_share(
-                    ctx.parsed.link_code(), ctx.save_dir_cid, provider_name):
-                ctx.state = TaskState.SKIPPED
-                ctx.log("执行前去重命中，分享已转存到该目录")
-                self.store.save_task(ctx)
-                return
-            # work 是作品身份（TMDB ID、规范片名与年份）：同名的不同作品不会互相当成已入库
-            ns["identity"] = {
-                "provider": provider_name,
-                "cid": ctx.save_dir_cid, "share_code": ctx.parsed.link_code(),
-                "title": ctx.parsed.title, "season": ctx.parsed.season,
-                "episodes": list(ctx.parsed.episodes), "work": works.of(ctx.parsed, ctx.meta.get("tmdb")),
-            }
-            ns["stored_episodes"] = (self.store.stored_episode_pairs(ns["identity"]["work"], ctx.save_dir_cid,
-                                                                     provider_name) if ctx.parsed.title else [])
-            try:
-                with self.scope(ctx):
-                    manifest = await storage.prepare(ctx)
-            except AlreadyStored as exc:
-                ctx.state = TaskState.SKIPPED
-                ctx.log(f"执行前去重命中：{exc}")
-                self.store.save_task(ctx)
-                return
-            except ShareUnavailable as exc:
-                # 读不到分享就无法按清单去重；消息写明的集都已入库时，这条只是重复消息，不算失败
-                declared = ctx.episode_pairs()
-                stored = {tuple(pair) for pair in ns.get("stored_episodes") or []}
-                if self._episodic(ctx) and declared and stored.issuperset(declared):
-                    ctx.state = TaskState.SKIPPED
-                    ctx.log(f"执行前去重命中：分享不可用（{exc}），但消息写明的 {pairs_label(declared)} 均已入库")
-                    self.store.save_task(ctx)
-                    return
-                await self._fail(ctx, f"分享不可用，无法转存：{exc}", retry_from=TaskState.QUEUED, auto_retry=False)
-                return
-            except NeedsManual as exc:
-                # 确定性校验失败：重试不会改变结果，不自动重试，修正后由人工重试。
-                await self._fail(ctx, f"转存前校验未通过，需人工处理：{exc}", retry_from=TaskState.QUEUED,
-                                 auto_retry=False)
-                return
-            except StorageBusy:
-                raise
-            except Exception as exc:
-                await self._fail(ctx, f"转存准备失败：{exc}", retry_from=TaskState.QUEUED)
-                return
-            finally:
-                ns.pop("stored_episodes", None)
-            self._adopt_manifest(ctx, manifest)
-            ns["manifest"] = manifest
-            ns["phase"] = "ready"
-            ns["content_keys"] = self._content_keys(storage.name, ctx)
-            self.store.save_task(ctx)
-            if not self.store.claim_resource(ctx, key, content_keys=ns["content_keys"]):
-                # 释放全部占位再排队，避免两个任务各持一集、互相等待。
-                self.store.release_resource(ctx.task_id)
-                ctx.state = TaskState.QUEUED
-                ctx.log("分享中的部分集正由其他任务转存，稍后重新核对")
-                self.store.save_task(ctx)
-                return
-        else:
-            ctx.state = TaskState.SAVING
-            ns["content_keys"] = self._content_keys(storage.name, ctx)  # 集数已按清单确定
-            if not self.store.claim_resource(ctx, ns["resource_key"], content_keys=ns["content_keys"]):
-                ctx.state = TaskState.QUEUED
-                self.store.save_task(ctx)
-                return
-            # 尚未发送：等待期间其他任务可能已入库同一分享或部分集，发送前重新核对。
-            if ns["phase"] == "ready" and not await self._recheck_manifest(ctx, storage, provider_name):
-                return
+        step = self._resume_transfer if ns.get("manifest") else self._prepare_transfer
+        if not await step(ctx, storage, provider_name):
+            return
+        receipt = await self._send_or_verify(ctx, storage)
+        if receipt is None:
+            return
 
+        ctx.result = receipt
+        ns["landed"] = receipt["landed"]
+        ns["phase"] = "stored"
+        ctx.state = TaskState.STORED
+        ctx.ns("task")["retry_from"] = TaskState.STORED.value
+        ctx.log("全部转存文件已核验，回执持久化后进入整理")
+        self.store.finish_transfer(ctx)
+        await self._organize(ctx)
+
+    async def _prepare_transfer(self, ctx: PipelineContext, storage, provider_name: str) -> bool:
+        """第一次执行：前置 Hook、占位、去重，列出分享并把清单落库。返回 False 表示这次不发送（任务已落库）。"""
+        ns = ctx.ns("storage")
+        if not await self.run_hooks("before_save", ctx):
+            ctx.state = TaskState.SKIPPED
+            self.store.save_task(ctx)
+            return False
+        self._resolve_directory(ctx)
+        ctx.state = TaskState.SAVING
+        ns["phase"] = "preparing"
+        # 资源键：115 分享码；只有电驴链接时按链接的哈希（见 ParsedResource.link_code）
+        key = f"{storage.name}:{ctx.save_dir_cid}:{ctx.parsed.link_code()}"
+        # 先按消息提示的集数占位，尽早串行化同一集的不同分享；清单确定后再按实际集数占位。
+        if not self.store.claim_resource(ctx, key, content_keys=self._content_keys(storage.name, ctx)):
+            ctx.state = TaskState.QUEUED
+            self.store.save_task(ctx)  # 移到轮询末尾，避免等待资源的任务阻塞新任务
+            return False
+        # 剧集分享链接常在追更中原地增加新集：剧集按集去重，其他按分享去重。
+        if not self._episodic(ctx) and self.store.saved_share(
+                ctx.parsed.link_code(), ctx.save_dir_cid, provider_name):
+            ctx.state = TaskState.SKIPPED
+            ctx.log("执行前去重命中，分享已转存到该目录")
+            self.store.save_task(ctx)
+            return False
+        # work 是作品身份（TMDB ID、规范片名与年份）：同名的不同作品不会互相当成已入库
+        ns["identity"] = {
+            "provider": provider_name,
+            "cid": ctx.save_dir_cid, "share_code": ctx.parsed.link_code(),
+            "title": ctx.parsed.title, "season": ctx.parsed.season,
+            "episodes": list(ctx.parsed.episodes), "work": works.of(ctx.parsed, ctx.meta.get("tmdb")),
+        }
+        ns["stored_episodes"] = (self.store.stored_episode_pairs(ns["identity"]["work"], ctx.save_dir_cid,
+                                                                 provider_name) if ctx.parsed.title else [])
+        try:
+            with self.scope(ctx):
+                manifest = await storage.prepare(ctx)
+        except AlreadyStored as exc:
+            ctx.state = TaskState.SKIPPED
+            ctx.log(f"执行前去重命中：{exc}")
+            self.store.save_task(ctx)
+            return False
+        except ShareUnavailable as exc:
+            # 读不到分享就无法按清单去重；消息写明的集都已入库时，这条只是重复消息，不算失败
+            declared = ctx.episode_pairs()
+            stored = {tuple(pair) for pair in ns.get("stored_episodes") or []}
+            if self._episodic(ctx) and declared and stored.issuperset(declared):
+                ctx.state = TaskState.SKIPPED
+                ctx.log(f"执行前去重命中：分享不可用（{exc}），但消息写明的 {pairs_label(declared)} 均已入库")
+                self.store.save_task(ctx)
+                return False
+            await self._fail(ctx, f"分享不可用，无法转存：{exc}", retry_from=TaskState.QUEUED, auto_retry=False)
+            return False
+        except NeedsManual as exc:
+            # 确定性校验失败：重试不会改变结果，不自动重试，修正后由人工重试。
+            await self._fail(ctx, f"转存前校验未通过，需人工处理：{exc}", retry_from=TaskState.QUEUED,
+                             auto_retry=False)
+            return False
+        except StorageBusy:
+            raise
+        except Exception as exc:
+            await self._fail(ctx, f"转存准备失败：{exc}", retry_from=TaskState.QUEUED)
+            return False
+        finally:
+            ns.pop("stored_episodes", None)
+        self._adopt_manifest(ctx, manifest)
+        ns["manifest"] = manifest
+        ns["phase"] = "ready"
+        ns["content_keys"] = self._content_keys(storage.name, ctx)
+        self.store.save_task(ctx)
+        if not self.store.claim_resource(ctx, key, content_keys=ns["content_keys"]):
+            # 释放全部占位再排队，避免两个任务各持一集、互相等待。
+            self.store.release_resource(ctx.task_id)
+            ctx.state = TaskState.QUEUED
+            ctx.log("分享中的部分集正由其他任务转存，稍后重新核对")
+            self.store.save_task(ctx)
+            return False
+        return True
+
+    async def _resume_transfer(self, ctx: PipelineContext, storage, provider_name: str) -> bool:
+        """已有清单：重新占位；还没发送的话，发送前重新核对。返回 False 表示这次不发送（任务已落库）。"""
+        ns = ctx.ns("storage")
+        ctx.state = TaskState.SAVING
+        ns["content_keys"] = self._content_keys(storage.name, ctx)  # 集数已按清单确定
+        if not self.store.claim_resource(ctx, ns["resource_key"], content_keys=ns["content_keys"]):
+            ctx.state = TaskState.QUEUED
+            self.store.save_task(ctx)
+            return False
+        # 尚未发送：等待期间其他任务可能已入库同一分享或部分集，发送前重新核对。
+        return ns["phase"] != "ready" or await self._recheck_manifest(ctx, storage, provider_name)
+
+    async def _send_or_verify(self, ctx: PipelineContext, storage) -> dict | None:
+        """发送一次转存或只读核验，返回完整核验的回执；结果不明时转待人工，已落库并返回 None。"""
+        ns = ctx.ns("storage")
         auto_recheck = ns.pop("auto_recheck_run", False)  # 这一轮是 Worker 的后台自动复查
         sending = ns["phase"] == "ready"
         try:
@@ -599,7 +623,7 @@ class Pipeline:
             raise
         except TransferRejected as rejected:
             await self._transfer_rejected(ctx, storage, rejected)
-            return
+            return None
         except Exception as exc:
             ctx.state = TaskState.NEED_MANUAL
             # 只到了一部分（到的都对得上）：记下进度，管理台可选「按已到的文件继续」
@@ -618,16 +642,8 @@ class Pipeline:
                 log.info("任务 %s《%s》转存待核验，后台自动复查，24 小时内仍未通过再通知：%s",
                          ctx.task_id, ctx.parsed.title or "未识别片名", exc)
             self.store.save_task(ctx, error=str(exc))
-            return  # 保留资源占位，防止另一条消息绕过核验再次转存
-
-        ctx.result = receipt
-        ns["landed"] = receipt["landed"]
-        ns["phase"] = "stored"
-        ctx.state = TaskState.STORED
-        ctx.ns("task")["retry_from"] = TaskState.STORED.value
-        ctx.log("全部转存文件已核验，回执持久化后进入整理")
-        self.store.finish_transfer(ctx)
-        await self._organize(ctx)
+            return None  # 保留资源占位，防止另一条消息绕过核验再次转存
+        return receipt
 
     def _accept_partial(self, ctx: PipelineContext, receipt: dict) -> None:
         """按已到的文件继续：清单只留到了的文件，集数、去重身份随之缩小，没到的集不记为已入库。"""
