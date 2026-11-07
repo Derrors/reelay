@@ -40,14 +40,17 @@ stateDiagram-v2
     direction LR
     [*] --> received
     received --> parsed
+    received --> skipped: Hook 拦截
     parsed --> pending_approval: 需要确认
     parsed --> queued: 自动放行
     parsed --> skipped: 不收（非影视、过滤、去重）
     parsed --> rejected: 广告
     pending_approval --> queued: 批准
     pending_approval --> skipped: 忽略 / 超时
+    pending_approval --> received: 重新识别
     queued --> saving
     queued --> skipped: 内容已入库
+    saving --> queued: 等待资源占位 / 网盘暂时拒绝
     saving --> stored: 读回核验通过
     saving --> need_manual: 结果不明
     stored --> organizing
@@ -55,8 +58,11 @@ stateDiagram-v2
     organizing --> need_manual: 整理失败 / 同名冲突
     need_manual --> queued: 核验转存 / 重新整理 / 自动复查
     need_manual --> skipped: 放弃转存 / 不再处理
+    need_manual --> received: 重新识别
     received --> failed: 解析失败
     queued --> failed: 准备或转存失败
+    stored --> failed: 执行异常
+    organizing --> failed: 执行异常
     failed --> received: 重试
     failed --> queued: 重试
     failed --> stored: 重试
@@ -84,7 +90,7 @@ stateDiagram-v2
 | 新来源接入、来源质量 | 起草来源规则；读统计与被拒样例给出调整建议 | 草案按正式配置校验并用样例试跑；建议的屏蔽词在批准过的消息里出现就丢弃；改动由你确认 |
 | 失败解释、日报、控制 Bot 对话 | 把原因、统计写成话；理解一句话指令并调用查询工具 | 建议操作由规则决定；数字由代码统计；写操作只生成待确认计划，点「执行」后才调用服务层 |
 
-人工裁决（批准、忽略、修正）统一记在 `feedback` 表（正文去掉链接与访问码），用于识别示例、偏好参考、按来源的通过率与「改为自动转存」建议，以及本地评测（`python -m reelay.eval`，样本只留在本地 `data/eval/`）。每次 AI 请求记入 `llm_calls`（用途、模型、耗时、token 与是否通过校验，保留 90 天），管理台「统计」可查看。所有 AI 调用失败时都按规则降级或转人工，不阻断主流程。
+人工裁决（批准、忽略、修正）统一记在 `feedback` 表（正文去掉链接与访问码），用于识别示例、偏好参考、按来源的通过率与「改为 AI 处理」建议，以及本地评测（`python -m reelay.eval`，样本只留在本地 `data/eval/`）。每次 AI 请求记入 `llm_calls`（用途、模型、耗时、token 与是否通过校验，保留 90 天），管理台「统计」可查看。所有 AI 调用失败时都按规则降级或转人工，不阻断主流程。
 
 ## 识别
 

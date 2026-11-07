@@ -40,14 +40,17 @@ stateDiagram-v2
     direction LR
     [*] --> received
     received --> parsed
+    received --> skipped: Blocked by a Hook
     parsed --> pending_approval: Confirmation required
     parsed --> queued: Automatically approved
     parsed --> skipped: Skip (non-media, filtering, deduplication)
     parsed --> rejected: Advertisement
     pending_approval --> queued: Approve
     pending_approval --> skipped: Ignore / Timeout
+    pending_approval --> received: Re-identify
     queued --> saving
     queued --> skipped: Content already in library
+    saving --> queued: Waiting for a claim / Drive temporarily refused
     saving --> stored: Read-back verification passed
     saving --> need_manual: Uncertain outcome
     stored --> organizing
@@ -55,8 +58,11 @@ stateDiagram-v2
     organizing --> need_manual: Organization failed / Name conflict
     need_manual --> queued: Verify transfer / Reorganize / Automatic recheck
     need_manual --> skipped: Abandon transfer / Stop processing
+    need_manual --> received: Re-identify
     received --> failed: Parsing failed
     queued --> failed: Preparation or transfer failed
+    stored --> failed: Unexpected error
+    organizing --> failed: Unexpected error
     failed --> received: Retry
     failed --> queued: Retry
     failed --> stored: Retry
@@ -84,7 +90,7 @@ Tasks in `failed` retry from the recorded stage (`retry_from`). Transient errors
 | New-source setup and source quality | Draft source rules; read statistics and rejected examples to suggest adjustments | Validate drafts as production configuration and test them on examples. Discard suggested blocked keywords that appear in approved messages. Changes require your confirmation |
 | Failure explanations, daily reports, and control Bot conversations | Explain causes and statistics; understand natural-language commands and call query tools | Rules determine suggested actions; code calculates numbers. Writes produce a pending plan only, and call the service layer only after you click “执行” (Execute) |
 
-Manual decisions—approvals, ignores, and corrections—are recorded in the `feedback` table with links and access codes removed from message text. They support identification examples, preference context, per-source approval rates, suggestions to “改为自动转存” (Switch to automatic saving), and local evaluation (`python -m reelay.eval`, with samples kept only in local `data/eval/`). Each AI request is recorded in `llm_calls`, including purpose, model, duration, tokens, and validation result, and retained for 90 days. The web console's “统计” (Statistics) page displays these records. Failed AI calls fall back to rules or manual review rather than blocking the main workflow.
+Manual decisions—approvals, ignores, and corrections—are recorded in the `feedback` table with links and access codes removed from message text. They support identification examples, preference context, per-source approval rates, suggestions to “改为 AI 处理” (Switch to AI handling), and local evaluation (`python -m reelay.eval`, with samples kept only in local `data/eval/`). Each AI request is recorded in `llm_calls`, including purpose, model, duration, tokens, and validation result, and retained for 90 days. The web console's “统计” (Statistics) page displays these records. Failed AI calls fall back to rules or manual review rather than blocking the main workflow.
 
 ## Identification
 

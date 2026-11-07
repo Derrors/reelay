@@ -73,7 +73,15 @@ docker compose up -d
 升级前先看 [GitHub Release](https://github.com/Derrors/reelay/releases) 或 [CHANGELOG](../CHANGELOG.md)。数据库结构会随版本升级，结构升级后旧版本程序会拒绝打开它，所以：
 
 - 升级前先 [备份](#备份与迁移) 数据卷；
-- 要回滚时，把 `REELAY_VERSION` 改回原来的版本，并连同数据卷一起恢复到升级前的备份。
+- 要回滚时，把 `REELAY_VERSION` 改回原来的版本，并连同数据卷一起 [恢复](#备份与迁移) 到升级前的备份。
+
+源码部署回滚时，先停止主进程与管理服务，恢复升级前备份的 `data/`，再切回原来的标签并重启：
+
+```bash
+git checkout v<版本号>
+pip install -c constraints.txt -e ".[all]"
+cd web && npm ci && npm run build
+```
 
 ## 从源码构建
 
@@ -99,7 +107,29 @@ docker run --rm -v reelay_reelay-data:/data -v "$PWD":/backup alpine \
 docker compose start
 ```
 
-数据卷的实际名称是「项目目录名_reelay-data」，可以用 `docker volume ls` 确认。[用宿主机目录存放数据](#用宿主机目录存放数据) 时，停止服务后直接打包这个目录即可。迁移到新机器时，在新机器上恢复同一个数据卷再启动即可；不要用 `docker compose down -v`，它会删除数据卷。
+数据卷的实际名称是「项目目录名_reelay-data」，可以用 `docker volume ls` 确认。[用宿主机目录存放数据](#用宿主机目录存放数据) 时，停止服务后直接打包这个目录即可。不要用 `docker compose down -v`，它会删除数据卷。
+
+恢复备份（会清空数据卷现有内容）；迁移到新机器时同样操作，先在新机器上执行一次 `docker compose up --no-start` 建好数据卷：
+
+```bash
+docker compose stop
+docker run --rm -v reelay_reelay-data:/data -v "$PWD":/backup alpine \
+  sh -c 'find /data -mindepth 1 -delete && tar xzf /backup/reelay-data-<日期>.tgz -C /data'
+docker compose start
+```
+
+## 本地评测
+
+调整识别提示词或换模型前，可以用自己的人工裁决样本比较效果。样本含真实消息正文，只留在本地 `data/eval/`；评测会调用你配置的 AI 接口，可能产生费用。
+
+```bash
+python -m reelay.eval export                 # 导出样本到 data/eval/samples.jsonl（可选）
+python -m reelay.eval run --limit 50         # 用当前提示词与模型评测最近 50 条，报告写到 data/eval/report-*.json
+python -m reelay.eval run --model gpt-4o     # 换一个模型评测；--dataset 用导出的样本，--examples 调整示例条数
+python -m reelay.eval compare 旧报告.json 新报告.json
+```
+
+Docker 部署在命令前加 `docker compose run --rm --no-deps worker`。
 
 ## 外部扩展
 
@@ -112,7 +142,7 @@ docker compose start
 - **worker**：要求主进程心跳和 Telegram 连接在 30 秒内有效。还没配置或登录 Telegram 时主进程照常运行（识别、转存、控制 Bot 都可用），只是显示为 unhealthy，登录后自动恢复；
 - **web**：只检查 API 自身，不代表主进程在线或 115 凭证可用。
 
-管理台总览的「运行状态」显示主进程心跳、正在使用的配置版本、各项连接状态，以及通知队列的积压与失败；页面底部显示当前版本号，报告问题时请一并附上。以下故障会通过控制 Bot 告警一次，恢复后再通知（告警经持久化队列投递，重启不丢；Telegram 断开期间发不出的告警，恢复后补发并注明发生时间）：
+管理台总览的「运行状态」显示主进程心跳、正在使用的配置版本、各项连接状态，以及通知队列的积压与失败；侧栏底部显示当前版本号，报告问题时请一并附上。以下故障会通过控制 Bot 告警一次，恢复后再通知（告警经持久化队列投递，重启不丢；Telegram 断开期间发不出的告警，恢复后补发并注明发生时间）：
 
 | 故障 | Reelay 的处理 |
 | --- | --- |

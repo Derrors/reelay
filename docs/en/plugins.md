@@ -84,7 +84,7 @@ Each message has one `PipelineContext` (`reelay/core/contracts.py`), reconstruct
 ```python
 class MyHook:
     name = "my_hook"
-    stage = "after_parse"   # before_parse / after_parse / before_save / after_save
+    stage = "after_parse"   # before_parse / after_parse / before_save / after_save; a typo is reported as a load error for external extensions instead of silently never running
     order = 70              # Ascending within a stage; built-ins: organizer destination 10 (before_save), organization 20 (after_save), tmdb_enrich 50, share_probe 60
 
     async def run(self, ctx) -> bool:
@@ -104,6 +104,11 @@ Do not use the same order as a built-in plugin in the same stage, or execution o
 
 When `after_save` runs, the files have already been transferred. If an extension needs optional storage Provider methods, declare their names in `requires_storage`, such as the organizer's `requires_storage = ("library",)`. Saving configuration is rejected if any rule uses a storage Provider without those methods, and the “插件” (Plugins) page identifies unsupported storage Providers. Hooks that only produce supplementary output, such as media-server index files, should catch their own exceptions and return `True` so they do not affect the task outcome.
 
+Hooks may also declare two optional methods:
+
+- `async prepare(ctx)` (`after_save`): called before `run`, and the task is persisted right after it. Put work that must resume after an interruption here, such as an organization plan.
+- `preview(ctx) -> str` (`before_save`): returns where the task will be stored unless the directory is changed manually, shown on approval cards and in the console.
+
 ## Event
 
 ```python
@@ -115,6 +120,7 @@ class MyListener:
         ...
 ```
 
+- `on_rejected` fires for every decision not to save (advertisements, filters, deduplication, works you stopped receiving), not only advertisements. Check `ctx.state` or `ctx.parsed.is_ad` to tell them apart.
 - Events are written to the Outbox in the same transaction as task state, then delivered asynchronously: at least once, a 30-second timeout per attempt, backoff retries up to 8 attempts, and generation order within each task. System alerts and recovery notifications continue retrying for up to 24 hours.
 - `ctx` is a snapshot from when the event occurred. Changing it does not change the task.
 - The core emits `on_daily` once a day at `schedule.daily_hour`. `ctx.meta["system"]` includes the date and a summary of the previous 24 hours, suitable for daily reports and inspections. At startup, emission waits for parsing of downtime-backfilled messages, with a maximum delay of 15 minutes.
@@ -124,7 +130,7 @@ class MyListener:
 
 | ptype | Required implementation | Optional |
 | --- | --- | --- |
-| `source` | `async listen(emit)`: a long-running coroutine that calls `await emit(RawMessage(...))` for each message | `configure(targets)`, `bind_watermark(lookup)`, `health()`, `async close()` |
+| `source` | `async listen(emit)`: a long-running coroutine that calls `await emit(RawMessage(...))` for each message | `configure(targets)`, `bind_watermark(lookup)`, `health()`, `async recent(bot, max_count)` (the console's “获取最近消息” (Fetch recent messages)), `backfilled` / `backfill_done` attributes (backfill notices and delaying the daily report), `async close()` |
 | `parser` | `async parse(ctx) -> ParsedResource` | — |
 | `decision` | `async decide(ctx) -> Decision` | — |
 | `storage` | `prepare` / `save` / `reconcile` (read-only verification; must never resend a write request) / `abandon` (abandon an uncertain transfer, delete the staging directory, and confirm by reading back) | See below |
@@ -246,7 +252,7 @@ state.set("last_run", "2026-10-19")
 runtime.observe("my_api", "failed", "TimeoutError")    # Record an external call outcome: connected / failed
 ```
 
-`runtime.observe` records the outcome of the latest actual call and does not expire simply because no calls have occurred for a while. Results are available in `runtime` from `GET /api/health`. Built-in LLM parsing and TMDB enrichment use it to populate “AI 解析” (AI parsing) and “TMDB 元数据” (TMDB metadata) under “总览 → 运行状态” (Overview → Runtime status) in the console.
+`runtime.observe` records the outcome of the latest actual call and does not expire simply because no calls have occurred for a while. Results are available in `runtime` from `GET /api/health` (login required). Built-in LLM parsing and TMDB enrichment use it to populate “AI 解析” (AI parsing) and “TMDB 元数据” (TMDB metadata) under “总览 → 运行状态” (Overview → Runtime status) in the console.
 
 `runtime.get` / `runtime.plugin_config` read the configuration from when the task was received, according to its recorded configuration version. Changes affect new tasks only. Outside task scope, they read the process's currently effective configuration. `services()` is available when the core calls Hooks, Events, notification channels, and parser/decision/storage Provider methods, including inside their `asyncio.to_thread` calls. A source's `listen` is a long-running coroutine outside task scope.
 
@@ -318,7 +324,7 @@ plugins:
     mode: a
 ```
 
-`default` is the value the extension actually uses when the field is unset; the form uses it only as a hint. Validate complex configuration, such as arrays and objects, yourself in `validate_config`; users maintain it through the configuration file. Extensions should not read environment variables: declare required endpoints and switches in `ui_fields`, and place required files under `reelay.core.paths.DATA`.
+`default` is the value the extension actually uses when the field is unset; the form uses it only as a hint. With `required: True`, saving is refused when the field is empty. Validate complex configuration, such as arrays and objects, yourself in `validate_config`; users maintain it through the configuration file. Extensions should not read environment variables: declare required endpoints and switches in `ui_fields`, and place required files under `reelay.core.paths.DATA`.
 
 ### Plugin Actions
 
@@ -340,7 +346,7 @@ class MyHook:
 - Plugins do not need a FastAPI dependency. Methods execute in the Web process's event loop and must be fast; use `async def` for time-consuming work.
 - The plugin catalog lists each plugin's `actions`.
 
-Built-in plugins may have dedicated UI under the frontend's `web/src/plugins/<插件名>/`, where `<插件名>` is the plugin name. A settings editor is declared by backend `ui_config_type` and registered in `PLUGIN_EDITORS` in `web/src/plugins/index.ts`. UI used only by that plugin, such as the organizer settings' “预览整理效果” (Preview organization) dialog, also belongs there. Components call `api.extensionAction(插件名, 动作名, payload)` for backend data, using the plugin and action names. The frontend is built and released as a whole; external plugins do not have dedicated editors and use forms generated from `ui_fields`.
+Built-in plugins may have dedicated UI under the frontend's `web/src/plugins/<插件名>/`, where `<插件名>` is the plugin name. A settings editor is declared by backend `ui_config_type` and registered in `PLUGIN_UI` (keyed by `ui_config_type`) in `web/src/plugins/index.ts`. UI used only by that plugin, such as the organizer settings' “预览整理效果” (Preview organization) dialog, also belongs there. Components call `configApi.extensionAction(插件名, 动作名, payload)` for backend data, using the plugin and action names. The frontend is built and released as a whole; external plugins do not have dedicated editors and use forms generated from `ui_fields`.
 
 ## Testing
 

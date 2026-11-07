@@ -41,7 +41,7 @@ plugins:
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `save_dirs` | — | Directory alias → 115 directory CID, as a decimal string. At least one is required; `0` is the root directory |
+| `save_dirs` | `电影`, `剧集`, `动漫`, and `默认` all point to `0` | Directory alias → 115 directory CID, as a decimal string. At least one is required; `0` is the root directory, so everything lands in the root until you set real directories |
 | `sources[].bot` | — | The `@username` or numeric ID to monitor, case-insensitive. It can also be a list, such as `["@a", "@b"]`; all listed sources share the card's settings. Each source may appear in only one card |
 | `sources[].*` | Same as `defaults` | Per-source overrides for approval mode, destination directory, parser, filters, preferences, and other settings |
 | `providers.source` | `telegram` | Message-source Provider |
@@ -59,6 +59,7 @@ plugins:
 | `parse_rules` | None | Per-source Python regular expressions, in multiline mode, for `title`, `year`, `season`, `episodes`, `resolution`, and `size`, using the first capture group. `episodes` combines all matches: use one capture group for a single episode, or named groups `start` and `end` for a range; `end` alone means episode 1 through end. Missing or unmatched fields use the generic rules. “识别规则” (Identification rules) on a source card can read recent channel messages for AI-assisted drafting and test runs |
 | `llm_response_format` | `json_schema` | Use `json_object` for compatible APIs without structured-output support; strict local validation still applies |
 | `decision` | `subscription` | Decision strategy: `default` uses rules only; `subscription` adds automatic approval for new episodes of subscribed series; `llm` additionally uses the natural-language `preferences`, with recent approvals and ignores from the same source, to decide whether to save. All three decide only whether to proceed; destinations are determined by `save_to` and category rules. Reliably identified, TMDB-matched messages whose episodes are all in the library are skipped directly |
+| `storage` | `p115` | Storage Provider. 115 is the only built-in one; see [Plugin Development](plugins.md) for custom storage |
 | `preferences` | `""` | For example, “Only Chinese TV series and Japanese anime in 4K or 1080p; no variety shows.” To turn this into deterministic rules, use “用一句话生成规则” (Generate rules from one sentence) in the console |
 | `confidence_threshold` | `0.5` | Below this value, request manual review. Confidence is calculated from the presence of title, type, and year and whether TMDB matched, not from the LLM's self-reported score |
 | `episodes_from` | `share` | `share`: use filenames in the share and save all episodes not already in the library; `message`: save only episodes stated in the message |
@@ -97,6 +98,8 @@ Suggestions are advisory only. Changing the approval mode requires your confirma
 
 ### Release Preferences (`release`)
 
+Edit these under “设置 → 识别与确认” (Settings → Identification and confirmation), which also holds the confidence threshold, AI capabilities, and approval reminders.
+
 When multiple versions of an episode or movie exist, both pending-approval recommendations and upgrades (`plugins.organizer.conflict: upgrade`) compare them in this order: preferred subtitles → resolution → HDR → preferred audio → preferred source → size. List order determines priority.
 
 | Field | Default | Description |
@@ -114,7 +117,7 @@ For recommendations, information missing from the message counts as not meeting 
 | --- | --- | --- |
 | `forward.enabled` | `false` | Forward successfully identified resources using a template |
 | `forward.target` | `""` | Forwarding destination; the control Bot must be able to send messages there |
-| `forward.template` | See example | Available fields: `{title}` `{year}` `{resolution}` `{size}` `{link}` |
+| `forward.template` | `{title} ({year}) {resolution}\n{link}` | Available fields: `{title}` `{year}` `{resolution}` `{size}` `{link}` |
 | `approval.timeout_hours` | `24` | Pending approvals older than this many hours are considered overdue |
 | `approval.on_timeout` | `remind` | `remind`: send reminders; `skip`: ignore overdue tasks directly |
 | `approval.reminder` | `digest` | `digest`: combine all overdue tasks into one summary; `card`: resend individual confirmation cards |
@@ -242,6 +245,7 @@ These locations are fixed and have no configuration options. For backups or migr
 | `data/reelay.log` | Main-process log, read by “运行日志” (Runtime logs) in the console; rotates above 10 MB into `reelay.log.1` through `.5` |
 | `data/plugins/` | External extensions directory |
 | `data/eval/` | Local evaluation samples and reports |
+| `data/upgrade.log` | Command output of the source-deployment one-click upgrade; the console shows its last lines when an upgrade fails |
 
 These parameters are fixed too: 2 retries for transient LLM errors, starting with a 2-second delay; 115 credential health checks every 5 minutes, or every 30 seconds while paused due to invalid credentials; hourly approval-timeout scans; 115 QR login binds a TV-device session; and OAuth tokens with a 2-hour lifetime refresh 15 minutes before expiry.
 

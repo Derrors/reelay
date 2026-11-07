@@ -75,6 +75,14 @@ Before upgrading, read the [GitHub Release](https://github.com/Derrors/reelay/re
 - [Back up](#backups-and-migration) the data volume before upgrading.
 - To roll back, set `REELAY_VERSION` to the previous version and restore the data volume from the pre-upgrade backup as well.
 
+To roll back a source deployment, stop the main process and the management service, restore the pre-upgrade backup of `data/`, then switch back to the previous tag and restart:
+
+```bash
+git checkout v<version>
+pip install -c constraints.txt -e ".[all]"
+cd web && npm ci && npm run build
+```
+
 ## Building from Source
 
 If you need to change the code or cannot pull from GHCR, use `compose.build.yaml` in the repository directory to override the images and build locally:
@@ -99,7 +107,29 @@ docker run --rm -v reelay_reelay-data:/data -v "$PWD":/backup alpine \
 docker compose start
 ```
 
-The actual volume name is `<project-directory-name>_reelay-data`; check it with `docker volume ls`. If you [store data in a host directory](#storing-data-in-a-host-directory), stop the services and archive that directory directly. To migrate, restore the same data volume on the new machine before starting the services. Do not use `docker compose down -v`: it deletes the data volume.
+The actual volume name is `<project-directory-name>_reelay-data`; check it with `docker volume ls`. If you [store data in a host directory](#storing-data-in-a-host-directory), stop the services and archive that directory directly. Do not use `docker compose down -v`; it deletes the data volume.
+
+To restore a backup (this erases the volume's current contents), run the commands below. The same steps migrate to a new machine; run `docker compose up --no-start` there first to create the volume:
+
+```bash
+docker compose stop
+docker run --rm -v reelay_reelay-data:/data -v "$PWD":/backup alpine \
+  sh -c 'find /data -mindepth 1 -delete && tar xzf /backup/reelay-data-<date>.tgz -C /data'
+docker compose start
+```
+
+## Local Evaluation
+
+Before changing the identification prompt or the model, you can compare results against your own manual decisions. Samples contain real message text and stay in `data/eval/`. Evaluation calls your configured AI endpoint and may incur charges.
+
+```bash
+python -m reelay.eval export                 # Export samples to data/eval/samples.jsonl (optional)
+python -m reelay.eval run --limit 50         # Evaluate the latest 50 with the current prompt and model; reports go to data/eval/report-*.json
+python -m reelay.eval run --model gpt-4o     # Evaluate another model; --dataset uses exported samples, --examples sets the example count
+python -m reelay.eval compare old-report.json new-report.json
+```
+
+For Docker, prefix the commands with `docker compose run --rm --no-deps worker`.
 
 ## External Extensions
 
@@ -112,7 +142,7 @@ Both containers have health checks:
 - **worker**: requires a valid main-process heartbeat and Telegram connection within the last 30 seconds. Before Telegram is configured or logged in, the main process still runs normally, including identification, transfers, and the control Bot, but its health status is unhealthy. It recovers automatically after login.
 - **web**: checks only the API itself, not whether the main process is online or 115 credentials work.
 
-“运行状态” (Runtime status) on the console overview shows the main-process heartbeat, active configuration version, connection status, and notification-queue backlog and failures. The current version appears at the bottom of the page; include it when reporting a problem. The following failures trigger a one-time alert through the control Bot, followed by a recovery notification. Alerts use a durable queue and survive restarts. Alerts that could not be sent while Telegram was disconnected are delivered after reconnection with the time the failure occurred.
+“运行状态” (Runtime status) on the console overview shows the main-process heartbeat, active configuration version, connection status, and notification-queue backlog and failures. The current version appears at the bottom of the sidebar; include it when reporting a problem. The following failures trigger a one-time alert through the control Bot, followed by a recovery notification. Alerts use a durable queue and survive restarts. Alerts that could not be sent while Telegram was disconnected are delivered after reconnection with the time the failure occurred.
 
 | Failure | How Reelay handles it |
 | --- | --- |

@@ -11,7 +11,7 @@
 
 | 准备项 | 用途 | 从哪里获取 |
 | --- | --- | --- |
-| 一台能持续运行的机器 | 运行 Reelay；Docker 方式支持 amd64 / arm64 | NAS、Linux 服务器等；Windows 推荐 Docker |
+| 一台能持续运行的机器 | 运行 Reelay；Docker 方式支持 amd64 / arm64 | NAS、Linux 服务器等；Windows 只能用 Docker |
 | Docker 与 Compose v2.24+ | 运行管理台与后台服务 | 用 `docker --version`、`docker compose version` 检查 |
 | Telegram 个人账号 | 读取你已加入的频道、群组或已对话的 Bot | 你自己的账号 |
 | Telegram API ID / API Hash | 让程序以个人账号登录 | <https://my.telegram.org> → API development tools |
@@ -101,7 +101,7 @@ python -m reelay.web
 
 ### 网络代理（按需）
 
-在「设置 → 网络代理」填写 HTTP 或 SOCKS5 代理，选择 Telegram、TMDB、AI 中哪些服务走代理，再点「测试代理」。115 始终直连。
+在「设置 → 网络代理」填写 HTTP 或 SOCKS5 代理，选择 Telegram、TMDB、AI、GitHub（检查更新）中哪些服务走代理，再点「测试代理」。115 始终直连。
 
 Docker 容器里的 `127.0.0.1` 指容器自己。如果代理运行在宿主机或其他设备，填写容器能够访问的局域网地址，而不是照抄宿主机上的 `127.0.0.1`。
 

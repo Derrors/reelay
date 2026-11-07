@@ -41,7 +41,7 @@ plugins:
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `save_dirs` | — | 目录别名 → 115 目录 CID（十进制字符串）。必须至少有一个；`0` 表示根目录 |
+| `save_dirs` | `电影`、`剧集`、`动漫`、`默认` 都指向 `0` | 目录别名 → 115 目录 CID（十进制字符串）。必须至少有一个；`0` 表示根目录，配置前都会存到根目录，请先改成实际目录 |
 | `sources[].bot` | — | 要监听的 `@username` 或数字 ID，不区分大小写；也可以写成列表（如 `["@a", "@b"]`），列表里的来源共用这张卡片的设置。一个来源只能出现在一张卡片里 |
 | `sources[].*` | 同 `defaults` | 来源级覆盖：确认方式、保存目录、解析器、过滤规则、偏好等 |
 | `providers.source` | `telegram` | 消息源 Provider |
@@ -59,6 +59,7 @@ plugins:
 | `parse_rules` | 无 | 来源自己的识别规则，按字段写 Python 正则（多行模式）：`title`、`year`、`season`、`episodes`、`resolution`、`size`，取第一个捕获组；`episodes` 逐处匹配后合并，单集用一个捕获组，区间用命名组 `start` 与 `end`，只有 `end` 时表示第 1 集到 end。没写或没匹配到的字段用通用规则。管理台来源卡片的「识别规则」可读取频道最近的消息，由 AI 起草并试跑 |
 | `llm_response_format` | `json_schema` | 不支持结构化输出的兼容接口改为 `json_object`（仍做本地严格校验） |
 | `decision` | `subscription` | 放行方式：`default` 只按规则；`subscription` 在规则之上让订阅剧集的新集自动放行；`llm` 再按 `preferences` 的自然语言偏好（并参考该来源近期的批准与忽略）决定是否收藏。三种都只决定放不放行，保存位置由 `save_to` 与二级分类决定；识别可靠、TMDB 已匹配且消息里的集都已入库的直接跳过 |
+| `storage` | `p115` | 存储 Provider。内置只有 115；自定义存储见 [插件开发](plugins.md) |
 | `preferences` | `""` | 例："只要 4K 或 1080p 的国产剧和日本动画，综艺不要"。想让它变成确定性规则，用管理台「用一句话生成规则」 |
 | `confidence_threshold` | `0.5` | 低于该值转人工。置信度由标题/类型/年份是否齐全、TMDB 是否匹配计算，不采信 LLM 自报值 |
 | `episodes_from` | `share` | `share`：以分享内文件名为准，转存未入库的所有集；`message`：只转存消息声明的集 |
@@ -97,6 +98,8 @@ plugins:
 
 ### 版本偏好（`release`）
 
+在管理台「设置 → 识别与确认」修改；同一页还有置信度阈值、AI 能力与审批提醒。
+
 同一集（或同一部电影）有多个版本时，待审批的推荐版本与洗版（`plugins.organizer.conflict: upgrade`）都按这里比较：偏好的字幕 → 清晰度 → HDR → 偏好的音轨 → 偏好的片源 → 体积。列表顺序即优先级。
 
 | 字段 | 默认 | 说明 |
@@ -114,7 +117,7 @@ plugins:
 | --- | --- | --- |
 | `forward.enabled` | `false` | 识别成功后按模板转发 |
 | `forward.target` | `""` | 转发目标（控制 Bot 需能向其发消息） |
-| `forward.template` | 见示例 | 可用字段 `{title}` `{year}` `{resolution}` `{size}` `{link}` |
+| `forward.template` | `{title} ({year}) {resolution}\n{link}` | 可用字段 `{title}` `{year}` `{resolution}` `{size}` `{link}` |
 | `approval.timeout_hours` | `24` | 待审批超过该时长视为超时 |
 | `approval.on_timeout` | `remind` | `remind` 提醒；`skip` 超时直接忽略 |
 | `approval.reminder` | `digest` | `digest` 把所有超时任务合并成一条汇总；`card` 逐条重推确认卡片 |
@@ -242,6 +245,7 @@ TMDB、AI 服务与 GitHub 保存后立即生效；Telegram 要重启主进程�
 | `data/reelay.log` | 主进程日志，管理台「运行日志」读取；超过 10 MB 轮转为 `reelay.log.1` … `.5` |
 | `data/plugins/` | 外部扩展目录 |
 | `data/eval/` | 本地评测样本与报告 |
+| `data/upgrade.log` | 源码部署一键升级的命令输出，升级失败时管理台显示末尾几行 |
 
 以下参数也已固定：LLM 瞬时错误重试 2 次（首次间隔 2 秒）、115 凭证探活每 5 分钟（失效暂停期间每 30 秒）、审批超时扫描每小时、115 扫码绑定 TV 设备会话、OAuth 令牌按 2 小时有效期提前 15 分钟刷新。
 

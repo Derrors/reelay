@@ -40,7 +40,7 @@ reelay/
 │   ├── store/       #   持久层：按表分的仓储（任务、去重、Outbox、订阅、配置快照……）组成 Store
 │   └── service/     #   管理服务：按领域分的模块（任务、审批、设置、订阅、媒体库……）组成 ManagementService
 ├── providers/       # 内置 Provider：Telegram 源、LLM / 规则解析、决策、115 存储、通知；dryrun.py 是模拟源与内存网盘
-├── plugins/         # 内置插件，每个一个目录：TMDB 补全、分享检查、媒体库整理（选目录 + 整理）、失败解释、日报、缺集追更
+├── plugins/         # 内置插件，每个一个目录：TMDB 补全、分享检查、媒体库整理（选目录 + 整理）、失败解释、日报、缺集追更、版本更新检查
 ├── control/         # Telegram 控制 Bot、Bot 与助手共用的管理操作、对话助手
 ├── web/             # 管理 API：每个资源一个路由模块，auth.py 是访问守卫（前端在仓库的 web/）
 ├── agent_tools.py   # Agent 工具：MCP 与对话助手共用的定义与实现

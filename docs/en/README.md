@@ -67,7 +67,7 @@ You do not need to read every configuration field to get started. Choose a path 
 
 ## Versions and documentation conventions
 
-- These docs track the current repository source. **Features marked “unreleased” are not yet in release images.** Check [Releases](https://github.com/Derrors/reelay/releases) and the [changelog](../../CHANGELOG.md) for your version.
+- These docs track the current repository source and may be ahead of the latest release. Check [Releases](https://github.com/Derrors/reelay/releases) and the [changelog](../../CHANGELOG.md) for your version.
 - `@example_channel`, example titles, and directories are illustrative. Replace them with your own account and drive settings. Sources specifically recommended in the quick start are third parties.
 - The management console and Bot UI are currently in Chinese. This guide explains controls in English and retains key Chinese labels. Paths such as “Settings → …” (「设置 → …」) refer to actions in the console; run code blocks only when they apply to your chosen deployment method.
 - Dry runs and identification tests are not real transfers. Dry runs use built-in examples; identification tests may query external services but do not create transfer tasks.

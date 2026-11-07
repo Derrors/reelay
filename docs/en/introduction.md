@@ -61,10 +61,10 @@ You can configure Reelay in the web management console, and use the Telegram con
 - **Web, Telegram, and MCP interfaces**: the console is suited to configuration and troubleshooting, Telegram to everyday actions, and MCP to queries and management by external agents.
 - **Locally stored data**: configuration, the database, secrets, and sessions are kept together in the data directory for backup and migration.
 - **Plugin extensions**: enrichment, share inspection, organization, episode tracking, daily reports, and other capabilities are organized as plugins. You can add your own extensions.
-- **Docker deployment**: amd64 / arm64 images are available. You can also run from source on macOS / Linux; Docker is recommended on Windows.
+- **Docker deployment**: amd64 / arm64 images are available. You can also run from source on macOS / Linux; Windows requires Docker.
 
 > [!NOTE]
-> These docs track the current repository source. Features marked “unreleased” are not yet in release images. When using `latest` or a pinned version, check [Releases](https://github.com/Derrors/reelay/releases) and the [changelog](../../CHANGELOG.md).
+> These docs track the current repository source and may be ahead of the latest release. When using `latest` or a pinned version, check [Releases](https://github.com/Derrors/reelay/releases) and the [changelog](../../CHANGELOG.md).
 
 ## How an item reaches your library
 

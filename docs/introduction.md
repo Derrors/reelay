@@ -61,10 +61,10 @@ Reelay 是一个**自托管的 Telegram → 115 资源整理工具**。它用你
 - **Web、Telegram、MCP 三种入口**：管理台适合配置和排查，Telegram 适合日常操作，MCP 可供外部 Agent 查询或管理。
 - **数据保存在本地**：配置、数据库、密钥和会话集中在数据目录，便于备份和迁移。
 - **插件扩展**：识别补全、分享读取、整理、追更和日报等能力通过插件组织，可添加自己的扩展。
-- **Docker 部署**：提供 amd64 / arm64 镜像；也可在 macOS / Linux 上从源码运行，Windows 推荐 Docker。
+- **Docker 部署**：提供 amd64 / arm64 镜像；也可在 macOS / Linux 上从源码运行，Windows 只能用 Docker。
 
 > [!NOTE]
-> 文档跟随当前仓库源码更新。标注「未发布」的功能尚未进入正式镜像；使用 `latest` 或固定版本时，请以 [Releases](https://github.com/Derrors/reelay/releases) 和 [更新日志](../CHANGELOG.md) 为准。
+> 文档跟随当前仓库源码更新，可能早于最新正式版；使用 `latest` 或固定版本时，请以 [Releases](https://github.com/Derrors/reelay/releases) 和 [更新日志](../CHANGELOG.md) 为准。
 
 ## 一条资源如何入库
 
@@ -106,7 +106,7 @@ Reelay 是一个**自托管的 Telegram → 115 资源整理工具**。它用你
 - **只处理有权使用的内容**：Reelay 不提供、不索引、不分发资源。使用前请阅读 [免责声明](../DISCLAIMER.md)。
 
 ::: tip 第一次使用
-建议从「人工确认 + 只按规则」开始，先验证一条真实资源。确认识别、保存目录和命名结果后，再逐步启用订阅放行或自动处理。
+建议从「人工确认 + 规则判断」开始，先验证一条真实资源。确认识别、保存目录和命名结果后，再逐步启用订阅放行或自动处理。
 
 [按快速开始完成部署 →](quickstart.md)
 :::

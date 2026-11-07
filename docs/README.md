@@ -67,7 +67,7 @@ Reelay 把你配置的 Telegram 来源消息，经过识别、审批或规则放
 
 ## 版本与文档约定
 
-- 文档随当前仓库源码更新。**标记为“未发布”的功能尚未进入正式镜像**，实际版本以 [Releases](https://github.com/Derrors/reelay/releases) 和 [更新日志](../CHANGELOG.md) 为准。
+- 文档随当前仓库源码更新，可能早于最新正式版，实际版本以 [Releases](https://github.com/Derrors/reelay/releases) 和 [更新日志](../CHANGELOG.md) 为准。
 - 示例中的 `@example_channel`、示例片名和目录只是说明，请按自己的账号与网盘设置。快速开始中单独标注的推荐来源属于第三方。
 - 指南中的「设置 → …」是管理台操作路径；代码块只有在你选择相应部署方式时才需要执行。
 - 模拟运行与测试识别不等于真实转存。前者使用内置样例，后者可能查询外部服务但不创建转存任务。

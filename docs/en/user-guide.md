@@ -32,6 +32,9 @@ This guide is for users who already have Reelay running. It covers everyday sour
 | Plugins (「插件」) | Manage TMDB enrichment, share inspection, organization, episode tracking, daily reports, and more | Disabling a plugin affects the capabilities that depend on it |
 | Tools → 115 directories (「工具 → 115 目录」) | Browse folders, locate directories, and copy directory IDs | Not a full cloud-drive file manager |
 | Tools → Runtime logs (「工具 → 运行日志」) | Read logs, search errors, and pause refresh | Redact logs before sharing; clearing logs deletes their history |
+| Updates (「版本更新」) | See the current version, release notes, and how to upgrade | Open it from the bottom of the sidebar; Docker deployments pull a new image, source deployments can upgrade in one click |
+
+Press ⌘K (Ctrl+K on Windows / Linux) for command search: jump to a page or search tasks by title. “Settings → Appearance” (「设置 → 外观」) switches the theme and the frosted-glass effect.
 
 ## Understand processing outcomes
 
@@ -136,6 +139,8 @@ Open “Pending approval → Awaiting confirmation” (「待审批 → 待确�
 5. **Suitable directory**: check the actual preview path, not just the directory alias.
 
 Then approve or ignore the item. Approval only allows the background service to start processing; “Added to library” (「已入库」) is the final success state.
+
+The Tasks page supports batch actions too: after selecting tasks you can re-identify, retry, or ignore them together from the bar that floats up at the bottom.
 
 Check the selection before batch approval or ignoring. “Apply suggestions” (「按建议处理」) only acts on selected items with a clear approve or ignore recommendation; items requiring manual review remain. Suggestions do not guarantee correctness.
 

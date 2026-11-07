@@ -11,7 +11,7 @@ This guide takes you from a fresh setup through **starting the console → confi
 
 | Requirement | Purpose | Where to get it |
 | --- | --- | --- |
-| A machine that can keep running | Hosts Reelay; Docker supports amd64 / arm64 | A NAS, Linux server, or similar; Docker is recommended on Windows |
+| A machine that can keep running | Hosts Reelay; Docker supports amd64 / arm64 | A NAS, Linux server, or similar; Windows requires Docker |
 | Docker and Compose v2.24+ | Run the console and background service | Check with `docker --version` and `docker compose version` |
 | A personal Telegram account | Reads channels and groups you have joined and Bots you have contacted | Your own account |
 | Telegram API ID / API Hash | Lets the application log in as your personal account | <https://my.telegram.org> → API development tools |
@@ -103,7 +103,7 @@ Configure these in the order below, saving each page when finished.
 
 ### Network proxy (optional)
 
-Under “Settings → Network proxy” (「设置 → 网络代理」), enter an HTTP or SOCKS5 proxy, choose which of Telegram, TMDB, and AI should use it, then click “Test proxy” (「测试代理」). 115 always connects directly.
+Under “Settings → Network proxy” (「设置 → 网络代理」), enter an HTTP or SOCKS5 proxy, choose which of Telegram, TMDB, AI, and GitHub (update checks) should use it, then click “Test proxy” (「测试代理」). 115 always connects directly.
 
 Inside a Docker container, `127.0.0.1` refers to that container. If the proxy runs on the host or another device, enter a LAN address reachable from the container instead of copying the host's `127.0.0.1` address.
 

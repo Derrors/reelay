@@ -98,7 +98,7 @@ Read the task trace rather than checking only for a link:
 - Other keyword, type, resolution, or subscription conditions may not have passed.
 - Extracting a link, meeting your collection criteria, and 115 being able to cloud-download it are three different things.
 
-Older test interfaces may incorrectly label ed2k-only results as “No 115 link found” (「没有找到 115 链接」). This display issue is fixed in the current source; check the [changelog](../../CHANGELOG.md) for release availability. Do not fabricate a 115 link just to turn a badge green.
+Older test interfaces may incorrectly label ed2k-only results as “No 115 link found” (「没有找到 115 链接」). This display issue is fixed since v1.5.0. Do not fabricate a 115 link just to turn a badge green.
 
 ### 10. Why is an item awaiting approval even though I selected “AI processing”?
 
@@ -138,7 +138,7 @@ To stop receiving a title altogether, use “Stop receiving” (「不再接收�
 
 `invalid` does not necessarily mean a network failure. The model may have returned valid JSON with incorrect fields, types, or structure, or the rules themselves may have failed validation.
 
-The current source includes clearer output-structure requirements and accepts some known alternative response formats. Check the changelog to see whether your release includes the fix. If it still fails:
+Since v1.5.0 the output-structure requirements are clearer and some known alternative response formats are accepted. If it still fails:
 
 1. Read the page's specific error and AI call records to distinguish formatting issues, timeouts, and permission problems.
 2. Make sure the model is suitable for structured output. If the endpoint genuinely does not support schema, adjust the response format as described in the [configuration reference](configuration.md#identification-and-decisions-defaults-sources).

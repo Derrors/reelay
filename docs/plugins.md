@@ -84,7 +84,7 @@ class MyListener: ...
 ```python
 class MyHook:
     name = "my_hook"
-    stage = "after_parse"   # before_parse / after_parse / before_save / after_save
+    stage = "after_parse"   # before_parse / after_parse / before_save / after_save；写错时外部扩展报加载错误，不会静默失效
     order = 70              # 同一阶段内从小到大执行；内置：organizer 选目录 10（before_save）与整理 20（after_save），tmdb_enrich 50，share_probe 60
 
     async def run(self, ctx) -> bool:
@@ -104,6 +104,11 @@ class MyHook:
 
 `after_save` 运行时文件已经转存完成。要用到存储 Provider 某些可选方法的扩展，在 `requires_storage` 里声明方法名，如媒体库整理的 `requires_storage = ("library",)`：配置里有规则使用不提供这些方法的存储时，保存配置会被拒绝，「插件」页也会标出不支持的存储。只做附加产物（如生成媒体服务器索引文件）的 Hook 应自己捕获异常并返回 `True`，不要影响任务结果。
 
+Hook 还可以声明两个可选方法：
+
+- `async prepare(ctx)`（`after_save`）：在 `run` 之前调用，调用后任务立即落库。需要中断后续跑的工作（如整理计划）写在这里；
+- `preview(ctx) -> str`（`before_save`）：返回不手动改目录时将存入的位置，显示在审批卡片与管理台。
+
 ## Event
 
 ```python
@@ -115,6 +120,7 @@ class MyListener:
         ...
 ```
 
+- `on_rejected` 在决策结果为不收时都会触发（广告、过滤、去重、不再接收的作品），不只是广告；要区分时看 `ctx.state` 或 `ctx.parsed.is_ad`。
 - 事件与任务状态在同一事务内写入 Outbox，异步投递：至少一次、单次 30 秒超时、失败退避重试（最多 8 次；系统告警与恢复通知 24 小时内持续重试）、同一任务内按生成顺序。
 - `ctx` 是事件发生时的快照，修改它不会影响任务。
 - `on_daily` 由内核每天在 `schedule.daily_hour` 发出一次，`ctx.meta["system"]` 里有日期和过去 24 小时汇总，适合日报、巡检类扩展；进程启动时会等停机期间补拉的消息解析完再发（最多推迟 15 分钟）。
@@ -124,7 +130,7 @@ class MyListener:
 
 | ptype | 需要实现 | 可选 |
 | --- | --- | --- |
-| `source` | `async listen(emit)`：长驻协程，每条消息 `await emit(RawMessage(...))` | `configure(targets)`、`bind_watermark(lookup)`、`health()`、`async close()` |
+| `source` | `async listen(emit)`：长驻协程，每条消息 `await emit(RawMessage(...))` | `configure(targets)`、`bind_watermark(lookup)`、`health()`、`async recent(bot, max_count)`（管理台「获取最近消息」）、`backfilled` / `backfill_done` 属性（补拉提醒与推迟日报）、`async close()` |
 | `parser` | `async parse(ctx) -> ParsedResource` | — |
 | `decision` | `async decide(ctx) -> Decision` | — |
 | `storage` | `prepare` / `save` / `reconcile`（只读核验，绝不能重发写请求）/ `abandon`（放弃结果不明的转存，删除暂存目录并读回确认） | 见下 |
@@ -246,7 +252,7 @@ state.set("last_run", "2026-10-19")
 runtime.observe("my_api", "failed", "TimeoutError")    # 记录一次外部调用结果（connected / failed）
 ```
 
-`runtime.observe` 记录的是最近一次真实调用的结果，不会因一段时间没有调用而过期，可在 `GET /api/health` 的 `runtime` 中查看；内置的 LLM 解析与 TMDB 补全用它驱动管理台「总览 → 运行状态」里「AI 解析」「TMDB 元数据」两行。
+`runtime.observe` 记录的是最近一次真实调用的结果，不会因一段时间没有调用而过期，可在 `GET /api/health` 的 `runtime` 中查看（要登录才返回）；内置的 LLM 解析与 TMDB 补全用它驱动管理台「总览 → 运行状态」里「AI 解析」「TMDB 元数据」两行。
 
 `runtime.get` / `runtime.plugin_config` 读到的是任务接收时的配置（按任务记下的配置版本），配置变更只影响新任务；不在任务作用域里时读进程当前的有效配置。`services()` 在内核调用 Hook、Event、通知渠道，以及解析/决策/存储 Provider 的方法时可用（包括其中的 `asyncio.to_thread`）；消息源的 `listen` 是长驻协程，不在任务作用域内。
 
@@ -316,7 +322,7 @@ plugins:
     mode: a
 ```
 
-`default` 是未填写时扩展实际使用的值，只用于在表单里提示。数组、对象等复杂配置在 `validate_config` 中自行校验，用户通过配置文件维护。扩展不要读环境变量：需要的地址、开关写成 `ui_fields`；需要的文件放在 `reelay.core.paths.DATA` 下。
+`default` 是未填写时扩展实际使用的值，只用于在表单里提示；`required: True` 时未填写会拒绝保存。数组、对象等复杂配置在 `validate_config` 中自行校验，用户通过配置文件维护。扩展不要读环境变量：需要的地址、开关写成 `ui_fields`；需要的文件放在 `reelay.core.paths.DATA` 下。
 
 ### 插件动作
 
@@ -338,7 +344,7 @@ class MyHook:
 - 插件不需要依赖 FastAPI。方法在 Web 进程的事件循环里执行，要快；耗时的写成 `async def`。
 - 插件目录里会列出每个插件的 `actions`。
 
-内置插件可以有专用的界面，放在前端的 `web/src/plugins/<插件名>/`：设置编辑器由后端声明 `ui_config_type`，并登记到 `web/src/plugins/index.ts` 的 `PLUGIN_EDITORS`；只服务于这个插件的界面（如媒体库整理设置里的「预览整理效果」弹窗）也放在这里；组件需要后端数据时调用 `api.extensionAction(插件名, 动作名, payload)`。前端是整体构建后发布的，外部插件没有专用编辑器，用 `ui_fields` 生成表单。
+内置插件可以有专用的界面，放在前端的 `web/src/plugins/<插件名>/`：设置编辑器由后端声明 `ui_config_type`，并登记到 `web/src/plugins/index.ts` 的 `PLUGIN_UI`（键为 `ui_config_type`）；只服务于这个插件的界面（如媒体库整理设置里的「预览整理效果」弹窗）也放在这里；组件需要后端数据时调用 `configApi.extensionAction(插件名, 动作名, payload)`。前端是整体构建后发布的，外部插件没有专用编辑器，用 `ui_fields` 生成表单。
 
 ## 测试
 

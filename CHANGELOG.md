@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 文档补充备份恢复、源码回滚与本地评测的用法。
 - 可设置已忽略、已拒绝任务的保留天数，默认一直保留。
 
 ### 变更
@@ -441,6 +442,28 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
+[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.4...HEAD
+[1.5.4]: https://github.com/Derrors/reelay/releases/tag/v1.5.4
+[1.5.3]: https://github.com/Derrors/reelay/releases/tag/v1.5.3
+[1.5.2]: https://github.com/Derrors/reelay/releases/tag/v1.5.2
+[1.5.1]: https://github.com/Derrors/reelay/releases/tag/v1.5.1
+[1.5.0]: https://github.com/Derrors/reelay/releases/tag/v1.5.0
+[1.4.1]: https://github.com/Derrors/reelay/releases/tag/v1.4.1
+[1.4.0]: https://github.com/Derrors/reelay/releases/tag/v1.4.0
+[1.3.3]: https://github.com/Derrors/reelay/releases/tag/v1.3.3
+[1.3.2]: https://github.com/Derrors/reelay/releases/tag/v1.3.2
+[1.3.1]: https://github.com/Derrors/reelay/releases/tag/v1.3.1
+[1.3.0]: https://github.com/Derrors/reelay/releases/tag/v1.3.0
+[1.2.2]: https://github.com/Derrors/reelay/releases/tag/v1.2.2
+[1.2.1]: https://github.com/Derrors/reelay/releases/tag/v1.2.1
+[1.2.0]: https://github.com/Derrors/reelay/releases/tag/v1.2.0
+[1.1.2]: https://github.com/Derrors/reelay/releases/tag/v1.1.2
+[1.1.1]: https://github.com/Derrors/reelay/releases/tag/v1.1.1
+[1.1.0]: https://github.com/Derrors/reelay/releases/tag/v1.1.0
+[1.0.3]: https://github.com/Derrors/reelay/releases/tag/v1.0.3
+[1.0.2]: https://github.com/Derrors/reelay/releases/tag/v1.0.2
+[1.0.1]: https://github.com/Derrors/reelay/releases/tag/v1.0.1
+[1.0.0]: https://github.com/Derrors/reelay/releases/tag/v1.0.0
 [0.6.2]: https://github.com/Derrors/reelay/releases/tag/v0.6.2
 [0.6.1]: https://github.com/Derrors/reelay/releases/tag/v0.6.1
 [0.6.0]: https://github.com/Derrors/reelay/releases/tag/v0.6.0

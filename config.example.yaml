@@ -77,7 +77,7 @@ system:
   schedule:
     daily_hour: 9
 
-  # AI 能力：人工裁决回流、转人工前兜底、审批建议与「改为自动转存」建议
+  # AI 能力：人工裁决回流、转人工前兜底、审批建议与「改为 AI 处理」建议
   ai:
     examples: 3                # 识别时参考同一来源最近几条人工修正（0 关闭）
     history: 20                # decision=llm 时参考同一来源最近几条批准与忽略（0 关闭）
@@ -138,6 +138,7 @@ system:
 plugins:
   tmdb_enrich: {enabled: true}
   share_probe: {enabled: true}
+  update_check: {enabled: true, notify: true}   # 检查新版本；notify：控制 Bot 每个版本提醒一次
   failure_explainer: {enabled: true}   # 失败解释：任务停下来等人处理时说明原因与建议操作
 
   # 媒体库整理（管理台「插件」页维护）：转存前选存放目录，转存后按 Jinja2 模板改名归类，变量同 MoviePilot。
