@@ -266,7 +266,10 @@ export function TaskDetailSheet({ taskId, onClose, onChanged, saveDirs }: TaskDe
                     placeholder="未识别" options={MEDIA_TYPES} />
                 </Field>
                 <Field label="年份"><Input inputMode="numeric" value={String(draft.year ?? '')} onChange={(e) => setDraft({ ...draft, year: Number(e.target.value) || null })} /></Field>
-                <Field label="季"><Input inputMode="numeric" value={String(draft.season ?? '')} onChange={(e) => setDraft({ ...draft, season: e.target.value === '' ? null : Number(e.target.value) })} /></Field>
+                <Field label="季"><Input inputMode="numeric" value={String(draft.season ?? '')} onChange={(e) => {
+                  const value = e.target.value.trim(); // 第 0 季是特别篇；非数字不接受，避免保存时悄悄清空季号
+                  if (value === '' || /^\d+$/.test(value)) setDraft({ ...draft, season: value === '' ? null : Number(value) });
+                }} /></Field>
                 <Field label="清晰度"><Input value={String(draft.resolution ?? '')} onChange={(e) => setDraft({ ...draft, resolution: e.target.value })} /></Field>
                 <Field label="集号（逗号分隔）" className="col-span-2"><Input value={episodesText} onChange={(e) => setEpisodesText(e.target.value)} /></Field>
                 <Field label="判断理由" className="col-span-2"><Textarea value={String(draft.reason ?? '')} onChange={(e) => setDraft({ ...draft, reason: e.target.value })} className="min-h-16" /></Field>

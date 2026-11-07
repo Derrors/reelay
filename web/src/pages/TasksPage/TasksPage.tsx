@@ -1,5 +1,5 @@
 import { Check, ChevronRight, EyeOff, Link2Off, ListChecks, MessageSquareText, RefreshCw, RotateCcw, ScanSearch, Search, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { taskApi } from '@/api/tasks';
@@ -15,12 +15,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAsync } from '@/hooks/useAsync';
+import { useLiveReload } from '@/hooks/useLiveReload';
 import { useDebounced } from '@/hooks/useDebounced';
 import { useDashboard } from '@/hooks/useDashboard';
 import { confirmDialog } from '@/lib/confirm';
 import { groupByDay } from '@/lib/dayGroups';
 import { fullTime, relativeTime } from '@/lib/format';
-import { Realtime } from '@/lib/realtime';
+import type { ChangeScope } from '@/lib/realtime';
 import { STATE_GROUPS, TONE_CLASS, type Tone } from '@/lib/status';
 import type { ITaskSummary, TaskState } from '@/lib/types';
 import { cn, errorMessage } from '@/lib/utils';
@@ -36,6 +37,8 @@ interface ListResult {
   items: ITaskSummary[];
   hasMore: boolean;
 }
+
+const LIVE_SCOPES: ChangeScope[] = ['tasks'];
 
 function fetchTasks(states: TaskState[], query: string, limit: number, offset = 0) {
   return taskApi.list({ state: states.join(','), query, limit, offset }).then(({ items }) => items);
@@ -112,7 +115,17 @@ const GROUP_TONES: Record<string, Tone | undefined> = {
 export default function TasksPage() {
   const [params, setParams] = useSearchParams();
   const group = STATE_GROUPS.find((g) => g.key === params.get('group')) ?? STATE_GROUPS[0];
-  const [query, setQuery] = useState(() => params.get('q') ?? ''); // 命令搜索（⌘K）带过来的片名
+  const urlQuery = params.get('q') ?? ''; // 命令搜索（⌘K）带过来的片名
+  const [query, setQuery] = useState(urlQuery);
+  const [seenQuery, setSeenQuery] = useState(urlQuery);
+  if (seenQuery !== urlQuery) { // 已在任务页时再次搜索：地址变了，输入框跟上；切换分组去掉 q 时保留输入
+    setSeenQuery(urlQuery);
+    if (urlQuery) setQuery(urlQuery);
+  }
+  const editQuery = (value: string) => {
+    setQuery(value);
+    if (params.has('q')) setParams((prev) => { prev.delete('q'); return prev; }, { replace: true });
+  };
   const submitted = useDebounced(query);
   const [loadingMore, setLoadingMore] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -131,11 +144,7 @@ export default function TasksPage() {
   }, [group.key, submitted], '读取任务失败');
   const { reload, mutate } = list;
 
-  useEffect(() => {
-    const realtime = new Realtime({ scopes: ['tasks'], onChange: reload });
-    realtime.start();
-    return () => realtime.stop();
-  }, [reload]);
+  useLiveReload(LIVE_SCOPES, reload);
 
   const result = list.stale ? undefined : list.data;
   const loadMore = async () => {
@@ -157,6 +166,7 @@ export default function TasksPage() {
 
   // 换了筛选或搜索就清空选择
   const chosen = selected.key === key ? selected.ids : new Set<string>();
+  const bulkVisible = selecting && chosen.size > 0;
   const toggle = (id: string, range: boolean) => setSelected((prev) => {
     const ids = new Set(prev.key === key ? prev.ids : []);
     const anchor = prev.key === key ? prev.anchor : null;
@@ -254,7 +264,7 @@ export default function TasksPage() {
         </div>
         <div className="relative xl:ml-auto xl:w-72">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索片名、来源或错误信息" className="pl-9" />
+          <Input value={query} onChange={(e) => editQuery(e.target.value)} placeholder="搜索片名、来源或错误信息" className="pl-9" />
         </div>
       </div>
 
@@ -331,9 +341,9 @@ export default function TasksPage() {
       ) : null}
 
       {/* 批量操作条：选中后从底部浮起（手机上在底部标签栏上方） */}
-      <div className={cn('pointer-events-none fixed inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-30 flex justify-center px-4 transition-[opacity,transform] duration-300 ease-(--ease-out-strong) lg:bottom-6 lg:pl-(--sidebar-width)',
-        selecting && chosen.size ? 'translate-y-0 opacity-100' : 'translate-y-3 opacity-0')}>
-        <div className="pointer-events-auto flex items-center gap-1 rounded-xl glass-card glass-blur p-1.5 pl-3.5 shadow-overlay">
+      <div inert={!bulkVisible} className={cn('pointer-events-none fixed inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-30 flex justify-center px-4 transition-[opacity,transform] duration-300 ease-(--ease-out-strong) lg:bottom-6 lg:pl-(--sidebar-width)',
+        bulkVisible ? 'translate-y-0 opacity-100' : 'translate-y-3 opacity-0')}>
+        <div className={cn('flex items-center gap-1 rounded-xl glass-card glass-blur p-1.5 pl-3.5 shadow-overlay', bulkVisible && 'pointer-events-auto')}>
           <span className="mr-1 text-[13px] tabular-nums">已选 <b className="font-semibold">{chosen.size}</b> 条</span>
           {BULK.map(({ action, label, icon: Icon }) => (
             <Button key={action} size="sm" variant={action === 'reject' ? 'ghost' : 'outline'} disabled={bulkBusy || !chosen.size}

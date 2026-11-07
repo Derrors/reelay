@@ -5,7 +5,9 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Suspense, useCallback, useState, type PointerEvent } from 'react';
+import { ErrorBoundary } from 'react-error-boundary';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { ErrorFallback } from '@/components/ErrorFallback';
 import { toast } from 'sonner';
 import { authApi } from '@/api/auth';
 import { isUpgrading } from '@/api/update';
@@ -223,7 +225,7 @@ function VersionLine({ version, update, onNavigate, centered }: {
       </span>
       {update?.available ? null : (
         <NavLink to={UPDATE_PATH} onClick={onNavigate} title="检查更新" aria-label="检查更新"
-          className="grid size-4 place-items-center rounded text-faint transition-colors hover:text-foreground">
+          className="relative grid size-4 place-items-center rounded text-faint transition-colors after:absolute after:-inset-2.5 hover:text-foreground">
           <RefreshCw className="size-3" />
         </NavLink>
       )}
@@ -398,7 +400,10 @@ export const Layout = () => {
       </Sheet>
 
       <main className="min-w-0">
-        <Suspense fallback={null}><Outlet context={update} /></Suspense>
+        {/* 页面出错时导航还在，可以换到别的页面 */}
+        <ErrorBoundary FallbackComponent={ErrorFallback} resetKeys={[pathname]}>
+          <Suspense fallback={null}><Outlet context={update} /></Suspense>
+        </ErrorBoundary>
       </main>
 
       {/* 下拉刷新指示器（手机） */}
@@ -428,7 +433,7 @@ export const Layout = () => {
               to={item.path}
               className={({ isActive }) => cn(
                 'press relative flex flex-col items-center gap-0.5 rounded-xl py-1.5 text-[11px] font-medium',
-                isActive ? 'text-foreground' : 'text-faint',
+                isActive ? 'text-foreground' : 'text-muted-foreground',
               )}
             >
               {({ isActive }) => (

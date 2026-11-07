@@ -1,7 +1,8 @@
 import {
   Activity, AlertTriangle, ArrowRight, Check, CheckCircle2, Clock3, Inbox, LibraryBig, Loader, RefreshCw, Send, X, XCircle,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useLiveReload } from '@/hooks/useLiveReload';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { dashboardApi } from '@/api/dashboard';
@@ -21,7 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useAsync } from '@/hooks/useAsync';
 import { refreshDashboard, useDashboard } from '@/hooks/useDashboard';
 import { episodeLabel, fullTime, relativeTime } from '@/lib/format';
-import { Realtime } from '@/lib/realtime';
+import type { ChangeScope } from '@/lib/realtime';
 import { connectionMeta, modeLabels, REALTIME_LABELS, TONE_CLASS } from '@/lib/status';
 import { allows } from '@/lib/taskActions';
 import type { IInboxItem, ITaskSummary } from '@/lib/types';
@@ -83,6 +84,8 @@ function PendingRow({ item, busy, onOpen, onAct }: {
   );
 }
 
+const LIVE_SCOPES: ChangeScope[] = ['counts', 'tasks'];
+
 export default function DashboardPage() {
   const { dashboard: d, error: statusError, mode } = useDashboard();
   const lists = useAsync(fetchLists, [], '读取待确认与最近入库失败');
@@ -92,11 +95,7 @@ export default function DashboardPage() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   // 运行状态由 useDashboard 统一刷新；这里只跟随任务变化刷新两个列表
-  useEffect(() => {
-    const realtime = new Realtime({ scopes: ['counts', 'tasks'], onChange: reload });
-    realtime.start();
-    return () => realtime.stop();
-  }, [reload]);
+  useLiveReload(LIVE_SCOPES, reload);
   const refresh = () => { void refreshDashboard(); reload(); };
 
   const act = async (item: IInboxItem, action: 'approve' | 'reject') => {

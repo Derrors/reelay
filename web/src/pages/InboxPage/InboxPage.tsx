@@ -1,5 +1,6 @@
 import { CheckCheck, Inbox, Search, Sparkles, Wand2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLiveReload } from '@/hooks/useLiveReload';
 import { toast } from 'sonner';
 import { inboxApi } from '@/api/inbox';
 import { subscriptionApi } from '@/api/subscriptions';
@@ -15,7 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAsync } from '@/hooks/useAsync';
 import { CONFLICT_DONE, type ConflictChoice } from '@/lib/conflict';
-import { Realtime } from '@/lib/realtime';
+import type { ChangeScope } from '@/lib/realtime';
 import { announceSubscription } from '@/lib/subscriptions';
 import { ACTION_DONE, ACTION_ENDPOINT, actionBody, type PostedAction } from '@/lib/taskActions';
 import type { IInboxItem } from '@/lib/types';
@@ -35,6 +36,8 @@ const SORTS: Array<{ value: InboxSort; label: string }> = [
 const fetchInbox = (): Promise<InboxData> => Promise.all([inboxApi.list('pending_approval'), inboxApi.list('need_manual')])
   .then(([pending_approval, need_manual]) => ({ pending_approval, need_manual }));
 
+const LIVE_SCOPES: ChangeScope[] = ['counts', 'tasks'];
+
 export default function InboxPage() {
   const [tab, setTab] = useState<InboxTab>('pending_approval');
   const inbox = useAsync(fetchInbox, [], '读取待审批列表失败');
@@ -46,11 +49,7 @@ export default function InboxPage() {
   const [batchDir, setBatchDir] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
 
-  useEffect(() => {
-    const realtime = new Realtime({ scopes: ['counts', 'tasks'], onChange: reload });
-    realtime.start();
-    return () => realtime.stop();
-  }, [reload]);
+  useLiveReload(LIVE_SCOPES, reload);
 
   const data = inbox.data;
   const pending = useMemo(() => data?.pending_approval.items ?? [], [data]);
@@ -170,7 +169,7 @@ export default function InboxPage() {
 
       {tab === 'pending_approval' && items.length > 0 ? (
         <div className={cn(
-          'sticky top-14 z-20 mb-4 flex flex-wrap items-center gap-2 rounded-xl glass-card glass-blur px-3 py-2 shadow-raised lg:top-3',
+          'sticky top-[calc(3.5rem+env(safe-area-inset-top))] z-20 mb-4 flex flex-wrap items-center gap-2 rounded-xl glass-card glass-blur px-3 py-2 shadow-raised lg:top-3',
           chosen.size > 0 && 'border-primary/40',
         )}>
           <label className="flex min-h-9 cursor-pointer items-center gap-2 px-1 text-sm sm:min-h-0">

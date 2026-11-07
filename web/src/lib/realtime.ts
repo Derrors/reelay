@@ -43,6 +43,8 @@ const ALL_SCOPES: ChangeScope[] = ['counts', 'deliveries', 'runtime', 'tasks'];
 
 type StreamEvent =
   | { type: 'hello' }
+  /** 加入时连接已打开：只同步状态，页面自己的首次取数已经是最新的。 */
+  | { type: 'connected' }
   | { type: 'state'; changed: ChangeScope[] }
   | { type: 'offline' }
   /** 连续失败：先轮询着，SSE 恢复后会再收到 hello。 */
@@ -59,7 +61,7 @@ const stream = {
   subscribe(listener: StreamListener): () => void {
     this.bindPageLifecycle();
     this.listeners.add(listener);
-    if (this.es?.readyState === EventSource.OPEN) listener({ type: 'hello' }); // 已连通：新订阅者立即对齐
+    if (this.es?.readyState === EventSource.OPEN) listener({ type: 'connected' });
     else if (this.failures >= FALLBACK_AFTER) listener({ type: 'degraded' }); // 正在降级：新订阅者也先轮询
     if (!this.es && !this.retryTimer) this.open();
     return () => {
@@ -183,6 +185,9 @@ export class Realtime {
         this.stopPolling();
         this.setMode('live');
         this.fire(ALL_SCOPES);
+      } else if (event.type === 'connected') {
+        this.stopPolling();
+        this.setMode('live');
       } else if (event.type === 'state') {
         this.fire(event.changed);
       } else if (event.type === 'offline') {

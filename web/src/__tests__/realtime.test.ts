@@ -70,12 +70,14 @@ describe('Realtime 共享连接', () => {
     expect(latest().closed).toBe(true);
   });
 
-  it('连接已建立后加入的订阅者立即对齐一次', () => {
+  it('连接已建立后加入的订阅者进入实时模式，不重复取数', () => {
     start({ onChange: vi.fn() });
     latest().emit('hello');
     const late = vi.fn();
-    start({ onChange: late });
-    expect(late).toHaveBeenCalledTimes(1);
+    const modes: string[] = [];
+    start({ onChange: late, onMode: (m) => modes.push(m) });
+    expect(modes).toEqual(['live']);
+    expect(late).not.toHaveBeenCalled();
   });
 });
 
