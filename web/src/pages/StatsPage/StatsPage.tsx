@@ -1,8 +1,3 @@
-import { BarChart, type BarSeriesOption } from 'echarts/charts';
-import { GridComponent, type GridComponentOption, TooltipComponent, type TooltipComponentOption } from 'echarts/components';
-import * as echarts from 'echarts/core';
-import { CanvasRenderer } from 'echarts/renderers';
-import ReactEChartsCore from 'echarts-for-react/esm/core';
 import {
   ChartColumn, ChartPie, CheckCircle2, CircleAlert, HardDrive, Hourglass, Table2, Trophy,
 } from 'lucide-react';
@@ -18,16 +13,12 @@ import { StatCard } from '@/components/app/StatCard';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAsync } from '@/hooks/useAsync';
-import { useIsMobile } from '@/hooks/use-mobile';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { STATE_META } from '@/lib/status';
 import { cn } from '@/lib/utils';
 import { AiUsagePanel, SourceQualityPanel } from './AiPanels';
-import { useChartPalette, withAlpha } from './chartPalette';
-import { buildView, GROUPS, longDay, RANGES, shortDay, type GroupKey, type Range, type StatsView } from './statsView';
-
-// 只注册用到的图表与组件：整包引入 echarts 约 1 MB
-echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer]);
-type EChartsOption = echarts.ComposeOption<BarSeriesOption | GridComponentOption | TooltipComponentOption>;
+import { TrendChart } from './TrendChart';
+import { buildView, GROUPS, RANGES, shortDay, type GroupKey, type Range, type StatsView } from './statsView';
 
 // 统计按维度分页；ranged 表示受顶部时间范围影响
 const TABS = [
@@ -42,81 +33,8 @@ const TRIGGER_CLASS = [
   'h-9 rounded-md px-3 text-[13px] text-muted-foreground sm:h-8 sm:px-4',
   'data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-btn',
 ].join(' ');
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /* ---------------- 每日趋势 ---------------- */
-
-interface TooltipParam { axisValue: string; seriesName: string; value: number; color: string }
-
-function TrendChart({ view, hidden, height }: { view: StatsView; hidden: Set<GroupKey>; height: number }) {
-  const palette = useChartPalette();
-  const option = useMemo<EChartsOption>(() => {
-    const c = palette.colors;
-    const visible = GROUPS.filter((g) => !hidden.has(g.key));
-    // 每天最上面那一段才做圆角，其余段保持方角，堆叠看起来是一整根柱子。
-    const topOf = view.days.map((_, i) => [...visible].reverse().find((g) => view.series[g.key][i] > 0)?.key);
-    return {
-      animationDuration: 400,
-      textStyle: { fontFamily: palette.font },
-      grid: { left: 2, right: 8, top: 10, bottom: 2, containLabel: true },
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'shadow', shadowStyle: { color: withAlpha(c['--muted-foreground'], 0.08) } },
-        backgroundColor: c['--popover'],
-        borderColor: c['--border'],
-        borderWidth: 1,
-        padding: [8, 12],
-        textStyle: { color: c['--popover-foreground'], fontSize: 12 },
-        extraCssText: 'border-radius:10px;box-shadow:0 12px 32px -12px rgba(0,0,0,.35);',
-        formatter: (raw) => {
-          const items = raw as unknown as TooltipParam[];
-          if (!items.length) return '';
-          const total = items.reduce((a, p) => a + (Number(p.value) || 0), 0);
-          const rows = items.map((p) => {
-            const value = Number(p.value) || 0;
-            return `<div style="display:flex;align-items:center;gap:8px;margin-top:4px;${value ? '' : 'opacity:.5'}">`
-              + `<span style="width:10px;height:3px;border-radius:2px;background:${p.color}"></span>`
-              + `<b style="min-width:16px;font-variant-numeric:tabular-nums">${value}</b>`
-              + `<span style="color:${c['--muted-foreground']}">${escapeHtml(p.seriesName)}</span></div>`;
-          }).join('');
-          return `<div style="font-weight:600;margin-bottom:2px">${escapeHtml(longDay(items[0].axisValue))}`
-            + `<span style="margin-left:8px;font-weight:400;color:${c['--muted-foreground']}">共 ${total} 条</span></div>${rows}`;
-        },
-      },
-      xAxis: {
-        type: 'category',
-        data: view.days,
-        axisLine: { lineStyle: { color: c['--border'] } },
-        axisTick: { show: false },
-        axisLabel: { color: c['--muted-foreground'], fontSize: 11, hideOverlap: true, margin: 10, formatter: shortDay },
-      },
-      yAxis: {
-        type: 'value',
-        minInterval: 1,
-        splitNumber: 4,
-        axisLabel: { color: c['--muted-foreground'], fontSize: 11 },
-        splitLine: { lineStyle: { color: c['--border'], width: 1 } },
-      },
-      series: visible.map((g) => {
-        const color = g.alpha ? withAlpha(c[g.token], g.alpha) : c[g.token];
-        return {
-          name: g.label,
-          type: 'bar',
-          stack: 'total',
-          barMaxWidth: 22,
-          barCategoryGap: '38%',
-          // 用卡片底色描边，在相邻段之间留出 2px 缝隙，而不是画分隔线。
-          itemStyle: { color, borderColor: c['--card'], borderWidth: 1 },
-          emphasis: { itemStyle: { color, borderColor: c['--card'] } },
-          data: view.series[g.key].map((value, i) => (
-            topOf[i] === g.key ? { value, itemStyle: { borderRadius: [4, 4, 0, 0] } } : value
-          )),
-        };
-      }),
-    };
-  }, [palette, view, hidden]);
-  return <ReactEChartsCore echarts={echarts} notMerge lazyUpdate option={option} style={{ height }} opts={{ renderer: 'canvas' }} />;
-}
 
 function TrendTable({ view }: { view: StatsView }) {
   const rows = view.days
@@ -153,7 +71,7 @@ function TrendTable({ view }: { view: StatsView }) {
 function TrendPanel({ view, range }: { view: StatsView; range: Range }) {
   const [mode, setMode] = useState<'chart' | 'table'>('chart');
   const [hidden, setHidden] = useState<Set<GroupKey>>(() => new Set());
-  const isMobile = useIsMobile();
+  const isMobile = useMediaQuery('(max-width: 767px)');
   const toggle = (key: GroupKey) => setHidden((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key); else next.add(key);

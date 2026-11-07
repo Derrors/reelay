@@ -20,7 +20,7 @@ export interface IConnection {
   error?: string;
 }
 
-export interface IRuntimeHealth {
+interface IRuntimeHealth {
   status: string;
   updated_at: number;
   stale: boolean;
@@ -64,7 +64,7 @@ export interface IDashboard {
 export type UpgradeStep = 'fetch' | 'checkout' | 'pip' | 'npm' | 'restart';
 
 /** 源码部署一键升级的进度（见后端 core/upgrade.py）。 */
-export interface IUpgradeState {
+interface IUpgradeState {
   /** restarting：代码与依赖已更新，主进程与管理服务正在重启；done：重启后版本核对无误。 */
   status: 'running' | 'restarting' | 'failed' | 'done';
   target: string;
@@ -77,7 +77,7 @@ export interface IUpgradeState {
   log?: string;
 }
 
-export interface IUpgradeInfo {
+interface IUpgradeInfo {
   /** 源码部署且满足条件，可以一键升级；Docker 部署恒为 false。 */
   supported: boolean;
   /** 不能一键升级的原因。 */
@@ -112,7 +112,7 @@ export type TaskActionName =
   | 'approve' | 'reject' | 'retry' | 'reparse' | 'correct' | 'reorganize' | 'resolve_conflict'
   | 'reconcile' | 'accept_partial' | 'abandon' | 'dismiss' | 'subscribe';
 
-export interface IAlert {
+interface IAlert {
   key: string;
   text: string;
   since: number;
@@ -231,7 +231,7 @@ export interface IInboxItem {
   actions: TaskActionName[];
 }
 
-export interface IRelease {
+interface IRelease {
   subtitles: string[];
   subtitle_format: string | null;
   audio: string[];
@@ -242,7 +242,7 @@ export interface IRelease {
   group: string | null;
 }
 
-export interface IVersionPick {
+interface IVersionPick {
   count: number;
   best: boolean;
   best_task_id: string;
@@ -259,7 +259,7 @@ export interface IAdvice {
   source: 'rule' | 'ai';
 }
 
-export interface IExplanation {
+interface IExplanation {
   action: string;
   /** 建议的操作，如「核验转存」「修正片名或季集后重新整理」。 */
   label: string;
@@ -269,7 +269,7 @@ export interface IExplanation {
   at: number;
 }
 
-export interface ITaskContext {
+interface ITaskContext {
   task_id: string;
   state: TaskState;
   raw: {

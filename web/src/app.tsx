@@ -12,7 +12,7 @@ import TasksPage from '@/pages/TasksPage/TasksPage';
 import LibraryPage from '@/pages/LibraryPage/LibraryPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 
-// 常用页面直接打包；统计页（echarts）、设置、插件与工具页按需加载，控制首屏体积。
+// 常用页面直接打包；统计、设置、插件与工具页按需加载，控制首屏体积。
 const StatsPage = lazy(() => import('@/pages/StatsPage/StatsPage'));
 const SettingsPage = lazy(() => import('@/pages/ConfigPage/SettingsPage'));
 const PluginsPage = lazy(() => import('@/pages/ConfigPage/PluginsPage'));

@@ -1,14 +1,14 @@
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { cn } from '@/lib/utils';
 
-export interface SelectOption {
+interface SelectOption {
   value: string;
   label: string;
   disabled?: boolean;
 }
 
 /** 值为空时实际生效的选项（如来源沿用的默认值、按分类自动选出的目录）。 */
-export interface SelectFallback {
+interface SelectFallback {
   value: string;
   /** 替换该选项的文字；不给时在原文字后标「 · note」 */
   label?: string;

@@ -16,7 +16,7 @@ import { relativeTime } from '@/lib/format';
 import type { IUpdateStatus, UpgradeStep } from '@/lib/types';
 import { copyText, errorMessage } from '@/lib/utils';
 
-export const UPGRADE_COMMAND = 'docker compose pull && docker compose up -d';
+const UPGRADE_COMMAND = 'docker compose pull && docker compose up -d';
 
 const STEP_LABELS: Record<UpgradeStep, string> = {
   fetch: '拉取新版本', checkout: '切换代码', pip: '更新 Python 依赖', npm: '构建管理台', restart: '重启主进程与管理服务',

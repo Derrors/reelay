@@ -40,7 +40,7 @@ function detailText(detail: unknown): string | null {
   }).join('；');
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const route = path.replace(/^\//, '');
   let response: Response;
   try {

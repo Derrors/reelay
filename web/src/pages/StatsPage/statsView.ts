@@ -2,21 +2,20 @@
 import type { IStatsResp } from '@/api/stats';
 import { ACTIVE_STATES } from '@/lib/status';
 import type { TaskState } from '@/lib/types';
-import type { Token } from './chartPalette';
 
 export type GroupKey = 'done' | 'waiting' | 'active' | 'failed' | 'filtered';
-export interface Group { key: GroupKey; label: string; states: TaskState[]; token: Token; alpha?: number; swatch: string }
+export interface Group { key: GroupKey; label: string; states: TaskState[]; swatch: string }
 
 /**
  * 12 个状态按主流程聚合成 5 组。堆叠顺序即色板顺序（青 → 琥珀 → 蓝 → 红 → 灰）：
  * 青与蓝相邻时肉眼难以区分（dataviz 校验 ΔE < 15），所以把蓝放在琥珀之后，调整顺序前请重新校验。
  */
 export const GROUPS: Group[] = [
-  { key: 'done', label: '已入库', states: ['done'], token: '--chart-1', swatch: 'bg-chart-1' },
-  { key: 'waiting', label: '待处理', states: ['pending_approval', 'need_manual'], token: '--chart-3', swatch: 'bg-chart-3' },
-  { key: 'active', label: '处理中', states: ACTIVE_STATES, token: '--chart-2', swatch: 'bg-chart-2' },
-  { key: 'failed', label: '失败', states: ['failed'], token: '--chart-5', swatch: 'bg-chart-5' },
-  { key: 'filtered', label: '已过滤', states: ['rejected', 'skipped'], token: '--muted-foreground', alpha: 0.45, swatch: 'bg-muted-foreground/45' },
+  { key: 'done', label: '已入库', states: ['done'], swatch: 'bg-chart-1' },
+  { key: 'waiting', label: '待处理', states: ['pending_approval', 'need_manual'], swatch: 'bg-chart-3' },
+  { key: 'active', label: '处理中', states: ACTIVE_STATES, swatch: 'bg-chart-2' },
+  { key: 'failed', label: '失败', states: ['failed'], swatch: 'bg-chart-5' },
+  { key: 'filtered', label: '已过滤', states: ['rejected', 'skipped'], swatch: 'bg-muted-foreground/45' },
 ];
 
 const GROUP_OF = new Map<string, GroupKey>(GROUPS.flatMap((g) => g.states.map((s) => [s, g.key] as const)));
@@ -27,6 +26,15 @@ export type Range = typeof RANGES[number];
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const shortDay = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
 export const longDay = (d: string) => `${Number(d.slice(5, 7))} 月 ${Number(d.slice(8, 10))} 日`;
+
+/** 纵轴刻度：约 4 格，步长取 1/2/5 × 10ⁿ，最小为 1（任务数是整数）。 */
+export function yTicks(max: number): number[] {
+  const rough = Math.max(max, 1) / 4;
+  const scale = 10 ** Math.floor(Math.log10(rough));
+  const step = Math.max(1, [1, 2, 5, 10].map((n) => n * scale).find((n) => n >= rough) ?? rough);
+  const count = Math.ceil(Math.max(max, 1) / step);
+  return Array.from({ length: count + 1 }, (_, i) => i * step);
+}
 
 export interface StatsView {
   days: string[];

@@ -31,7 +31,7 @@ function AdviceLine({ advice }: { advice: IAdvice }) {
 }
 
 /** 读取分享的结果（见 shareBadge）；读取正常、集数来自消息时不显示。 */
-export function ShareBadge({ share }: { share: IShareProbe | null }) {
+function ShareBadge({ share }: { share: IShareProbe | null }) {
   const badge = shareBadge(share);
   return badge ? <span title={badge.title}><ToneBadge tone={badge.tone}>{badge.label}</ToneBadge></span> : null;
 }

@@ -26,7 +26,7 @@ export interface IAuth115Side {
   updated_at?: number;
 }
 
-export interface IAuth115Traffic {
+interface IAuth115Traffic {
   cooling_down: boolean;
   cooldown_until?: number | null;
   cooldown_remaining?: number;
