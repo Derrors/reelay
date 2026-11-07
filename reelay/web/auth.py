@@ -2,8 +2,8 @@
 
 守卫（``Guard``，ASGI 中间件）对每个 /api/* 请求（含接口文档与实时推送）依次检查：
 
-1. 还没设置登录密码时，除首次设置与登录相关接口外只接受本机地址（Host 为 localhost / 127.0.0.1 / ::1），
-   挡住经局域网访问与 DNS 重绑定；
+1. 还没设置登录密码时，除首次设置与登录相关接口外只接受本机地址（Host 为 localhost / 127.0.0.1 / ::1，
+   且客户端在本机或局域网），挡住经局域网访问、DNS 重绑定与公网请求伪造 Host；
 2. 写请求（非 GET/HEAD/OPTIONS）必须来自管理台自己的页面（``Sec-Fetch-Site`` 为 same-origin，或 Origin 与
    Host 一致），挡住同一台 NAS 上其他端口、同一域名下其他子站点发起的跨站请求；
 3. 设置了密码时，除登录、登录状态、首次设置与健康检查外都要求登录。
@@ -66,7 +66,7 @@ def _session_valid(store, token: str | None) -> bool:
 
 def is_authenticated(request: Request, store) -> bool:
     if not auth_enabled():
-        return True
+        return local_access(request)
     auth = request.headers.get("authorization", "")
     bearer = auth[7:] if auth.startswith("Bearer ") else None
     return _session_valid(store, request.cookies.get(COOKIE)) or _session_valid(store, bearer)
@@ -84,10 +84,23 @@ def _ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
         return None
 
 
+def _nearby_client(request: Request) -> bool:
+    """客户端在本机或局域网。Host 头可以伪造，不能单独作为依据。
+
+    不能要求必须是回环地址：Docker 端口映射后，宿主机本机的请求来自容器网关（私有地址）。
+    """
+    client = _ip(request.client.host if request.client else "")
+    return client is not None and (client.is_private or client.is_loopback or client.is_link_local)
+
+
+def local_access(request: Request) -> bool:
+    """还没有设置密码时可以使用管理台的请求：地址栏是本机地址，客户端在本机或局域网。"""
+    return _host(request.headers.get("host", "")) in LOCAL_HOSTS and _nearby_client(request)
+
+
 def setup_problem(request: Request) -> str | None:
     """这个请求为什么不能做首次设置；可以时为 None（还没有密码这一条由调用方判断）。"""
-    client = _ip(request.client.host if request.client else "")
-    if client is None or not (client.is_private or client.is_loopback or client.is_link_local):
+    if not _nearby_client(request):
         return "首次设置登录密码只能在局域网内进行：请在家里的网络中打开管理台"
     host = _host(request.headers.get("host", ""))
     if host not in LOCAL_HOSTS and _ip(host) is None:
@@ -125,7 +138,7 @@ class Guard:
     def check(self, request: Request, path: str) -> tuple[int, str] | None:
         if path == "/api/health":
             return None  # 容器健康检查；不带运行细节（见 system.health）
-        if not auth_enabled() and path not in PUBLIC_PATHS and _host(request.headers.get("host", "")) not in LOCAL_HOSTS:
+        if not auth_enabled() and path not in PUBLIC_PATHS and not local_access(request):
             return 403, "还没有设置登录密码：先打开管理台完成首次设置，再从其他设备访问"
         if request.method not in SAFE_METHODS and _cross_site(request):
             return 403, "拒绝来自其他网站的请求"
@@ -149,11 +162,13 @@ def router(store, service) -> APIRouter:
     failures: dict[str, list[float]] = {}  # 客户端地址 → 最近的失败时间
     setup_lock = asyncio.Lock()  # 两个页面同时提交首次设置时只有一个生效
 
-    def new_session(body: dict) -> JSONResponse:
+    def new_session(body: dict, request: Request) -> JSONResponse:
         token = secrets.token_urlsafe(32)
         store.web_session_add(session_key(token), time.time() + SESSION_TTL)
         resp = JSONResponse(body)
-        resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_TTL, path="/")
+        # 经 HTTPS 访问（含反向代理转发的 X-Forwarded-Proto）时只在 HTTPS 上发送会话
+        resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_TTL, path="/",
+                        secure=request.url.scheme == "https")
         return resp
 
     @api.post("/api/auth/login")
@@ -175,7 +190,7 @@ def router(store, service) -> APIRouter:
                 failures.pop(next(iter(failures)))
             raise HTTPException(status_code=401, detail="密码错误")
         failures.pop(client, None)
-        return new_session({"ok": True, "auth_required": True})
+        return new_session({"ok": True, "auth_required": True}, request)
 
     @api.post("/api/auth/logout")
     async def logout(request: Request):
@@ -191,7 +206,7 @@ def router(store, service) -> APIRouter:
         """authenticated 让前端刷新后保留已登录状态；setup_required 时前端先显示设置密码页，
         setup_blocked 说明这个地址为什么不能做首次设置。"""
         if not auth_enabled():
-            return {"auth_required": False, "authenticated": _host(request.headers.get("host", "")) in LOCAL_HOSTS,
+            return {"auth_required": False, "authenticated": local_access(request),
                     "setup_required": True, "setup_blocked": setup_problem(request)}
         return {"auth_required": True, "authenticated": is_authenticated(request, store),
                 "setup_required": False, "setup_blocked": None}
@@ -208,15 +223,15 @@ def router(store, service) -> APIRouter:
             # 密码摘要要算 20 万轮：放到线程里；太短时服务层抛 ValueError（422）
             status = await asyncio.to_thread(service.update_secrets, {"web_password": payload.password})
             store.web_session_drop()
-            return new_session(status)
+            return new_session(status, request)
 
     @api.put("/api/settings/secrets")
-    async def update_secrets(payload: SecretsPayload):
+    async def update_secrets(payload: SecretsPayload, request: Request):
         status = service.update_secrets(payload.changes, current_password=payload.current_password)
         if "web_password" not in payload.changes:
             return status
         # 改了或清除了 Web 密码：其他已登录的会话全部失效，当前页面换一个新会话继续使用
         store.web_session_drop()
-        return new_session(status) if auth_enabled() else status
+        return new_session(status, request) if auth_enabled() else status
 
     return api

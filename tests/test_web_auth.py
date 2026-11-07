@@ -134,6 +134,40 @@ class TestMountedUnderPrefix(WebCase):
 
 
 
+class TestNoPasswordAccess(WebCase):
+    """没有密码时 Host 头可以伪造：公网客户端带上本机地址也不能使用管理台。"""
+
+    def public(self):
+        return TestClient(self.app, base_url="http://127.0.0.1", client=("8.8.8.8", 50000))
+
+    def test_public_client_forging_a_local_host_is_refused(self):
+        attacker = self.public()
+        self.assertEqual(attacker.get("/api/config").status_code, 403)
+        response = attacker.put("/api/settings/secrets", json={"changes": {"web_password": "a-long-password"}})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(attacker.post("/api/auth/setup", json={"password": "a-long-password"}).status_code, 403)
+        self.assertEqual(attacker.get("/api/auth/status").json()["authenticated"], False)
+        self.assertEqual(self.client.get("/api/auth/status").json()["setup_required"], True)  # 都没有设置成功
+
+    def test_health_details_stay_local(self):
+        self.assertNotIn("runtime", self.public().get("/api/health").json())
+        self.assertIn("runtime", self.client.get("/api/health").json())
+
+    def test_docker_gateway_counts_as_local(self):
+        gateway = TestClient(self.app, base_url="http://127.0.0.1:28080", client=("172.18.0.1", 50000))
+        self.assertEqual(gateway.get("/api/config").status_code, 200)
+
+
+class TestSessionCookie(WebCase):
+    SECRETS = {"web_password": "pw"}
+
+    def test_secure_only_over_https(self):
+        cookie = self.client.post("/api/auth/login", json={"password": "pw"}).headers["set-cookie"]
+        self.assertNotIn("Secure", cookie)
+        https = TestClient(self.app, base_url="https://127.0.0.1", client=("127.0.0.1", 50000))
+        self.assertIn("Secure", https.post("/api/auth/login", json={"password": "pw"}).headers["set-cookie"])
+
+
 class TestFirstRunSetup(WebCase):
     """首次打开管理台先设置登录密码：局域网里的设备也能做，公网、经域名来的请求不行，设好一次后不能再用。"""
 
