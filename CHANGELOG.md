@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-11-07
+
+### 安全
+
+- 修复未设置密码时，公网请求可伪造 Host 访问管理接口。
+- 经 HTTPS 访问时会话 Cookie 带 Secure。
+
 ### 新增
 
 - 文档补充备份恢复、源码回滚与本地评测的用法。
@@ -14,11 +21,6 @@
 - 管理台响应启用 gzip 压缩。
 - 统计页不再依赖图表库，加载体积从约 500 KB 降到约 20 KB。
 - 外部插件声明了不存在的挂载点或事件时报错，不再静默失效。
-
-### 安全
-
-- 修复未设置密码时，公网请求可伪造 Host 访问管理接口。
-- 经 HTTPS 访问时会话 Cookie 带 Secure。
 
 ### 修复
 
@@ -442,7 +444,8 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
-[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.4...HEAD
+[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.5...HEAD
+[1.5.5]: https://github.com/Derrors/reelay/releases/tag/v1.5.5
 [1.5.4]: https://github.com/Derrors/reelay/releases/tag/v1.5.4
 [1.5.3]: https://github.com/Derrors/reelay/releases/tag/v1.5.3
 [1.5.2]: https://github.com/Derrors/reelay/releases/tag/v1.5.2
