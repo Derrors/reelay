@@ -427,5 +427,54 @@ class TestWorkIdentity(unittest.TestCase):
                 store.close()
 
 
+
+class TestRetention(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+
+    def task(self, msg_id: str, state: TaskState, age_days: float) -> PipelineContext:
+        ctx = message(msg_id=msg_id)
+        ctx.state = state
+        self.assertTrue(self.store.accept_task(ctx))
+        with self.store._conn:
+            self.store._conn.execute("UPDATE tasks SET updated_at=? WHERE task_id=?",
+                                     (time.time() - age_days * 86400, ctx.task_id))
+        return ctx
+
+    def test_prune_tasks_only_removes_old_skipped_and_rejected(self):
+        old_skipped, old_rejected = self.task("1", TaskState.SKIPPED, 40), self.task("2", TaskState.REJECTED, 40)
+        keep = [self.task("3", TaskState.SKIPPED, 1), self.task("4", TaskState.DONE, 40),
+                self.task("5", TaskState.PENDING_APPROVAL, 40), self.task("6", TaskState.NEED_MANUAL, 40)]
+        claimed = self.task("7", TaskState.SKIPPED, 40)  # 还占着资源的任务不能删（外键），也不该删
+        with self.store._conn:
+            self.store._conn.execute("INSERT INTO resource_claims VALUES ('k', ?, 0)", (claimed.task_id,))
+        self.assertEqual(self.store.prune_tasks(time.time() - 30 * 86400), 2)
+        self.assertIsNone(self.store.get_task(old_skipped.task_id))
+        self.assertIsNone(self.store.get_task(old_rejected.task_id))
+        for ctx in [*keep, claimed]:
+            self.assertIsNotNone(self.store.get_task(ctx.task_id))
+        # 消息级去重不受影响：同一条消息不会重新进入
+        self.assertFalse(self.store.accept_task(message(msg_id="1")))
+
+    def test_finished_delivery_drops_its_snapshot(self):
+        rows = {}
+        for key, outcome in (("done", {}), ("skipped", {"skipped": True}), ("failed", {"error": "ConnectionError"})):
+            self.store.stage_notice(key, key, [key])  # 不同接收方：同一接收方要按顺序投递
+            row = self.store.claim_deliveries()[0]
+            rows[key] = row["id"]
+            self.store.finish_delivery(row["id"], **outcome)
+        left = {row["id"]: row["snapshot"] for row in self.store._conn.execute("SELECT id, snapshot FROM outbox")}
+        self.assertEqual((left[rows["done"]], left[rows["skipped"]]), ("", ""))
+        self.assertEqual(json.loads(left[rows["failed"]])["key"], "failed")  # 还要重试，快照留着
+
+    def test_saving_a_task_serializes_the_snapshot_once(self):
+        ctx = message()
+        ctx.ns("deliveries").update({str(i): {"kind": "notify", "event": "saved", "target": "console"} for i in range(5)})
+        with patch("reelay.core.store.tasks.json.dumps", wraps=json.dumps) as dumps:
+            self.store.save_task(ctx)
+        self.assertEqual(dumps.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

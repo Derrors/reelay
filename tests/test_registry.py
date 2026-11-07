@@ -51,5 +51,29 @@ class TestBuiltinCatalog(unittest.TestCase):
             registry.validate_config(normalize_config({"defaults": {"storage": "local"}}))
 
 
+
+class TestDeclaredSlots(unittest.TestCase):
+    def test_unknown_stage_or_event_is_reported_not_silently_ignored(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "typo_ext.py").write_text(
+                "from reelay.core.registry import register\n"
+                "@register('hook', stage='after_sav')\n"
+                "class TypoHook:\n"
+                "    name = 'typo_hook'\n"
+                "    async def run(self, ctx):\n"
+                "        return True\n"
+                "@register('event', event='saved')\n"
+                "class TypoEvent:\n"
+                "    name = 'typo_event'\n"
+                "    async def handle(self, ctx):\n"
+                "        pass\n", encoding="utf-8")
+            registry = discover(plugin_dirs=[root])
+        errors = {e["source"].rsplit(".", 1)[-1]: e["error"] for e in registry.load_errors}
+        self.assertIn("after_sav", errors["TypoHook"])
+        self.assertIn("saved", errors["TypoEvent"])
+        self.assertNotIn("after_sav", registry.hooks)  # 内置扩展照常加载
+        self.assertTrue(registry.hooks["after_parse"])
+
+
 if __name__ == "__main__":
     unittest.main()

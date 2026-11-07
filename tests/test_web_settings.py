@@ -80,7 +80,7 @@ class TestConfigBlocks(WebCase):
 
     def test_catalog_is_dynamic_including_events(self):
         registry = self.app.state.pipeline.reg
-        listener = SimpleNamespace(name='test_audit', event='saved', ui_label='测试审计',
+        listener = SimpleNamespace(name='test_audit', event='on_saved', ui_label='测试审计',
             ui_fields=[{'path':'level','label':'级别','type':'string','choices':['info','error']}])
         registry.add_listener(listener)
         config = self.client.get('/api/config').json()

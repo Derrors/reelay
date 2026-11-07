@@ -174,6 +174,7 @@ TMDB, AI, and GitHub changes take effect immediately after saving. Telegram requ
 | --- | --- | --- |
 | `runtime.concurrency` | `3` | Number of tasks processed concurrently; requires a main-process restart |
 | `runtime.log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR`; requires a main-process restart |
+| `runtime.task_retention_days` | `0` | Days to keep skipped and rejected tasks: `0` keeps them forever, otherwise 30–3650. They are deleted during the daily check; their trails and source statistics are gone afterwards. Stored tasks and dedup records are not affected |
 
 ## Plugin Configuration (`plugins`)
 

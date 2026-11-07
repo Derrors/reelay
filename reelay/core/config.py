@@ -56,8 +56,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "tmdb": {"base_url": "", "language": "zh-CN", "timeout": 10},
     # Telegram：控制 Bot 只服务 owner_id；重连后按来源补拉停机期间的消息；断开多久告警
     "telegram": {"owner_id": "", "backfill_limit": 200, "backfill_max_days": 7, "alert_after_sec": 120},
-    # 主进程：并发转存数（重启生效）与日志级别
-    "runtime": {"concurrency": 3, "log_level": "INFO"},
+    # 主进程：并发转存数（重启生效）、日志级别、已忽略与已拒绝任务保留多少天（0 表示一直保留）
+    "runtime": {"concurrency": 3, "log_level": "INFO", "task_retention_days": 0},
     # 115 请求治理：各类接口的每秒请求数，触发风控后全部接口冷却的秒数
     "p115": {"open_qps": 3, "cookie_qps": 2, "share_qps": 1, "risk_cooldown_sec": 3600},
     # 网络代理：Telegram、TMDB、AI 服务、GitHub（检查更新）各自是否走代理（115 始终直连）；代理密码在 secrets.json
@@ -323,6 +323,9 @@ def _validate_services(cfg: dict) -> None:
     _number(telegram, "backfill_max_days", "telegram", 0, 365)
     _number(telegram, "alert_after_sec", "telegram", 10, 86400, integer=True)
     _number(cfg["runtime"], "concurrency", "runtime", 1, 20, integer=True)
+    retention = cfg["runtime"].get("task_retention_days")
+    if type(retention) is not int or not (retention == 0 or 30 <= retention <= 3650):
+        raise ValueError("runtime.task_retention_days 必须是 0（一直保留）或 30 到 3650 的整数")
     if cfg["runtime"].get("log_level") not in LOG_LEVELS:
         raise ValueError(f"runtime.log_level 必须为 {'、'.join(LOG_LEVELS)} 之一")
     for key in ("open_qps", "cookie_qps", "share_qps"):

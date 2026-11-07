@@ -31,8 +31,8 @@ class TaskState(str, enum.Enum):
         received → parsed → ┬ pending_approval ─(批准)→ queued
                             │                  └(忽略)→ skipped
                             ├ queued (auto：AI 处理，直接入队)
-                            ├ rejected（广告 / 非影视）
-                            └ skipped（不收、去重命中、不再接收的作品）
+                            ├ rejected（广告）
+                            └ skipped（非影视、不收、去重命中、不再接收的作品）
         queued → saving → stored → organizing → done
                    └ need_manual    └ need_manual
                  (结果未知)          (整理失败)
@@ -43,7 +43,7 @@ class TaskState(str, enum.Enum):
     PARSED = "parsed"                        # AI 解析完成
     PENDING_APPROVAL = "pending_approval"    # 待人工确认（manual 模式；可跨重启）
     QUEUED = "queued"                        # 待转存
-    REJECTED = "rejected"                    # 判为广告 / 非影视
+    REJECTED = "rejected"                    # 判为广告
     SKIPPED = "skipped"                      # 你忽略 / 不收 / 去重命中
     SAVING = "saving"                        # 转存准备、发送与核验
     STORED = "stored"                        # 转存回执已落库，尚未完成整理
@@ -51,10 +51,6 @@ class TaskState(str, enum.Enum):
     NEED_MANUAL = "need_manual"              # 转存结果待核验或整理需人工处理
     DONE = "done"                            # 已转存并读回验证
     FAILED = "failed"                        # 失败（可重试 / 告警）
-
-    @property
-    def is_terminal(self) -> bool:
-        return self in (TaskState.DONE, TaskState.REJECTED, TaskState.SKIPPED)
 
 
 class ApprovalMode(str, enum.Enum):
@@ -230,6 +226,12 @@ class SourceProvider(Protocol):
         """开始监听；每收到一条消息就 ``await emit(raw_message)``。长驻协程。"""
         ...
 
+    # 可选（主进程按 hasattr / getattr 使用，见 main._source_loop）：
+    # - ``configure(targets)``：要监听的来源，配置变化时再次调用；``bind_watermark(lookup)``：补拉用的已接收水位；
+    # - ``health() -> dict``：连接状态（status、error、down_for），写入心跳并驱动断线告警；
+    # - ``backfilled``（已补拉条数）、``backfill_done``（启动补拉是否结束）：属性，用于补拉提醒与推迟日报；
+    # - ``recent(bot, max_count)``：读取来源最近的消息（管理台「获取最近消息」）；``close()``：释放连接。
+
 
 @runtime_checkable
 class ParserProvider(Protocol):
@@ -318,7 +320,7 @@ class EventListener(Protocol):
         ...
 
 
-# 已知的挂载点 / 事件名，集中声明便于校验与查阅
+# 内核会触发的挂载点 / 事件；注册时据此校验，写错的扩展不会静默失效
 HOOK_STAGES = (
     "before_parse",
     "after_parse",

@@ -121,7 +121,7 @@ def _run(store, record: dict, root: Path, log_path: Path, via: str | None) -> No
         record.update(change)
         store.state_set(updates.NAME, STATE, record)
 
-    old, branch = None, False
+    old, branch, deps_updated = None, False, False
     with log_path.open("w", encoding="utf-8") as out:
         def run(args: list[str], cwd: Path, env: dict | None = None) -> None:
             out.write(f"\n$ {' '.join(args)}\n")
@@ -161,6 +161,7 @@ def _run(store, record: dict, root: Path, log_path: Path, via: str | None) -> No
             if {"pyproject.toml", "constraints.txt"} & set(changed):
                 save(step="pip")
                 run([sys.executable, "-m", "pip", "install", "-c", "constraints.txt", "-e", ".[all]"], root)
+                deps_updated = True
             if build_web:
                 save(step="npm")
                 if install_web:
@@ -180,6 +181,8 @@ def _run(store, record: dict, root: Path, log_path: Path, via: str | None) -> No
                     error += f"；代码已退回 v{record['from']}"
                     if record["step"] == "pip":
                         error += "，Python 依赖可能已部分更新"
+                    elif deps_updated:
+                        error += "，Python 依赖已是新版本"
                 except Exception:  # noqa: BLE001
                     error += "；代码没能自动退回，请在项目目录检查 git 状态"
             out.write(f"\n升级失败：{error}\n")

@@ -180,5 +180,16 @@ class TestSharedSourceCards(unittest.TestCase):
         self.assertEqual(without_sources(sources, ["@d"]), sources[:1])
 
 
+
+class TestTaskRetention(unittest.TestCase):
+    def test_zero_or_at_least_thirty_days(self):
+        self.assertEqual(normalize_config({})["runtime"]["task_retention_days"], 0)
+        for days in (0, 30, 3650):
+            self.assertEqual(normalize_config({"runtime": {"task_retention_days": days}})["runtime"]["task_retention_days"], days)
+        for days in (1, 29, 3651, -1, "30", 30.5, True):
+            with self.subTest(days=days), self.assertRaises(ValueError):
+                normalize_config({"runtime": {"task_retention_days": days}})
+
+
 if __name__ == "__main__":
     unittest.main()

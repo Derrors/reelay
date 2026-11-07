@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import paths
+from .contracts import EVENTS, HOOK_STAGES
 
 log = logging.getLogger("reelay.registry")
 
@@ -50,11 +51,15 @@ class Registry:
 
     def add_hook(self, instance: Any) -> None:
         stage = instance.stage
+        if stage not in HOOK_STAGES:
+            raise ValueError(f"未知的挂载点 {stage}，可用：{'、'.join(HOOK_STAGES)}")
         self.hooks.setdefault(stage, []).append(instance)
         self.hooks[stage].sort(key=lambda h: getattr(h, "order", 100))
         log.debug("hook registered: %s (order=%s)", stage, getattr(instance, "order", 100))
 
     def add_listener(self, instance: Any) -> None:
+        if instance.event not in EVENTS:
+            raise ValueError(f"未知的事件 {instance.event}，可用：{'、'.join(EVENTS)}")
         self.listeners.setdefault(instance.event, []).append(instance)
         log.debug("listener registered: %s", instance.event)
 
@@ -245,25 +250,24 @@ def _instantiate(registry: Registry, errors: list[dict[str, str]] | None = None,
             continue
         try:
             obj = cls()
+            # 允许装饰器参数覆盖/补齐类属性
+            for k, v in kw.items():
+                if k not in ("ptype",):
+                    setattr(obj, k, v)
+            if kind == "provider":
+                registry.add_provider(kw["ptype"], obj)
+            elif kind == "hook":
+                registry.add_hook(obj)
+            elif kind == "event":
+                registry.add_listener(obj)
         except Exception as exc:  # noqa: BLE001
-            # 内置扩展构造失败是缺陷，照常抛出；外部扩展失败隔离。
+            # 内置扩展构造或声明有误是缺陷，照常抛出；外部扩展失败隔离。
             if not _is_under(cls.__module__, _EXTERNAL_MODULES):
                 raise
             log.exception("外部扩展实例化失败：%s", cls.__name__)
             if errors is not None:
                 errors.append({"source": f"{cls.__module__}.{cls.__name__}",
                                "error": f"{type(exc).__name__}: {exc}"[:300]})
-            continue
-        # 允许装饰器参数覆盖/补齐类属性
-        for k, v in kw.items():
-            if k not in ("ptype",):
-                setattr(obj, k, v)
-        if kind == "provider":
-            registry.add_provider(kw["ptype"], obj)
-        elif kind == "hook":
-            registry.add_hook(obj)
-        elif kind == "event":
-            registry.add_listener(obj)
 
 
 def _load_external(errors: list[dict[str, str]], plugin_dirs: list[str | Path] | None) -> set[str]:

@@ -131,6 +131,7 @@ system:
   runtime:
     concurrency: 3
     log_level: INFO
+    task_retention_days: 0      # 已忽略、已拒绝任务保留多少天；0 一直保留，否则至少 30
 
 # ---------------------------------------------------------------- 插件配置
 # plugins.<插件名>：enabled 开关（不写按插件默认）与该插件的设置；转存检查点仍绑定原 Provider 和文件 ID

@@ -55,6 +55,8 @@ class OutboxRepository:
             delay = retry_after if retry_after is not None else backoff
             self._conn.execute("UPDATE outbox SET status=?, attempts=?, error=?, next_attempt=?, lease_until=0, updated_at=? WHERE id=?",
                                (status, attempts, error, now + delay, now, delivery_id))
+            if status in ("done", "skipped"):  # 不会再投递：快照占空间最多，记录只留作排查
+                self._conn.execute("UPDATE outbox SET snapshot='' WHERE id=?", (delivery_id,))
 
     @_locked
     def delivery_counts(self) -> dict[str, int]:
@@ -69,7 +71,7 @@ class OutboxRepository:
             next_attempt, updated_at FROM outbox WHERE status=? ORDER BY id DESC LIMIT ?""", (status, limit))]
 
     def prune_deliveries(self, *, done_before: float, failed_before: float) -> int:
-        """清理已投递或已跳过、以及很早就投递失败的记录（每行带一份完整快照，不清理会一直变大）。"""
+        """清理已投递或已跳过、以及很早就投递失败的记录。"""
         with self._lock, self._conn:
             return self._conn.execute(
                 "DELETE FROM outbox WHERE (status IN ('done','skipped') AND updated_at<?) "

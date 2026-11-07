@@ -174,6 +174,7 @@ TMDB、AI 服务与 GitHub 保存后立即生效；Telegram 要重启主进程�
 | --- | --- | --- |
 | `runtime.concurrency` | `3` | 同时处理的任务数（重启主进程生效） |
 | `runtime.log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR`（重启主进程生效） |
+| `runtime.task_retention_days` | `0` | 已忽略、已拒绝任务保留多少天：`0` 一直保留，否则 30–3650。每日巡检时删除，之后查不到轨迹、也不再计入来源统计；已入库的任务和去重记录不受影响 |
 
 ## 插件配置（`plugins`）
 

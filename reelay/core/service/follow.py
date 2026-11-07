@@ -168,7 +168,7 @@ class FollowMixin(ServiceBase):
                     pass  # 保留规则解析的结果
         candidates = []
         if tmdb.api_key() and query["title"]:
-            language = self.pipeline.cfg.get("tmdb", {}).get("language", "zh-CN")
+            language = self.pipeline.cfg["tmdb"]["language"]
             try:
                 hits = await asyncio.to_thread(tmdb.search, "tv", query["title"], query["year"],
                                                language=language, timeout=10)
@@ -203,7 +203,7 @@ class FollowMixin(ServiceBase):
         """按 TMDB 条目与季号订阅（控制 Bot 里「/subs 片名」找到后点选的那一季）：片名与总集数取 TMDB 条目详情。"""
         if not tmdb.api_key():
             raise ConflictError("没有配置 TMDB，请在管理台「追剧订阅」里按片名订阅")
-        language = self.pipeline.cfg.get("tmdb", {}).get("language", "zh-CN")
+        language = self.pipeline.cfg["tmdb"]["language"]
         try:
             details = await asyncio.to_thread(tmdb.tv_details, int(tmdbid), language=language, timeout=10)
         except Exception as exc:  # noqa: BLE001
@@ -234,7 +234,7 @@ class FollowMixin(ServiceBase):
         if tmdb.api_key():
             try:
                 details = await asyncio.to_thread(tmdb.tv_details, int(tmdbid), timeout=10,
-                                                  language=self.pipeline.cfg.get("tmdb", {}).get("language", "zh-CN"))
+                                                  language=self.pipeline.cfg["tmdb"]["language"])
                 item["total"] = next((s["episodes"] for s in details["seasons"]
                                       if s["season"] == season and s["episodes"]), None)
             except Exception:  # noqa: BLE001 - 总集数只用于缺集提醒，拿不到不影响订阅
@@ -257,7 +257,7 @@ class FollowMixin(ServiceBase):
             return
         try:
             details = await asyncio.to_thread(tmdb.tv_details, int(item["tmdbid"]), timeout=5,
-                                              language=self.pipeline.cfg.get("tmdb", {}).get("language", "zh-CN"))
+                                              language=self.pipeline.cfg["tmdb"]["language"])
         except Exception:  # noqa: BLE001 - 类型只用于展示
             return
         genres = self.store.state_get(*GENRES, {}) or {}

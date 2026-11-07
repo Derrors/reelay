@@ -10,17 +10,16 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..core import paths, upgrade
-from ..core.config import ensure_config, load_config, load_env
+from ..core.bootstrap import open_service
+from ..core.config import load_env
 from ..core.contracts import StorageBusy
-from ..core.pipeline import Pipeline
-from ..core.registry import discover
-from ..core.service import ConflictError, ManagementService, NotFoundError
-from ..core.store import Store
+from ..core.service import ConflictError, NotFoundError
 from . import ai, auth, config, follow, library, p115, sources, system, tasks
 from .realtime import EventBus, close_all_streams
 
@@ -71,15 +70,9 @@ def _frontend(app: FastAPI, frontend: Path) -> None:
 def create_app(*, data_dir: str | Path | None = None, frontend_dir: str | Path | None = None) -> FastAPI:
     """data_dir 默认是项目的 data/（数据库、配置、密钥、日志都在里面）；测试传临时目录。"""
     data = Path(data_dir or paths.DATA)
-    ensure_config(data / paths.CONFIG_NAME)
-    paths.use_data_dir(data)
-    config_file = data / paths.CONFIG_NAME
-    cfg = load_config(config_file)
-    registry = discover()
-    registry.validate_config(cfg)
-    store = Store(str(data / paths.DATABASE_NAME))
-    pipeline = Pipeline(registry, store, cfg)
-    service = ManagementService(store, pipeline, config_path=config_file)
+    service = open_service(data)
+    store, pipeline = service.store, service.pipeline
+    registry = pipeline.reg
     bus = EventBus(store=store)
     from ..mcp_server import http_endpoint
     mcp = http_endpoint(service)
@@ -98,6 +91,8 @@ def create_app(*, data_dir: str | Path | None = None, frontend_dir: str | Path |
 
     app = FastAPI(title="Reelay Management API", version=__version__, lifespan=lifespan,
                   docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json")
+    # 前端资源与接口响应压缩后才一二百 KB，远程访问更快；SSE（text/event-stream）默认不压缩，不会被缓冲
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     # 守卫在内层、CORS 在外层（后加的在外）：开发时 Vite 跨端口访问的预检请求由 CORS 直接应答
     app.add_middleware(auth.Guard, store=store)
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:28641", "http://127.0.0.1:28641"],

@@ -27,11 +27,9 @@ from typing import Annotated, Any, Literal
 from . import __version__
 from .agent_tools import TOOLS, AgentTools, Param, Tool
 from .core import paths, secret_store
-from .core.config import ensure_config, load_config, load_env
-from .core.pipeline import Pipeline
-from .core.registry import discover
+from .core.bootstrap import open_service
+from .core.config import load_env
 from .core.service import ManagementService
-from .core.store import Store
 
 _INSTRUCTIONS = """\
 Reelay 监听 Telegram 资源 Bot，解析 115 分享并在审批后转存、整理入库。
@@ -167,19 +165,10 @@ def http_endpoint(service: ManagementService) -> HttpEndpoint | None:
 
 
 def create_service(*, data_dir: str | Path | None = None) -> ManagementService:
-    """与 web.create_app 相同的装配方式，但不创建 Worker。"""
+    """与 web.create_app 相同的装配，但不创建 Worker。"""
     if data_dir is None:
         load_env(str(paths.ENV_FILE))  # 只读模式（REELAY_MCP_READONLY）与日志级别可以写在 .env 里
-    data = Path(data_dir or paths.DATA)
-    ensure_config(data / paths.CONFIG_NAME)
-    paths.use_data_dir(data)
-    config_file = data / paths.CONFIG_NAME
-    cfg = load_config(config_file)
-    registry = discover()
-    registry.validate_config(cfg)
-    store = Store(str(data / paths.DATABASE_NAME))
-    pipeline = Pipeline(registry, store, cfg)
-    return ManagementService(store, pipeline, config_path=config_file)
+    return open_service(data_dir)
 
 
 def readonly_enabled() -> bool:

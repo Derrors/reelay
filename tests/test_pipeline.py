@@ -234,6 +234,8 @@ class TestPipeline(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(peer.reload_config())
             self.assertEqual(peer.revision, current)
             self.assertIsNotNone(peer.config_error)
+            self.assertFalse(peer.reload_config())  # 文件没变：不重新解析，错误说明还在
+            self.assertIsNotNone(peer.config_error)
         finally:
             worker.stop()
             task.cancel()
@@ -955,6 +957,46 @@ class TestConfigSnapshots(PipelineCase):
         self.assertEqual(restarted.task_config(restored)["save_dirs"], {"默认": "1"})
         pipeline.apply_config(changed)  # 同一版本只存一份
         self.assertEqual(self.store._conn.execute("SELECT COUNT(*) FROM config_snapshots").fetchone()[0], 2)
+
+
+
+class TestConfigReload(PipelineCase):
+    def setUp(self):
+        super().setUp()
+        self.path = self.root / "config.yaml"
+        self.cfg = {"save_dirs": {"默认": "1"}, "defaults": {"save_to": "默认"}}
+        self.path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        self.peer = self.pipeline(self.cfg, discover(plugin_dirs=[]))
+        self.peer.config_path = self.path
+
+    def test_unchanged_file_is_not_parsed_again(self):
+        self.assertFalse(self.peer.reload_config())
+        with patch("reelay.core.pipeline.load_config") as load:
+            self.assertFalse(self.peer.reload_config())
+        load.assert_not_called()
+
+    def test_changed_deleted_and_restored_files_are_noticed(self):
+        self.peer.reload_config()
+        changed = {**self.cfg, "save_dirs": {"默认": "2"}}
+        self.path.write_text(json.dumps(changed), encoding="utf-8")
+        self.assertTrue(self.peer.reload_config())
+        self.assertEqual(self.peer.save_dirs["默认"], "2")
+        saved = self.path.read_bytes()
+        self.path.unlink()
+        self.assertFalse(self.peer.reload_config())
+        self.assertIn("不存在", self.peer.config_error)
+        self.path.write_bytes(saved)
+        self.assertFalse(self.peer.reload_config())
+        self.assertIsNone(self.peer.config_error)
+
+    async def test_daily_event_prunes_tasks_only_when_retention_is_set(self):
+        with patch.object(self.store, "prune_tasks") as prune:
+            self.assertTrue(await self.peer.emit_daily(time.mktime((2026, 1, 1, 12, 0, 0, 0, 0, -1))))
+            prune.assert_not_called()
+        kept = self.pipeline({**self.cfg, "runtime": {"task_retention_days": 30}})
+        with patch.object(self.store, "prune_tasks") as prune:
+            self.assertTrue(await kept.emit_daily(time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1))))
+            prune.assert_called_once()
 
 
 if __name__ == "__main__":

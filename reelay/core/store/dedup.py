@@ -33,7 +33,6 @@ class DedupRepository:
                 [(resource_key, ctx.task_id, time.time()) for resource_key in keys],
             )
             ctx.ns("storage")["resource_key"] = key
-            ctx.ns("storage")["claim_keys"] = keys
             self._write_task(ctx)
         return True
 

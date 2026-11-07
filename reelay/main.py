@@ -21,12 +21,12 @@ import sys
 import time
 
 from .core import messages, paths, upgrade
-from .core.config import ensure_config, load_config, normalize_config, source_bots
+from .core.bootstrap import open_service
+from .core.config import load_config, normalize_config, source_bots
 from .core.contracts import PipelineContext, RawMessage, TaskState
 from .core.pipeline import Pipeline
 from .core.registry import discover
 from .core.store import Store
-from .core.service import ManagementService
 from .core.worker import Worker
 
 
@@ -223,16 +223,13 @@ async def _restart_watch(store: Store, since: float) -> None:
 
 async def _run_live() -> int:
     started = time.time()
-    cfg = load_config()
-    reg = discover()
-    reg.validate_config(cfg)
+    service = open_service()
+    store, pipeline = service.store, service.pipeline
+    reg, cfg = pipeline.reg, pipeline.cfg
     log = logging.getLogger("reelay")
     log.info("已注册：%s", reg.summary())
     for name in reg.unclaimed_sections(cfg):
         log.warning("配置 %s 没有对应的插件，已忽略", name)
-    store = Store(str(paths.DATABASE))
-    pipeline = Pipeline(reg, store, cfg)
-    service = ManagementService(store, pipeline, config_path=paths.CONFIG)
     from .control.bot import ControlBot
     bot = ControlBot(service)
     tasks = []
@@ -286,9 +283,6 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="无依赖端到端冒烟")
     args = ap.parse_args()
     _setup_log(to_file=not args.dry_run)
-    if not args.dry_run:
-        ensure_config()
-        paths.use_data_dir(paths.DATA)
     async def run_with_signals():
         import signal
         loop = asyncio.get_running_loop()

@@ -56,6 +56,7 @@ class Pipeline:
         self.store.put_config_snapshot(self.revision, self.cfg)
         self.config_path: Path | None = None
         self.config_error: str | None = None
+        self._config_stamp: tuple[int, int, int] | None = None  # 上次读取时配置文件的 (inode, mtime, 大小)
         self.save_dirs: dict[str, str] = self.cfg["save_dirs"]
         self._organize_locks: dict[str, asyncio.Lock] = {}
         self.services = runtime.Services(store, self.notify_targets, registry)
@@ -64,7 +65,7 @@ class Pipeline:
         self._daily_hold_until: float | None = None
 
     def notify_targets(self) -> list[str]:
-        return list(self.cfg.get("providers", {}).get("notify", ["console"]))
+        return list(self.cfg["providers"]["notify"])
 
     def scope(self, ctx_or_cfg=None):
         """内核服务与配置的作用域：传任务时用任务接收时的配置，省略时用当前配置。"""
@@ -92,6 +93,12 @@ class Pipeline:
             # 删除运行配置不等于授权恢复到内置 CID=0。
             if not self.config_path.exists():
                 raise ValueError("运行配置文件不存在")
+            # Worker 每秒调用：文件没变就不解析（解析要占事件循环约 10ms），也保留上次的错误说明
+            info = self.config_path.stat()
+            stamp = (info.st_ino, info.st_mtime_ns, info.st_size)
+            if stamp == self._config_stamp:
+                return False
+            self._config_stamp = stamp
             cfg = load_config(self.config_path)
             revision = config_revision(cfg)
             if revision == self.revision:
@@ -101,6 +108,8 @@ class Pipeline:
             return True
         except Exception as exc:  # noqa: BLE001 - 原因交给管理台显示，用户据此修改文件
             self.config_error = f"配置文件 {self.config_path} 无效，继续使用上一有效版本：{str(exc)[:300]}"
+            if not self.config_path.exists():
+                self._config_stamp = None  # 恢复原文件时要重新读取
             return False
 
     def task_config(self, ctx: PipelineContext) -> dict:
@@ -125,6 +134,7 @@ class Pipeline:
             for row in self.store.list_by_state(state, 100_000):
                 if await self._refresh_task(row["task_id"], state, row["updated_at"]):
                     refreshed += 1
+                await asyncio.sleep(0)  # 已入库的任务可能很多，逐条让出事件循环，不拖住监听与投递
         return refreshed
 
     async def refresh_task(self, task_id: str) -> bool:
@@ -338,10 +348,7 @@ class Pipeline:
             self.store.save_task(ctx)
             return
 
-        parser_name = ctx.source_rule.get(
-            "parser", self.cfg.get("defaults", {}).get("parser", "llm")
-        )
-        parser = self.reg.get_provider("parser", parser_name)
+        parser = self.reg.get_provider("parser", ctx.source_rule.get("parser", self.cfg["defaults"]["parser"]))
         try:
             with self.scope(ctx):
                 ctx.parsed = await parser.parse(ctx)
@@ -442,8 +449,7 @@ class Pipeline:
     # 阶段 3：转存 + 整理（由 worker 从队列取出后调用）
     # ------------------------------------------------------------------ #
     def _resolve_directory(self, ctx: PipelineContext) -> None:
-        alias = ctx.save_dir_alias or ctx.source_rule.get("save_to") \
-            or self.cfg.get("defaults", {}).get("save_to", "默认")
+        alias = ctx.save_dir_alias or ctx.source_rule.get("save_to") or self.cfg["defaults"]["save_to"]
         if alias not in self.save_dirs:
             raise ValueError(f"目标目录别名不存在：{alias}")
         cid = str(self.save_dirs[alias])
@@ -550,11 +556,8 @@ class Pipeline:
                 return
         else:
             ctx.state = TaskState.SAVING
-            # 占位键按当前格式重新生成（集数已按清单确定），升级前开始的任务与新任务互相可见
-            if ns.get("manifest"):
-                ns["content_keys"] = self._content_keys(storage.name, ctx)
-            if not self.store.claim_resource(ctx, ns["resource_key"],
-                                             content_keys=ns.get("content_keys") or ns.get("claim_keys")):
+            ns["content_keys"] = self._content_keys(storage.name, ctx)  # 集数已按清单确定
+            if not self.store.claim_resource(ctx, ns["resource_key"], content_keys=ns["content_keys"]):
                 ctx.state = TaskState.QUEUED
                 self.store.save_task(ctx)
                 return
@@ -844,9 +847,9 @@ class Pipeline:
             self.store.save_task(ctx)
 
     def rule_for(self, source: str) -> dict[str, Any]:
-        merged = copy.deepcopy(self.cfg.get("defaults", {}))
-        merged["forward"] = copy.deepcopy(self.cfg.get("forward", {}))
-        rule = find_source(self.cfg.get("sources", []), source)  # 一张卡片可以写多个来源，共用它的设置
+        merged = copy.deepcopy(self.cfg["defaults"])
+        merged["forward"] = copy.deepcopy(self.cfg["forward"])
+        rule = find_source(self.cfg["sources"], source)  # 一张卡片可以写多个来源，共用它的设置
         return merge_config(merged, rule) if rule else merged
 
     # ------------------------------------------------------------------ #
@@ -860,11 +863,8 @@ class Pipeline:
         - remind：reminder=digest（默认）合并成一条汇总通知，reminder=card 逐条重推确认卡片；
           每条最多提醒 max_reminders 次（0 表示不限），之后停止提醒但保留在待审批列表。
         """
-        ap = self.cfg.get("approval", {}) or {}
-        hours = float(ap.get("timeout_hours", 24))
-        action = ap.get("on_timeout", "remind")
-        style = ap.get("reminder", "digest")
-        limit = int(ap.get("max_reminders", 3))
+        ap = self.cfg["approval"]
+        hours, action, style, limit = ap["timeout_hours"], ap["on_timeout"], ap["reminder"], ap["max_reminders"]
         now = time.time()
         deadline = now - hours * 3600
         handled, reminded, exhausted = 0, [], 0
@@ -940,7 +940,7 @@ class Pipeline:
         now = time.time() if now is None else now
         local = time.localtime(now)
         today = time.strftime("%Y-%m-%d", local)
-        hour = int(self.cfg.get("schedule", {}).get("daily_hour", 9))
+        hour = self.cfg["schedule"]["daily_hour"]
         if local.tm_hour < hour or self.store.state_get("kernel", "daily_event") == today:
             return False
         if self._daily_on_hold(now):
@@ -956,4 +956,7 @@ class Pipeline:
         self.store.prune_llm_calls(now - 90 * 86400)  # AI 调用记录保留 90 天
         # 已投递的通知与事件保留 7 天（排查用），投递失败的保留 30 天
         self.store.prune_deliveries(done_before=now - 7 * 86400, failed_before=now - 30 * 86400)
+        retention = self.cfg["runtime"]["task_retention_days"]
+        if retention:
+            self.store.prune_tasks(now - retention * 86400)
         return True

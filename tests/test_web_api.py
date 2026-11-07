@@ -464,5 +464,23 @@ class TestRealtimeShutdown(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bus._subscribers, set())
 
 
+
+class TestCompression(WebCase):
+    def prepare(self, root):
+        frontend = root / "frontend"
+        (frontend / "assets").mkdir(parents=True)
+        (frontend / "index.html").write_text("<html></html>", encoding="utf-8")
+        (frontend / "assets" / "app.js").write_text("console.log(1);\n" * 500, encoding="utf-8")
+
+    def test_large_static_files_are_compressed(self):
+        response = self.client.get("/assets/app.js", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(response.headers.get("content-encoding"), "gzip")
+        self.assertIn("console.log", response.text)
+
+    def test_small_responses_are_not(self):
+        response = self.client.get("/api/health", headers={"Accept-Encoding": "gzip"})
+        self.assertIsNone(response.headers.get("content-encoding"))
+
+
 if __name__ == "__main__":
     unittest.main()

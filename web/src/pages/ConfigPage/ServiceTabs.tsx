@@ -299,6 +299,8 @@ export function SystemTab({ config, setField, secrets, onSecrets }: { config: Ob
             <Field label="日志级别" hint="排查问题时改为调试，平时用一般即可。">
               <Select value={text(runtime.log_level)} onValueChange={v => setField('runtime', 'log_level', v)} options={LOG_LEVELS} />
             </Field>
+            <NumberField label="已忽略、已拒绝任务保留天数" min={0} max={3650} value={runtime.task_retention_days}
+              hint="填 0 一直保留，否则至少 30 天。到期删除后查不到轨迹，也不再计入来源统计；已入库的任务不受影响。" onChange={v => setField('runtime', 'task_retention_days', v)} />
           </div>
           <p className="mt-4 text-xs leading-5 text-muted-foreground">
             数据库、配置、密钥、会话、115 凭证与日志都固定放在 data/ 目录（Docker 为数据卷 /app/data），备份时整体复制即可。

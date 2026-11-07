@@ -218,6 +218,16 @@ class TestSourceUpgrade(PipelineCase):
         self.assertEqual((self.head(), self.restarts), (before, []))
         self.assertIn("升级失败", upgrade.status(self.store, self.root, self.code)["state"]["log"])
 
+    def test_failed_build_after_dependency_update_says_so(self):
+        self.release({"pyproject.toml": "[project]\n", "web/app.ts": "new\n"})
+        before = self.head()
+        with patch.object(upgrade.sys, "executable", shutil.which("true")), \
+                patch.object(upgrade.shutil, "which", return_value=shutil.which("false")):
+            record = self.upgrade()
+        self.assertEqual((record["status"], record["step"]), ("failed", "npm"))
+        self.assertIn("Python 依赖已是新版本", record["error"])
+        self.assertEqual((self.head(), self.restarts), (before, []))
+
     def test_web_changes_need_npm(self):
         self.release({"web/app.ts": "new\n"})
         before = self.head()

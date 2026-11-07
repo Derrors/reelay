@@ -49,7 +49,6 @@ class Worker:
         self.pipeline = pipeline
         self.store = store
         self.concurrency = max(1, concurrency)
-        self.sem = asyncio.Semaphore(self.concurrency)
         self._queue: asyncio.Queue[tuple[str, TaskState]] = asyncio.Queue()
         self._seen_inflight: set[str] = set()
         self._stop = asyncio.Event()
@@ -104,7 +103,7 @@ class Worker:
         revision, cfg = self.pipeline.revision, self.pipeline.cfg
         paths = {}
         try:
-            storage = self.pipeline.reg.get_provider("storage", cfg["defaults"].get("storage", "p115"))
+            storage = self.pipeline.reg.get_provider("storage", cfg["defaults"]["storage"])
             for alias, cid in cfg["save_dirs"].items() if hasattr(storage, "dir_path") else ():
                 path = await asyncio.to_thread(storage.dir_path, str(cid))
                 if path:
@@ -237,7 +236,7 @@ class Worker:
         )
         self.store.heartbeat("p115_oauth", status=oauth_state, error=auth.oauth_error,
                              configured=auth.has_oauth)
-        if self.pipeline.cfg["defaults"].get("storage", "p115") == "p115" and not auth.has_cookie:
+        if self.pipeline.cfg["defaults"]["storage"] == "p115" and not auth.has_cookie:
             self.pause_storage("未配置 115 cookie，转存与整理已暂停；请在管理台「设置 → 115 网盘」扫码登录")
         elif cookie_state == AuthState.EXPIRED:
             self.pause_storage(f"115 cookie 已失效（{auth.cookie_error or '需要重新登录'}），转存与整理已暂停；"
@@ -318,8 +317,7 @@ class Worker:
                     return
                 continue
             try:
-                async with self.sem:
-                    await self._handle(task_id, expected_state)
+                await self._handle(task_id, expected_state)
             finally:
                 self._seen_inflight.discard(task_id)
                 self._queue.task_done()

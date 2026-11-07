@@ -21,7 +21,7 @@ class TaskRepository:
 
     def _write_task(self, ctx: PipelineContext, *, error: str | None = None) -> None:
         """事务内写入；调用方负责提交，不能在这里提前 commit。"""
-        snap = _dump_ctx(ctx)
+        snapshot = json.dumps(_dump_ctx(ctx), ensure_ascii=False)
         parsed = ctx.parsed
         now = time.time()
         self._conn.execute(
@@ -42,7 +42,7 @@ class TaskRepository:
                 ctx.raw.source,
                 ctx.raw.msg_id,
                 parsed.title if parsed else None,
-                json.dumps(snap, ensure_ascii=False),
+                snapshot,
                 error,
                 0,
                 now,
@@ -56,7 +56,7 @@ class TaskRepository:
                 (delivery_key, task_id, kind, event, target, snapshot, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,?,?)""",
                 (f"{ctx.task_id}:{key}", ctx.task_id, delivery["kind"], delivery["event"],
-                 delivery["target"], json.dumps(snap, ensure_ascii=False), now, now),
+                 delivery["target"], snapshot, now, now),
             )
         # 尚未发送的准备阶段结束时，状态和释放占位一起提交，不能留下终态占位。
         if ctx.state in (TaskState.RECEIVED, TaskState.SKIPPED, TaskState.REJECTED, TaskState.FAILED) \
@@ -229,6 +229,14 @@ class TaskRepository:
                 (ctx.parsed.title if ctx.parsed else None, json.dumps(_dump_ctx(ctx), ensure_ascii=False),
                  ctx.task_id, ctx.state.value, updated_at))
             return cur.rowcount == 1
+
+    def prune_tasks(self, before: float) -> int:
+        """删除这之前结束的已忽略、已拒绝任务（runtime.task_retention_days）。去重记录在 dedup 表，不受影响。"""
+        with self._lock, self._conn:
+            return self._conn.execute(
+                "DELETE FROM tasks WHERE state IN (?,?) AND updated_at<? "
+                "AND task_id NOT IN (SELECT task_id FROM resource_claims)",
+                (TaskState.SKIPPED.value, TaskState.REJECTED.value, before)).rowcount
 
     @_locked
     def counts_by_state(self) -> dict[str, int]:
