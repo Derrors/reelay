@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.5.6] - 2026-11-14
+
 ### 新增
 
 - 支持把 115 分享放在 telegra.ph 页面里的频道：消息里没有链接时读取附带的页面。
@@ -452,7 +454,8 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
-[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.5...HEAD
+[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.6...HEAD
+[1.5.6]: https://github.com/Derrors/reelay/releases/tag/v1.5.6
 [1.5.5]: https://github.com/Derrors/reelay/releases/tag/v1.5.5
 [1.5.4]: https://github.com/Derrors/reelay/releases/tag/v1.5.4
 [1.5.3]: https://github.com/Derrors/reelay/releases/tag/v1.5.3
