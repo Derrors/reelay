@@ -62,6 +62,7 @@ Add Bots, channels, or groups under “Settings → Sources” (「设置 → �
 A card can contain multiple sources that share confirmation settings, identification rules, filters, save directories, and other options. Group sources with similar message formats; split a source into its own card when it needs different rules.
 
 - New sources start monitoring when added and do not automatically import earlier message history.
+- Some channels put the 115 share on an attached telegra.ph page instead of in the message. Reelay reads that page to get the link (plugin “telegra.ph 页面链接” (telegra.ph page links)). In mainland China, enable the proxy for Telegram under “Settings → Network proxy” (「设置 → 网络代理」). If a page cannot be read, the task trail says so and you can re-identify it later.
 - Catch-up after downtime or a disconnection is different: existing sources resume using their saved position, within catch-up limits. See the [configuration reference](configuration.md#telegram-telegram).
 - Source-setting changes affect newly received tasks. Existing tasks usually retain the settings from when they arrived. Explicitly choosing “Re-identify” (「重新识别」) uses the current settings.
 

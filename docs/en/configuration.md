@@ -162,7 +162,7 @@ If your network cannot reach Telegram, TMDB, the AI service, or GitHub, connect 
 | Field | Default | Description |
 | --- | --- | --- |
 | `proxy.url` | Empty | Proxy URL, such as `http://192.168.1.2:7890` or `socks5://127.0.0.1:1080`; empty disables the proxy. For authentication, use `http://用户名@地址:端口`, replacing the placeholders with username, address, and port. Store the password in the `proxy_password` secret, not in the URL. In Docker, `127.0.0.1` is the container itself; if the proxy runs on the host or another LAN device, use that device's LAN address |
-| `proxy.telegram` | `true` | Proxy the listener, control Bot, and terminal login (`python -m reelay.login`) |
+| `proxy.telegram` | `true` | Proxy the listener, control Bot, terminal login (`python -m reelay.login`), and telegra.ph page reads |
 | `proxy.tmdb` | `true` | Proxy TMDB |
 | `proxy.ai` | `true` | Proxy the AI service; can be disabled for a locally reachable provider or local model |
 | `proxy.github` | `true` | Proxy GitHub requests made when checking for new versions (plugin `update_check`) |
@@ -204,6 +204,7 @@ If the classification result—the first level of a two-level category, or the m
 | --- | --- | --- |
 | `plugins.share_probe.enabled` | `true` | Messages with only ed2k links do not access 115; infer seasons, episodes, sizes, and releases from the links' filenames and sizes. After identification, inspect 115 shares read-only: expired, canceled, or policy-violating shares are marked “分享无法访问” (Share inaccessible) in pending approvals with a suggestion to ignore. For series whose message omits episode numbers, list share contents to show actual seasons, episodes, and size, for example “S01–S03 · 30 集” (30 episodes), and flag issues likely to require manual intervention during transfer, such as unrecognizable season/episode filenames. Read one share at a time, at least 2 seconds apart, listing at most 20 directories per share; do not read during 115 protection cooldowns. If the message omits resolution, source, or size, the same query supplements them from root-directory videos using filenames or 115's detected resolution |
 | `plugins.tmdb_enrich.enabled` | `true` | Match TMDB after identification to fill in normalized metadata and posters. TMDB endpoint, language, and key are system-level settings |
+| `plugins.telegraph_links.enabled` | `true` | When a message has no 115 share or ed2k link but links a telegra.ph page, read the page (up to 3 per message) and take its links; uses the `proxy.telegram` setting |
 | `plugins.episode_tracker.track_all` | `true` | Automatically track series with recently added episodes; report only gaps and episodes aired according to TMDB but not yet in the library |
 | `plugins.episode_tracker.lookback_days` | `30` | Lookback window for automatic tracking |
 | `plugins.daily_report.narrative` | `true` | When AI is configured, prepend a short AI-written reminder based on the report's factual statistics; keep the numerical report too |

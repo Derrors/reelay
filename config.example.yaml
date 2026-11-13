@@ -136,6 +136,7 @@ system:
 # ---------------------------------------------------------------- 插件配置
 # plugins.<插件名>：enabled 开关（不写按插件默认）与该插件的设置；转存检查点仍绑定原 Provider 和文件 ID
 plugins:
+  telegraph_links: {enabled: true}     # 消息里没有链接时，读取附带的 telegra.ph 页面取出分享链接
   tmdb_enrich: {enabled: true}
   share_probe: {enabled: true}
   update_check: {enabled: true, notify: true}   # 检查新版本；notify：控制 Bot 每个版本提醒一次

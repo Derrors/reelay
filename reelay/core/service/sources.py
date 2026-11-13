@@ -39,7 +39,7 @@ class SourceMixin(ServiceBase):
 
     async def test_parse(self, text: str, urls: list[str] | None = None, source: str | None = None,
                          rule: dict | None = None) -> dict[str, Any]:
-        """与真实管线一致：合并默认规则 → 解析 → after_parse 扩展 → 确定性置信度 → 决策；不落库。
+        """与真实管线一致：合并默认规则 → before_parse 扩展 → 解析 → after_parse 扩展 → 确定性置信度 → 决策；不落库。
 
         rule 用于接入向导：按草案规则试跑，而不是按配置里的来源规则。
         """
@@ -50,6 +50,8 @@ class SourceMixin(ServiceBase):
         ctx = PipelineContext(raw=raw)
         ctx.source_rule = self.pipeline.rule_for(raw.source) if rule is None else rule
         ctx.ns("runtime").update(config=cfg)
+        if not await self.pipeline.run_hooks("before_parse", ctx):  # 如读取消息附带的 telegra.ph 页面
+            return {"parsed": None, "decision": "skip", "confidence": None, "trail": ctx.trail}
         parser = self.pipeline.reg.get_provider("parser", ctx.source_rule.get("parser", cfg["defaults"]["parser"]))
         with self.pipeline.scope(ctx):
             ctx.parsed = await parser.parse(ctx)

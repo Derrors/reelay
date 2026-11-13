@@ -16,7 +16,7 @@ import { SecretField } from './SecretField';
 import { normalizeUrl } from './shared';
 
 const SERVICES = [
-  { key: 'telegram', title: 'Telegram', description: '监听来源、控制 Bot 与终端里的登录（python -m reelay.login）。' },
+  { key: 'telegram', title: 'Telegram', description: '监听来源、控制 Bot、终端里的登录（python -m reelay.login）与读取 telegra.ph 页面。' },
   { key: 'tmdb', title: 'TMDB', description: '补全片名与海报，追剧订阅找剧与缺集追更。' },
   { key: 'ai', title: 'AI 服务', description: '用国内的 AI 服务或本地模型时可以关掉。' },
   { key: 'github', title: 'GitHub', description: '检查新版本（插件「版本更新检查」）。' },

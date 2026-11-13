@@ -37,7 +37,7 @@ You can configure Reelay in the web management console, and use the Telegram con
 - **Multiple sources**: supports Telegram Bots, channels, and groups accessible to your personal account. A single source card can contain several sources with shared settings.
 - **AI or rule-based identification**: extracts titles, years, seasons, episodes, resolutions, and more. Write field rules for each source, or ask AI to draft them from examples.
 - **TMDB enrichment**: matches titles, standardizes names, and adds genres, countries and regions, posters, and other details to reduce confusion between works with the same name.
-- **115 shares and ed2k links**: extracts links from message text and buttons. When both a 115 share and ed2k links are extracted, the share takes priority; there is no automatic fallback to ed2k if that share is unavailable.
+- **115 shares and ed2k links**: extracts links from message text and buttons, including links placed on a telegra.ph page attached to the message. When both a 115 share and ed2k links are extracted, the share takes priority; there is no automatic fallback to ed2k if that share is unavailable.
 - **Deterministic filters and natural-language preferences**: filter by keywords, media type, region, and resolution. When needed, AI can further restrict the result according to your collection preferences.
 - **Test before saving**: “Test identification” (「测试识别」) on a source card can test unsaved changes without creating a transfer task.
 

@@ -116,14 +116,15 @@ class FakeAI:
 
 
 class _Isolated:
-    """清空环境变量；AI 瞬时错误重试不真的等待；TMDB 条目详情默认返回空、检查更新视为连不上 GitHub（不联网）。"""
+    """清空环境变量；AI 瞬时错误重试不真的等待；读取 telegra.ph 页面默认离线；TMDB 条目详情默认返回空、检查更新视为连不上 GitHub（不联网）。"""
 
     def isolate(self) -> Path:
         env = patch.dict(os.environ, {}, clear=True)
         env.start()
         self.addCleanup(env.stop)
         for patcher in (patch("reelay.core.ai.RETRY_DELAY", 0), patch.object(tmdb, "details", return_value={}),
-                        patch("reelay.core.updates.fetch_latest", side_effect=OSError("offline"))):
+                        patch("reelay.core.updates.fetch_latest", side_effect=OSError("offline")),
+                        patch("reelay.plugins.telegraph_links._get_json", side_effect=OSError("offline"))):
             patcher.start()
             self.addCleanup(patcher.stop)
         temp = tempfile.TemporaryDirectory()

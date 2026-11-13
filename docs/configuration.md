@@ -162,7 +162,7 @@ AI 接口密钥与 TMDB key 是密钥，见 [密钥](#密钥)。改了立即生�
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `proxy.url` | 空 | 代理地址，如 `http://192.168.1.2:7890`、`socks5://127.0.0.1:1080`；留空不使用代理。需要认证时写成 `http://用户名@地址:端口`，密码是密钥 `proxy_password`，不写在地址里。Docker 部署时 `127.0.0.1` 指容器自己，代理在宿主机或局域网里的其他设备上时填它的局域网地址 |
-| `proxy.telegram` | `true` | 监听、控制 Bot 与终端登录（`python -m reelay.login`）走代理 |
+| `proxy.telegram` | `true` | 监听、控制 Bot、终端登录（`python -m reelay.login`）与读取 telegra.ph 页面走代理 |
 | `proxy.tmdb` | `true` | TMDB 走代理 |
 | `proxy.ai` | `true` | AI 服务走代理；用国内的 AI 服务或本地模型时可以关掉 |
 | `proxy.github` | `true` | 检查新版本（插件 `update_check`）时访问 GitHub 走代理 |
@@ -204,6 +204,7 @@ TMDB、AI 服务与 GitHub 保存后立即生效；Telegram 要重启主进程�
 | --- | --- | --- |
 | `plugins.share_probe.enabled` | `true` | 只有电驴链接的消息不访问 115，按链接里的文件名与大小得出季、集、大小与版本。识别后只读查询 115 分享：过期、取消或违规的分享在待审批标为「分享无法访问」并建议忽略；消息没写集数的剧集再列出分享内容，显示实际的季、集与大小（跨多季时如「S01–S03 · 30 集」），并提前标出文件名无法识别季集等转存时会转人工的情况。同一时间只读一个分享、两次至少间隔 2 秒，单个分享最多列 20 个目录，115 风控冷却期间不读；消息没写分辨率、片源、大小时，同一次查询顺带按根目录里的视频补（文件名，或 115 识别的清晰度） |
 | `plugins.tmdb_enrich.enabled` | `true` | 识别后匹配 TMDB 补全规范元数据与海报；TMDB 的地址、语言与 key 是系统配置 |
+| `plugins.telegraph_links.enabled` | `true` | 消息里没有 115 分享或电驴链接、但附了 telegra.ph 页面时，读取页面（每条最多 3 个）取出其中的链接；经 `proxy.telegram` 的代理设置访问 |
 | `plugins.episode_tracker.track_all` | `true` | 自动跟踪最近有新集入库的剧，只报告断档和 TMDB 已播未入库的新集 |
 | `plugins.episode_tracker.lookback_days` | `30` | 自动跟踪的时间窗口 |
 | `plugins.daily_report.narrative` | `true` | 配置了 AI 时，日报开头附一段 AI 按统计事实写的提醒，数字版保留 |

@@ -85,7 +85,7 @@ class MyListener: ...
 class MyHook:
     name = "my_hook"
     stage = "after_parse"   # before_parse / after_parse / before_save / after_save；写错时外部扩展报加载错误，不会静默失效
-    order = 70              # 同一阶段内从小到大执行；内置：organizer 选目录 10（before_save）与整理 20（after_save），tmdb_enrich 50，share_probe 60
+    order = 70              # 同一阶段内从小到大执行；内置：telegraph_links 50（before_parse），organizer 选目录 10（before_save）与整理 20（after_save），tmdb_enrich 50，share_probe 60
 
     async def run(self, ctx) -> bool:
         ...

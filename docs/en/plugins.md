@@ -85,7 +85,7 @@ Each message has one `PipelineContext` (`reelay/core/contracts.py`), reconstruct
 class MyHook:
     name = "my_hook"
     stage = "after_parse"   # before_parse / after_parse / before_save / after_save; a typo is reported as a load error for external extensions instead of silently never running
-    order = 70              # Ascending within a stage; built-ins: organizer destination 10 (before_save), organization 20 (after_save), tmdb_enrich 50, share_probe 60
+    order = 70              # Ascending within a stage; built-ins: telegraph_links 50 (before_parse), organizer destination 10 (before_save), organization 20 (after_save), tmdb_enrich 50, share_probe 60
 
     async def run(self, ctx) -> bool:
         ...
