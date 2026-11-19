@@ -498,15 +498,19 @@ class Organizer(_MediaLibrary):
         title, is_tv = _safe(p.title), p.media_type == "tv" or bool(p.episodes)
         ours = {int(item["src_id"]) for item in plan}  # 同一批的其他文件（如分段电影）不算冲突
 
-        for item in plan:
+        def apply(item: dict) -> None:
             source_id = int(item["src_id"])
             skipped = state.get(f"skipped:{source_id}")
             if skipped:
                 # 冲突时已决定删除本次的新文件：上次删除结果不明就再删一次并读回
                 parent = skipped.get("parent")
-                if parent is not None and any(x["id"] == source_id for x in drive.iterdir(int(parent))):
+                try:
+                    still_there = parent is not None and any(x["id"] == source_id for x in drive.iterdir(int(parent)))
+                except FileNotFoundError:
+                    still_there = False  # 原目录都已不在，文件也就不在那里了
+                if still_there:
                     self._remove(drive, source_id, parent, "本次转存的文件")
-                continue
+                return
             target_cid = ensure_dir(item["target_dir"])
             current = drive.get_attr(source_id)
             if item.get("size") is not None and current.get("size") != item["size"]:
@@ -536,7 +540,7 @@ class Organizer(_MediaLibrary):
                 self._record_conflict(ctx, item, action, int(existing["id"]))
                 if action == "skip":
                     ctx.log(f"删除了本次转存的「{item.get('src_name')}」，保留库里的「{existing.get('name')}」")
-                    continue
+                    return
                 if action == "replace":
                     ctx.log(f"覆盖保存：库里的「{existing.get('name')}」已删除，换成本次转存的文件")
             # 根据真实文件 ID 的当前位置续跑；已改名或已移动的步骤无需重做。
@@ -549,3 +553,14 @@ class Organizer(_MediaLibrary):
             final = drive.get_attr(source_id)
             if final["parent_id"] != target_cid or final["name"] != target_name:
                 raise RuntimeError("整理读回核验不通过，保留计划供后续重试")
+
+        for item in plan:
+            try:
+                apply(item)
+            except FileNotFoundError as exc:
+                # 目标目录在整理途中被移走了（如媒体服务器刚整理过「待整理」目录）：重新找或建目录，再试一次。
+                # 每一步都按文件的当前位置续跑，重做是安全的。
+                log.info("整理时目录已不在（%s），重新建目录后再试一次", exc)
+                ctx.log(f"整理时目录已不在（{exc}），重新建目录后再试一次")
+                dir_cache.clear()
+                apply(item)

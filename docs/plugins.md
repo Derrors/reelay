@@ -144,7 +144,7 @@ class MyListener:
 | `reconcile_partial(ctx)` | 只读核验，按已经到了的文件出回执（人工选「按已到的继续」） |
 | `ready() -> bool` | 凭证是否就绪；没有时视为就绪 |
 | `dir_path(cid)` | 目录在网盘里的路径，管理台与审批卡片据此显示真实去向 |
-| `library()` | 整理用的网盘接口：`iterdir` / `get_attr` / `mkdir` / `rename` / `move` / `delete`，ID 为 int |
+| `library()` | 整理用的网盘接口：`iterdir` / `get_attr` / `mkdir` / `rename` / `move` / `delete`，ID 为 int；`iterdir` 遇到目录已不存在时抛 `FileNotFoundError` |
 | `inspect_share(parsed, describe=...)` | 只读查询分享是否可用、有哪些季集（分享检查插件用） |
 | `browse(cid, offset, limit)` | 列出子目录（管理台选目录用） |
 

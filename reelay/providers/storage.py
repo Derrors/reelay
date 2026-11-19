@@ -462,16 +462,89 @@ def drive_entry(item: dict) -> dict[str, Any]:
             'sha1': item.get('sha1') or None, 'parent_id': int(item.get('parent_id') or 0)}
 
 
+# 列目录（webapi /files）：单页上限、单次请求超时、超时最多试几次。
+DIR_PAGE_SIZE = 1150
+DIR_TIMEOUT = 30
+DIR_ATTEMPTS = 3
+
+
+class DirectoryMissing(FileNotFoundError):
+    """要列的 115 目录已不存在（被移走、删除，或这个 ID 不是目录）。"""
+
+
+def _int_or_none(value: Any) -> int | None:
+    if type(value) is int:
+        return value
+    return int(value) if isinstance(value, str) and value.isdecimal() else None
+
+
+def _dir_item(raw: dict, cid: int) -> dict[str, Any]:
+    """webapi 目录项 → 统一结构。文件有 fid（cid 是所在目录）；目录没有 fid，cid 是它自己、pid 是所在目录。"""
+    name = str(raw.get('n') or '')
+    if raw.get('fid'):
+        return {'id': int(raw['fid']), 'parent_id': int(raw.get('cid') or cid), 'name': name, 'is_dir': False,
+                'size': _int_or_none(raw.get('s')), 'sha1': raw.get('sha') or None}
+    return {'id': int(raw['cid']), 'parent_id': int(raw.get('pid') or cid), 'name': name, 'is_dir': True,
+            'size': None, 'sha1': None}
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    return any('Timeout' in kind.__name__ for kind in type(exc).__mro__)
+
+
+def list_dir(client, cid: int) -> list[dict[str, Any]]:
+    """逐页只读列出 115 目录，返回 id / name / is_dir / size / sha1 / parent_id（ID 为 int），按 ID 去重。
+
+    不用 SDK 的 ``P115FileSystem.iterdir``，它有三个问题：
+    - 目录不存在时，SDK 把这个错误当成可以重试的，于是一直重试、永不返回；
+    - 它会多线程预取后面的页。请求超过末尾时，115 会退回第一页，于是同一个文件被算两次；
+    - 风控冷却抛出的 StorageBusy 也被 SDK 当成可以重试的。
+    115 对不存在的目录不报错，而是返回根目录的列表，所以这里要核对返回的 cid。
+    超时最多重试 DIR_ATTEMPTS 次，其余错误（包括 StorageBusy）直接抛出。
+    """
+    from p115client import check_response
+    cid = int(cid)
+    entries: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    offset = 0
+    while True:
+        payload = {'cid': cid, 'offset': offset, 'limit': DIR_PAGE_SIZE, 'show_dir': 1, 'asc': 1,
+                   'o': 'user_ptime', 'fc_mix': 1, 'cur': 1, 'record_open_time': 0}
+        for attempt in range(1, DIR_ATTEMPTS + 1):
+            try:
+                resp = check_response(client.fs_files(payload, timeout=DIR_TIMEOUT))
+                break
+            except Exception as exc:
+                if attempt == DIR_ATTEMPTS or not _is_timeout(exc):
+                    raise
+        if _int_or_none(resp.get('cid')) != cid:
+            raise DirectoryMissing(f'115 目录 {cid} 不存在（可能已被移走或删除）')
+        if _int_or_none(resp.get('offset')) != offset:
+            break  # 已超过末尾：115 退回了第一页
+        data = [x for x in resp.get('data') or [] if isinstance(x, dict)]
+        for raw in data:
+            entry = _dir_item(raw, cid)
+            if entry['id'] not in seen:
+                seen.add(entry['id'])
+                entries.append(entry)
+        offset += len(data)
+        if not data or offset >= (_int_or_none(resp.get('count')) or 0):
+            break
+    return entries
+
+
 class P115Drive:
     """整理用的 115 网盘接口：读走 cookie 客户端，写走凭证中心的混合鉴权。所有 ID 都是 int。"""
 
     def __init__(self, client, auth) -> None:
         from p115client import P115FileSystem
+        self._client = client
         self._fs = P115FileSystem(client)
         self._auth = auth
 
     def iterdir(self, cid: int) -> list[dict]:
-        return [drive_entry(x) for x in self._fs.iterdir(int(cid))]
+        """目录不存在时抛 DirectoryMissing。"""
+        return list_dir(self._client, cid)
 
     def get_attr(self, fid: int) -> dict:
         return drive_entry(self._fs.get_attr(int(fid), refresh=True))
@@ -567,9 +640,12 @@ class P115Storage(ShareStorage):
         await run_blocking(self._discard_sync, stage)
 
     def _discard_sync(self, stage: int) -> None:
-        from p115client import P115FileSystem
-        if not list(P115FileSystem(self._cookie_client()).iterdir(stage)):
-            self._auth.delete([stage])
+        try:
+            if list_dir(self._cookie_client(), stage):
+                return
+        except DirectoryMissing:
+            return  # 已经不在了
+        self._auth.delete([stage])
 
     async def reconcile_partial(self, ctx: PipelineContext) -> dict[str, Any]:
         """人工选了「按已到的文件继续」：只读核验，暂存目录里的文件都与清单对得上就按这些文件出回执，
@@ -579,8 +655,7 @@ class P115Storage(ShareStorage):
         return await run_blocking(self._reconcile_partial_sync, manifest)
 
     def _reconcile_partial_sync(self, manifest: dict) -> dict[str, Any]:
-        from p115client import P115FileSystem
-        actual = [_file_record(x) for x in P115FileSystem(self._cookie_client()).iterdir(manifest['staging_cid'])]
+        actual = [_file_record(x) for x in list_dir(self._cookie_client(), manifest['staging_cid'])]
         if len(actual) == len(manifest['files']):
             return {**self._receipt(manifest, _verified_files(manifest['files'], actual)), 'missing': []}
         progress = _landing_progress(manifest['files'], actual)
@@ -603,12 +678,11 @@ class P115Storage(ShareStorage):
         _cloud_drop(client, sorted(_cloud_tasks(client, {f['id'] for f in manifest['files']})))
 
     def _abandon_sync(self, stage: int, parent: int) -> None:
-        from p115client import P115FileSystem
-        fs = P115FileSystem(self._cookie_client())
-        if not any(int(x['id']) == stage for x in fs.iterdir(parent)):
+        client = self._cookie_client()
+        if not any(x['id'] == stage for x in list_dir(client, parent)):
             return  # 上次已删除
         self._auth.delete([stage])
-        if any(int(x['id']) == stage for x in fs.iterdir(parent)):
+        if any(x['id'] == stage for x in list_dir(client, parent)):
             raise RuntimeError('删除暂存目录后读回仍在，请稍后再试')
 
     async def save(self, ctx: PipelineContext) -> dict[str, Any]:
@@ -621,12 +695,11 @@ class P115Storage(ShareStorage):
 
     def _verify_sync(self, ctx: PipelineContext) -> dict[str, Any]:
         """只读核验。暂存目录为空且分享已不可用时，转存确定没有发生、以后也不会发生，按失败处理。"""
-        from p115client import P115FileSystem
         manifest, p = ctx.ns('storage')['manifest'], ctx.parsed
         if not p.share_code:
             return self._cloud_verify_sync(manifest)
         client = self._cookie_client()
-        if not list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
+        if not list_dir(client, manifest['staging_cid']):
             problem = share_problem(client, p.share_code, p.receive_code)
             if problem:
                 raise TransferRejected(problem, permanent=True)
@@ -642,16 +715,14 @@ class P115Storage(ShareStorage):
         return self._collect_share_videos(P115ShareFileSystem(client, p.share_code, p.receive_code))
 
     def _stage_sync(self, ctx: PipelineContext, selection: dict) -> dict[str, Any]:
-        from p115client import P115FileSystem
         files = selection['files']
         if len({x['name'] for x in files}) != len(files):
             raise NeedsManual('分享内视频文件重名，需人工选择后再转存')
-        fs = P115FileSystem(self._cookie_client())
         parent = int(ctx.save_dir_cid)
         name = f'.reelay-{ctx.task_id}'
-        matches = [x for x in fs.iterdir(parent) if x.get('name') == name]
+        matches = [x for x in list_dir(self._cookie_client(), parent) if x['name'] == name]
         if matches:
-            if len(matches) != 1 or not (matches[0].get('is_dir') or matches[0].get('is_directory')):
+            if len(matches) != 1 or not matches[0]['is_dir']:
                 raise RuntimeError('暂存目录名称冲突，需人工处理')
             stage = matches[0]
         else:
@@ -659,14 +730,14 @@ class P115Storage(ShareStorage):
         return {'to_cid': parent, 'staging_cid': int(stage['id']), **selection}
 
     def _receive_sync(self, ctx: PipelineContext) -> dict[str, Any]:
-        from p115client import P115FileSystem, P115ShareFileSystem
+        from p115client import P115ShareFileSystem
         client = self._cookie_client()
         manifest = ctx.ns('storage')['manifest']
         p = ctx.parsed
         if not p.share_code:
             return self._cloud_receive_sync(client, manifest)
         # 独占目录非空时只能核验，绝不追加一份转存。
-        if list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
+        if list_dir(client, manifest['staging_cid']):
             return self._reconcile_sync(manifest)
         share_fs = P115ShareFileSystem(client, p.share_code, p.receive_code)
         # SDK check_response 检查业务状态；异常结果交给 reconcile，不能自动重发。
@@ -678,7 +749,7 @@ class P115Storage(ShareStorage):
         except Exception as exc:
             reason = business_error(exc)
             # 115 明确拒绝且暂存目录仍为空：确定没有转存。其余情况（超时、已有文件落地）交给 reconcile 只读核验。
-            if reason is None or list(P115FileSystem(client).iterdir(manifest['staging_cid'])):
+            if reason is None or list_dir(client, manifest['staging_cid']):
                 raise
             problem = share_problem(client, p.share_code, p.receive_code)
             raise TransferRejected(problem or reason, permanent=bool(problem)) from None
@@ -699,9 +770,8 @@ class P115Storage(ShareStorage):
     def _cloud_receive_sync(self, client, manifest: dict) -> dict[str, Any]:
         """把电驴链接交给 115 云下载，下到独占暂存目录。115 已有这个文件时几秒内就到；
         没到时结果不明，交给 reconcile 只读核验（之后后台按云下载的进度复查）。"""
-        from p115client import P115FileSystem
         stage = manifest['staging_cid']
-        if list(P115FileSystem(client).iterdir(stage)):
+        if list_dir(client, stage):
             return self._cloud_verify_sync(manifest)  # 独占目录非空：已经发过，只核验
         files = manifest['files']
         resp = self._cloud_add(client, files, stage)
@@ -747,9 +817,8 @@ class P115Storage(ShareStorage):
         """只读核验电驴链接的转存：暂存目录里的文件与清单（文件名、大小）都对得上就通过；没到齐时看云下载任务——
         下载失败且一个都没到时抛 TransferRejected（permanent），任务不见了且一个都没到时可以重新发送，
         还在下载时抛 TransferUncertain 并写明进度。核验通过后删掉云下载里的任务记录（不删文件）。"""
-        from p115client import P115FileSystem
         client = self._cookie_client()
-        actual = [_file_record(x) for x in P115FileSystem(client).iterdir(manifest['staging_cid'])]
+        actual = [_file_record(x) for x in list_dir(client, manifest['staging_cid'])]
         expected = manifest['files']
         try:
             landed = _verified_files(expected, actual)
@@ -802,9 +871,7 @@ class P115Storage(ShareStorage):
         return self._receipt(manifest, landed, via='cloud_download')
 
     def _reconcile_sync(self, manifest: dict) -> dict[str, Any]:
-        from p115client import P115FileSystem
-        client = self._cookie_client()
-        actual = [_file_record(x) for x in P115FileSystem(client).iterdir(manifest['staging_cid'])]
+        actual = [_file_record(x) for x in list_dir(self._cookie_client(), manifest['staging_cid'])]
         landed = _verified_files(manifest['files'], actual)
         return self._receipt(manifest, landed)
 

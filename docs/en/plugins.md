@@ -144,7 +144,7 @@ Optional storage Provider methods, defined by `StorageProvider` in `reelay/core/
 | `reconcile_partial(ctx)` | Read-only verification that issues a receipt for files already received, after a user selects “按已到的继续” (Continue with received files) |
 | `ready() -> bool` | Whether credentials are ready; treated as ready if this method is absent |
 | `dir_path(cid)` | Directory path in the cloud drive, used by the console and approval cards to display the real destination |
-| `library()` | Cloud-drive interface for organization: `iterdir` / `get_attr` / `mkdir` / `rename` / `move` / `delete`, with integer IDs |
+| `library()` | Cloud-drive interface for organization: `iterdir` / `get_attr` / `mkdir` / `rename` / `move` / `delete`, with integer IDs; `iterdir` raises `FileNotFoundError` when the directory no longer exists |
 | `inspect_share(parsed, describe=...)` | Read-only queries for share availability and its seasons/episodes, used by the share-probe plugin |
 | `browse(cid, offset, limit)` | List subdirectories for the console's directory picker |
 

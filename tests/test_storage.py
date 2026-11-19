@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 from reelay.core import works
 from reelay.core.auth115 import CredentialStore
 from reelay.core.config import normalize_config
-from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, TaskState
+from reelay.core.contracts import ParsedResource, PipelineContext, RawMessage, StorageBusy, TaskState
 from reelay.core.pipeline import Pipeline
 from reelay.core.registry import Registry, discover
 from reelay.core.service import ConflictError, ManagementService
@@ -24,7 +24,8 @@ from reelay.core.store import Store
 from reelay.core.worker import Worker
 from reelay.plugins.organizer import Organizer
 from reelay.providers import dryrun
-from reelay.providers.storage import P115Storage, StorageBrowseError, _select_video_items, browse_dirs
+from reelay.providers.storage import (DirectoryMissing, P115Storage, StorageBrowseError, _select_video_items,
+                                     browse_dirs, list_dir)
 
 
 class Cloud:
@@ -48,6 +49,7 @@ class Cloud:
         self.fail_delete = None  # 'before'：请求失败未生效；'after'：已删除但响应中断；'ignore'：返回成功却没删
         self.cloud_tasks = {}  # 云下载任务：哈希 -> 任务（与 115 返回的字段一致）
         self.cloud_mode = {}   # 哈希 -> 'instant'（115 已有，马上到）/'slow'（下载中）/'fail'（下载失败）
+        self.before_listing = None  # 列目录前的回调 (cid, offset)，模拟列目录期间网盘被别的程序改动
 
     @staticmethod
     def directory(fid, pid, name):
@@ -95,9 +97,7 @@ class Cloud:
             def __init__(self, client):
                 assert client is cloud
 
-            def iterdir(self, id_or_path, /):
-                cloud.land(id_or_path)
-                return iter(cloud.children(id_or_path))
+            # 没有 iterdir：Reelay 自己逐页列目录（storage.list_dir），SDK 的 iterdir 会无限重试、多线程预取时重复计数
 
             # 与已核对的 p115client SDK 一致：第一个参数是必需的位置参数。
             def mkdir(self, id_or_path, /, name, pid=None):
@@ -169,9 +169,37 @@ class Cloud:
                         raise OSError(5, {'state': False, 'error': error, 'errno': 4100018})
                     return {'state': True}
 
+        def check_response(resp):  # 与 p115client 一致：业务失败抛 P115OSError(errno, 响应)
+            if isinstance(resp, dict) and resp.get('state') is False:
+                raise OSError(5, resp)
+            return resp
+
         module.P115FileSystem = FS
         module.P115ShareFileSystem = ShareFS
+        module.check_response = check_response
         return module
+
+    def fs_files(self, payload, **kwargs):
+        """与 115 webapi /files 的返回一致，包括两个坑：目录不存在（或这个 ID 不是目录）时不报错，
+        而是返回根目录的列表（cid 为 0）；offset 超过末尾时退回第一页（offset 为 0）。"""
+        cid, offset, limit = payload['cid'], payload['offset'], payload['limit']
+        if not isinstance(cid, int):
+            raise AssertionError('目录 ID 必须传 int')
+        if self.before_listing:
+            self.before_listing(cid, offset)
+        with self.lock:
+            if cid and not (cid in self.items and self.items[cid].get('is_dir')):
+                cid = 0
+        if offset == 0 and cid:
+            self.land(cid)
+        children = self.children(cid)
+        if offset >= len(children):
+            offset = 0
+        data = [{'cid': str(x['id']), 'pid': str(cid), 'n': x['name']} if x.get('is_dir') else
+                {'fid': str(x['id']), 'cid': str(cid), 'n': x['name'], 's': x.get('size'), 'sha': x.get('sha1') or ''}
+                for x in children[offset:offset + limit]]
+        return {'state': True, 'cid': str(cid) if cid else 0, 'count': len(children), 'offset': offset,
+                'limit': limit, 'data': data}
 
     # 与凭证中心 cookie 写路径使用的 webapi 方法签名一致。
     def fs_mkdir(self, payload):
@@ -1025,6 +1053,27 @@ class TestTransferRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([x for x in self.cloud.calls if x[0] == 'rename']), 1)
         self.assertEqual(len([x for x in self.cloud.calls if x[0] == 'move']), 1)
 
+    async def test_target_folder_moved_away_during_organizing_is_recreated(self):
+        """媒体服务器在整理途中把目标目录整个移走：重新建目录再整理一次，不卡住、也不转人工。"""
+        self.cloud.add_share('share', 'S01E01.mkv')
+        moved = []
+
+        def media_server_moves_folder(cid, offset):
+            item = self.cloud.items.get(cid)
+            if not moved and item and item.get('is_dir') and item['name'].startswith('Season'):
+                show = item['parent_id']
+                moved.extend([self.cloud.items.pop(cid)['id'], self.cloud.items.pop(show)['id']])
+
+        self.cloud.before_listing = media_server_moves_folder
+        done = await self.execute(self.task())
+        self.assertEqual(done.state, TaskState.DONE)
+        self.assertTrue(moved)
+        fid = int(done.ns('storage')['landed'][0]['id'])
+        season = self.cloud.items[self.cloud.items[fid]['parent_id']]
+        self.assertNotIn(season['id'], moved)  # 在新建的目录里
+        self.assertEqual(self.cloud.items[season['parent_id']]['parent_id'], 1)
+        self.assertTrue(any('重新建目录' in line for line in done.trail))
+
     async def test_name_conflict_keeps_both_files_and_requires_manual(self):
         self.cloud.add_share('share', 'S01E01.mkv')
         folder = self.cloud.add(Cloud.directory(0, 1, '剧集 (2026)'), 1)
@@ -1565,6 +1614,86 @@ class TestStorageEpisodeSelection(unittest.TestCase):
             _select_video_items(self.MULTI, ParsedResource(media_type="tv", episodes=[1]), scope="message")
         with self.assertRaisesRegex(AlreadyStored, "2 季共 4 集"):
             _select_video_items(self.MULTI, ParsedResource(media_type="tv"), stored=[[1, 1], [1, 2], [2, 1], [2, 2]])
+
+
+class TestListDir(unittest.TestCase):
+    """Reelay 自己逐页列 115 目录：目录不在时报错而不是无限重试，翻页不重复计数，超时有限重试。"""
+
+    def setUp(self):
+        self.cloud = Cloud()
+        sdk = patch.dict('sys.modules', {'p115client': self.cloud.sdk()})
+        sdk.start()
+        self.addCleanup(sdk.stop)
+        self.listings = []
+        self.cloud.before_listing = lambda cid, offset: self.listings.append((cid, offset))
+
+    def files(self, count, parent=1):
+        return [self.cloud.add({'name': f'S01E0{i}.mkv', 'is_dir': False, 'size': i, 'sha1': f'{i:040X}'}, parent)
+                for i in range(1, count + 1)]
+
+    def test_lists_files_and_folders_with_int_ids(self):
+        folder = self.cloud.add(Cloud.directory(0, 1, 'Season 1'), 1)
+        [video] = self.files(1)
+        self.assertEqual(list_dir(self.cloud, 1), [
+            {'id': folder['id'], 'parent_id': 1, 'name': 'Season 1', 'is_dir': True, 'size': None, 'sha1': None},
+            {'id': video['id'], 'parent_id': 1, 'name': 'S01E01.mkv', 'is_dir': False, 'size': 1,
+             'sha1': f'{1:040X}'}])
+
+    def test_missing_directory_raises_at_once_instead_of_listing_the_root(self):
+        self.cloud.items.pop(2)  # 115 对不存在的目录返回根目录的列表
+        with self.assertRaises(DirectoryMissing):
+            list_dir(self.cloud, 2)
+        [video] = self.files(1)
+        with self.assertRaises(DirectoryMissing):  # 文件 ID 不是目录，115 同样返回根目录
+            list_dir(self.cloud, video['id'])
+        self.assertEqual(len(self.listings), 2)
+
+    def test_pages_are_read_in_order_without_counting_a_file_twice(self):
+        made = self.files(5)
+        with patch('reelay.providers.storage.DIR_PAGE_SIZE', 2):
+            self.assertEqual([x['id'] for x in list_dir(self.cloud, 1)], [x['id'] for x in made])
+            self.assertEqual(self.listings, [(1, 0), (1, 2), (1, 4)])
+            self.listings.clear()
+            made.extend(self.files(1))  # 正好整页：读完就停，不请求超过末尾的页
+            self.assertEqual(len(list_dir(self.cloud, 1)), 6)
+            self.assertEqual(self.listings, [(1, 0), (1, 2), (1, 4)])
+
+    def test_page_past_the_end_is_not_read_as_more_files(self):
+        """列表期间文件变少，下一页超过末尾时 115 退回第一页：停止，不把第一页再算一遍。"""
+        first, second = self.files(2)
+
+        def file_moved_away(cid, offset):
+            if offset == 1:
+                self.cloud.items.pop(second['id'])
+
+        self.cloud.before_listing = file_moved_away
+        with patch('reelay.providers.storage.DIR_PAGE_SIZE', 1):
+            self.assertEqual([x['id'] for x in list_dir(self.cloud, 1)], [first['id']])
+
+    def test_timeouts_are_retried_a_few_times_and_other_errors_not_at_all(self):
+        client = Mock()
+        client.fs_files.side_effect = TimeoutError('read timed out')
+        with self.assertRaises(TimeoutError):
+            list_dir(client, 1)
+        self.assertEqual(client.fs_files.call_count, 3)
+        client.fs_files.reset_mock()
+        client.fs_files.side_effect = [TimeoutError('read timed out'),
+                                       {'state': True, 'cid': '1', 'count': 0, 'offset': 0, 'data': []}]
+        self.assertEqual(list_dir(client, 1), [])
+        for error in (StorageBusy('115 触发风控，冷却中', time.time() + 60),
+                      OSError(5, {'state': False, 'error': '请重新登录'})):
+            client.fs_files.reset_mock()
+            client.fs_files.side_effect = error
+            with self.assertRaises(type(error)):
+                list_dir(client, 1)
+            self.assertEqual(client.fs_files.call_count, 1)
+
+    def test_discarding_a_staging_folder_that_is_already_gone_is_a_no_op(self):
+        storage = P115Storage()
+        storage._auth = CloudCredentials(self.cloud, None)
+        self.cloud.items.pop(2)
+        storage._discard_sync(2)
+        self.assertEqual(self.cloud.calls, [])
 
 
 class TestDirectoryReads(unittest.TestCase):
