@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.5.7] - 2026-11-19
+
 ### 修复
 
 - 整理途中目标目录被其他程序（如 MoviePilot）移走时，Worker 不再卡住，会重建目录后继续整理。
@@ -459,7 +461,8 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
-[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.6...HEAD
+[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.7...HEAD
+[1.5.7]: https://github.com/Derrors/reelay/releases/tag/v1.5.7
 [1.5.6]: https://github.com/Derrors/reelay/releases/tag/v1.5.6
 [1.5.5]: https://github.com/Derrors/reelay/releases/tag/v1.5.5
 [1.5.4]: https://github.com/Derrors/reelay/releases/tag/v1.5.4
