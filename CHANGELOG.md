@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-11-21
+
 ### 新增
 
 - 新增「任务间隔」设置：拉开一批任务连续入库的间隔，减少 115 请求扎堆。
@@ -465,7 +467,8 @@
 
 未公开发布的初版：Telegram userbot 监听、LLM 解析、三种审批模式、115 转存与读回核验、媒体库整理、Web 管理台、控制 Bot 与 Docker 部署。
 
-[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.7...HEAD
+[Unreleased]: https://github.com/Derrors/reelay/compare/v1.5.8...HEAD
+[1.5.8]: https://github.com/Derrors/reelay/releases/tag/v1.5.8
 [1.5.7]: https://github.com/Derrors/reelay/releases/tag/v1.5.7
 [1.5.6]: https://github.com/Derrors/reelay/releases/tag/v1.5.6
 [1.5.5]: https://github.com/Derrors/reelay/releases/tag/v1.5.5
