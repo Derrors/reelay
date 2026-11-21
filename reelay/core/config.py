@@ -58,8 +58,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "telegram": {"owner_id": "", "backfill_limit": 200, "backfill_max_days": 7, "alert_after_sec": 120},
     # 主进程：并发转存数（重启生效）、日志级别、已忽略与已拒绝任务保留多少天（0 表示一直保留）
     "runtime": {"concurrency": 3, "log_level": "INFO", "task_retention_days": 0},
-    # 115 请求治理：各类接口的每秒请求数，触发风控后全部接口冷却的秒数
-    "p115": {"open_qps": 3, "cookie_qps": 2, "share_qps": 1, "risk_cooldown_sec": 3600},
+    # 115 请求治理：各类接口的每秒请求数，触发风控后全部接口冷却的秒数，
+    # 相邻两个任务开始转存/整理至少间隔的秒数（0 不限制）
+    "p115": {"open_qps": 3, "cookie_qps": 2, "share_qps": 1, "risk_cooldown_sec": 3600, "task_interval_sec": 0},
     # 网络代理：Telegram、TMDB、AI 服务、GitHub（检查更新）各自是否走代理（115 始终直连）；代理密码在 secrets.json
     "proxy": {"url": "", "telegram": True, "tmdb": True, "ai": True, "github": True},
     "plugins": {},
@@ -331,6 +332,7 @@ def _validate_services(cfg: dict) -> None:
     for key in ("open_qps", "cookie_qps", "share_qps"):
         _number(cfg["p115"], key, "p115", 0.1, 20)
     _number(cfg["p115"], "risk_cooldown_sec", "p115", 60, 86400, integer=True)
+    _number(cfg["p115"], "task_interval_sec", "p115", 0, 3600)
     from .proxy import validate as validate_proxy
     validate_proxy(cfg["proxy"])
 

@@ -117,6 +117,7 @@ system:
     cookie_qps: 2
     share_qps: 1
     risk_cooldown_sec: 3600
+    task_interval_sec: 0        # 相邻两个任务开始转存/整理至少隔几秒，拉开批量入库；0 不限制
 
   # 网络代理：国内网络连不上 Telegram、TMDB、AI 服务或 GitHub 时使用；115 始终直连
   proxy:

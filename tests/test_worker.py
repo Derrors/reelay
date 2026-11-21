@@ -1,11 +1,13 @@
 """Worker：失败退避、115 鉴权失效与风控时暂停。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 import time
 from unittest.mock import patch
 
+from reelay.core.config import normalize_config
 from reelay.core.contracts import ParsedResource, StorageBusy, TaskState
 from reelay.core.registry import Registry
 from reelay.core.worker import COOLDOWN_ALERT, Worker
@@ -146,6 +148,85 @@ class TestStorageBusy(PipelineCase):
         recovered = [json.loads(r[0])["text"] for r in self.store._conn.execute(
             "SELECT snapshot FROM outbox WHERE event='recovered'")]
         self.assertEqual(recovered, ["✅ 115 风控冷却结束，转存与整理继续执行"])
+
+
+class TestTaskInterval(PipelineCase):
+    """p115.task_interval_sec：相邻两个任务开始转存/整理至少隔几秒，所有并发共用。"""
+
+    def queued(self, n=1):
+        tasks = []
+        for i in range(n):
+            ctx = message(msg_id=f"m{i}")
+            ctx.parsed = ParsedResource(is_media=True, title=f"片{i}", media_type="movie", share_code=f"s{i}")
+            ctx.state = TaskState.QUEUED
+            self.store.save_task(ctx)
+            tasks.append(ctx)
+        return tasks
+
+    def worker(self, interval, concurrency=3):
+        worker = Worker(self.pipeline(), self.store, concurrency=concurrency)
+        worker.pipeline.cfg["p115"]["task_interval_sec"] = interval
+        self.started = []
+
+        async def execute_save(ctx):
+            self.started.append((ctx.task_id, time.monotonic()))
+            await asyncio.sleep(0.01)
+            ctx.state = TaskState.DONE
+            self.store.save_task(ctx)
+
+        worker.pipeline.execute_save = execute_save
+        return worker
+
+    async def test_default_keeps_tasks_back_to_back(self):
+        worker = self.worker(0)
+        first, second = self.queued(2)
+        self.assertEqual(normalize_config({})["p115"]["task_interval_sec"], 0)
+        await worker._handle(first.task_id, TaskState.QUEUED)
+        await worker._handle(second.task_id, TaskState.QUEUED)
+        self.assertEqual(len(self.started), 2)
+
+    async def test_second_task_waits_without_changing_state_and_config_applies_at_once(self):
+        worker = self.worker(60)
+        first, second = self.queued(2)
+        await worker._handle(first.task_id, TaskState.QUEUED)
+        await worker._handle(second.task_id, TaskState.QUEUED)
+        self.assertEqual([t for t, _ in self.started], [first.task_id])
+        row = self.store.get_task_record(second.task_id)
+        self.assertEqual((row["state"], row["retries"]), ("queued", 0))  # 没开始，不算失败
+        self.assertGreater(worker.spacing_wait(), 50)
+        worker.pipeline.cfg["p115"]["task_interval_sec"] = 0  # 改小立即生效
+        await worker._handle(second.task_id, TaskState.QUEUED)
+        self.assertEqual(len(self.started), 2)
+
+    async def test_poll_holds_storage_tasks_but_not_parsing(self):
+        worker = self.worker(60)
+        first, second = self.queued(2)
+        received = message(msg_id="new")
+        self.store.save_task(received)
+        await worker._handle(first.task_id, TaskState.QUEUED)
+        poll = asyncio.create_task(worker._poll(drain=False))
+        await asyncio.sleep(0.05)
+        worker.stop()
+        await poll
+        queued = []
+        while not worker._queue.empty():
+            queued.append(worker._queue.get_nowait())
+        self.assertEqual(queued, [(received.task_id, TaskState.RECEIVED)])  # 转存等间隔，解析照常入队
+
+    async def test_interval_is_shared_across_consumers(self):
+        worker = self.worker(0.3, concurrency=3)
+        self.queued(3)
+        await asyncio.wait_for(worker.run(drain=True), timeout=5)
+        self.assertEqual(len(self.started), 3)  # 排空模式等间隔走完，不提前退出
+        times = [t for _, t in self.started]
+        gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+        self.assertTrue(all(gap >= 0.29 for gap in gaps), gaps)
+
+    def test_interval_validation(self):
+        self.assertEqual(normalize_config({"p115": {"task_interval_sec": 8}})["p115"]["task_interval_sec"], 8)
+        for bad in (-1, 3601, "5", True):
+            with self.assertRaises(ValueError):
+                normalize_config({"p115": {"task_interval_sec": bad}})
 
 
 if __name__ == "__main__":

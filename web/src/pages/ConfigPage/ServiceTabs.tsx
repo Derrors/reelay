@@ -266,8 +266,8 @@ export function TelegramTab({ config, setField, secrets, onSecrets }: { config: 
 export function P115LimitsPanel({ config, setField }: { config: Obj; setField: SetField }) {
   const p115 = obj(config.p115);
   return (
-    <Panel icon={Gauge} title="请求限速" description="各类接口每秒最多发几次请求；触发 115 风控（访问上限、操作频繁）后所有接口暂停一段时间。保存后立即生效。" bodyClassName="p-4 sm:p-5">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <Panel icon={Gauge} title="请求限速" description="各类接口每秒最多发几次请求，任务之间至少隔几秒；触发 115 风控（访问上限、操作频繁）后所有接口暂停一段时间。保存后立即生效。" bodyClassName="p-4 sm:p-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <NumberField label="开放平台接口" unit="次/秒" min={0.1} max={20} step={0.5} value={p115.open_qps}
           onChange={v => setField('p115', 'open_qps', v)} />
         <NumberField label="网页接口" unit="次/秒" min={0.1} max={20} step={0.5} value={p115.cookie_qps}
@@ -276,6 +276,9 @@ export function P115LimitsPanel({ config, setField }: { config: Obj; setField: S
           onChange={v => setField('p115', 'share_qps', v)} />
         <NumberField label="风控后暂停" unit="秒" min={60} max={86400} value={p115.risk_cooldown_sec}
           onChange={v => setField('p115', 'risk_cooldown_sec', v)} />
+        <NumberField label="任务间隔" unit="秒" min={0} max={3600} value={p115.task_interval_sec}
+          hint="相邻两个任务开始转存至少隔几秒，避免一批任务连续入库时请求扎堆；0 不限制。"
+          onChange={v => setField('p115', 'task_interval_sec', v)} />
       </div>
     </Panel>
   );

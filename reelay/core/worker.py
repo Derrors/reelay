@@ -7,6 +7,9 @@
 - 115 cookie 失效或缺失时暂停转存/整理的领取（解析照常），只告警一次；
   凭证恢复后自动继续并发送恢复通知。任务不会因鉴权失效耗尽重试次数；
 - 115 触发风控冷却时同样暂停转存/整理，冷却结束自动继续；冷却期间被拒的请求没有发出，任务回到原阶段等待；
+- ``p115.task_interval_sec`` 大于 0 时，相邻两个任务开始转存/整理至少隔这么多秒（所有并发共用一个间隔，
+  改了立即生效），拉开同一批任务连续入库时集中发出的 115 请求；间隔没到的任务留在原阶段不入队、不占并发槽，
+  冷却或凭证恢复后积压的任务也按这个间隔逐个开始。解析不受影响；自动只读核验也算一个任务（核验通过会接着整理）；
 - 转存请求已发出、暂存目录还没到齐而转为待人工的任务，后台按退避间隔自动只读核验（见 ``recheck_transfers``）：
   115 在后台落地文件有时要十几分钟，到齐后自动入库，并释放它占着的集，排在后面的任务随之继续；
   连续几次核验结果都没有变化（比如一个文件都没到）时提前提醒一次，后台仍继续复查。
@@ -59,6 +62,7 @@ class Worker:
         self._dir_paths_revision: str | None = None  # 已记录目录路径的配置版本
         self._next_dir_paths = 0.0
         self._next_recheck = 0.0
+        self._last_start: float | None = None  # 上一个任务开始转存/整理的时刻（monotonic），供任务间隔使用
 
     @property
     def storage_paused(self) -> str | None:
@@ -288,6 +292,32 @@ class Worker:
     def stop(self) -> None:
         self._stop.set()
 
+    def _task_interval(self) -> float:
+        """相邻两个任务开始转存/整理至少间隔的秒数；每次现读配置，改了立即生效。"""
+        try:
+            return max(0.0, float((self.pipeline.cfg.get("p115") or {}).get("task_interval_sec") or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def spacing_wait(self, now: float | None = None) -> float:
+        """距离下一个任务可以开始转存/整理还要等几秒；0 表示现在就可以。"""
+        interval = self._task_interval()
+        if interval <= 0 or self._last_start is None:
+            return 0.0
+        now = time.monotonic() if now is None else now
+        return max(0.0, self._last_start + interval - now)
+
+    def _claim_start(self) -> bool:
+        """占用下一个开始名额：间隔已到就记下开始时刻并返回 True。
+
+        检查与记录之间没有 await，多个消费者协程同时领取时也只有一个拿到名额。
+        """
+        now = time.monotonic()
+        if self.spacing_wait(now) > 0:
+            return False
+        self._last_start = now
+        return True
+
     async def _enqueue(self, task_id: str, state: TaskState) -> bool:
         if task_id in self._seen_inflight:
             return False
@@ -297,12 +327,18 @@ class Worker:
 
     async def _poll(self, *, drain: bool) -> None:
         while not self._stop.is_set():
+            spacing = held = False
             for state in (TaskState.STORED, TaskState.RECEIVED, TaskState.QUEUED):
                 if self.storage_paused and state in STORAGE_STATES:
                     continue
-                for row in self.store.list_by_state(state, limit=100, due_only=True):
+                rows = self.store.list_by_state(state, limit=100, due_only=True)
+                if state in STORAGE_STATES and (spacing or self.spacing_wait() > 0):
+                    # 任务间隔没到：先不入队，免得排队的任务轮番占着并发槽又放回去
+                    spacing, held = True, held or bool(rows)
+                    continue
+                for row in rows:
                     await self._enqueue(row["task_id"], state)
-            if drain and not self._seen_inflight and self._queue.empty():
+            if drain and not held and not self._seen_inflight and self._queue.empty():
                 return
             await asyncio.sleep(POLL_INTERVAL if not drain else 0.05)
 
@@ -328,6 +364,8 @@ class Worker:
             return
         if self.storage_paused and expected_state in STORAGE_STATES:
             return  # 已入队但随后暂停：保持原状态，恢复后再领取
+        if expected_state in STORAGE_STATES and not self._claim_start():
+            return  # 同一轮入队的其他任务先开始了：保持原状态，间隔到了再领取
         try:
             if expected_state == TaskState.RECEIVED:
                 await self.pipeline.process_received(ctx)
